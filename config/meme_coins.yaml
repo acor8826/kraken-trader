@@ -1,0 +1,54 @@
+# Meme Coin Trading Module Configuration
+meme_trading:
+  # Risk limits
+  max_meme_allocation_pct: 0.25      # Max 25% of total portfolio for meme coins
+  max_per_coin_pct: 0.05             # Max 5% per individual coin
+  max_simultaneous_positions: 3       # Max 3 meme positions at once
+  min_trade_size_aud: 5.0            # Minimum trade size in AUD
+
+  # Timing
+  cycle_interval_seconds: 180         # Run every 3 minutes
+  listing_check_every_n_cycles: 5     # Check for new listings every 5th cycle (~15 min)
+
+  # Stop losses
+  trailing_stop_activation_pct: 0.20  # Activate trailing stop at +20% gain
+  trailing_stop_distance_pct: 0.10    # Trail at 10% below peak
+  hard_stop_loss_pct: 0.15           # Hard stop loss at -15%
+
+  # Decision thresholds (Combined Meme Score)
+  entry_cms_threshold: 0.65           # CMS >= 0.65 -> rule-based BUY
+  ambiguous_cms_lower: 0.40           # 0.40 <= CMS < 0.65 -> ask Haiku
+  exit_cms_threshold: -0.30           # CMS <= -0.30 -> rule-based SELL
+  min_volume_z_score: 1.5             # Volume Z-score required for entry
+
+  # Signal weights
+  twitter_weight: 0.55                # Twitter sentiment weight in fusion
+  volume_weight: 0.45                 # Volume momentum weight in fusion
+
+  # Twitter API budget (Basic tier: 10K reads/month)
+  daily_api_reads: 330
+  monthly_api_reads: 10000
+
+  # LLM model for meme decisions
+  haiku_model: "claude-haiku-3-5-20241022"
+
+  # Circuit breaker
+  consecutive_loss_trigger: 2         # Pause after 2 consecutive losses
+  circuit_breaker_pause_seconds: 3600 # Pause for 1 hour
+  daily_meme_loss_limit_pct: 0.05     # Stop if daily meme loss > 5% of portfolio
+
+  # Meme coin keywords for auto-detection on Binance
+  meme_keywords:
+    - DOGE
+    - SHIB
+    - PEPE
+    - BONK
+    - FLOKI
+    - WIF
+    - MEME
+    - TURBO
+    - NEIRO
+    - MOG
+    - POPCAT
+    - BRETT
+    - MEW

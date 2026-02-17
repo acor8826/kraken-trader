@@ -1,0 +1,90 @@
+# =============================================================================
+# Docker Ignore File
+# =============================================================================
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Documentation
+docs/_build/
+*.md
+!README.md
+
+# Local development
+*.local.*
+.env.local
+.env.*.local
+
+# Output and logs
+output/
+logs/
+*.log
+
+# Data caches
+data/cache/
+
+# Secrets and credentials
+*.pem
+*.key
+credentials.json
+secrets/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.docker/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Test files
+tests/
+*_test.py
+test_*.py
+
+# Scripts (keep production scripts)
+scripts/ralph/
+
+# Monitoring configs (mounted separately)
+# monitoring/
+
+# Temporary files
+*.tmp
+*.temp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,106 @@
+# Aggressive Trading Configuration
+#
+# Optimized for:
+# - Small portfolios (<$500)
+# - Maximum cost reduction
+# - Higher returns through aggressive positioning
+# - High-volatility pairs
+#
+# WARNING: Higher risk of drawdown. Test in simulation first.
+#
+# Usage:
+#   RISK_PROFILE=aggressive SIMULATION_MODE=true python main.py
+#   Or use this config file directly
+
+stage: stage1
+
+# Risk profile - use aggressive settings
+risk_profile: aggressive
+
+# Trading configuration with high-volatility pairs
+trading:
+  pairs:
+    - BTC/USDT    # Anchor asset - 30% allocation target
+    - SOL/USDT    # High-beta L1 - 25% allocation
+    - DOGE/USDT   # Volatile meme - 20% allocation
+    - AVAX/USDT   # Growth L1 - 15% allocation
+    - ARB/USDT    # L2 speculative - 10% allocation
+  quote_currency: USDT
+  initial_capital: 500.0
+  target_capital: 2500.0  # 5x target
+  check_interval_minutes: 120  # Will be overridden by adaptive scheduler
+
+# Standard risk config (used when risk_profile != aggressive)
+risk:
+  max_position_pct: 0.20
+  max_total_exposure_pct: 0.80
+  stop_loss_pct: 0.05
+  min_confidence: 0.70
+  max_daily_trades: 10
+  max_daily_loss_pct: 0.10
+
+# Aggressive risk override (used when risk_profile == aggressive)
+aggressive_risk:
+  max_position_pct: 0.35       # 35% per position (vs 20%)
+  max_total_exposure_pct: 0.95 # 95% exposure (vs 80%)
+  stop_loss_pct: 0.03          # 3% stop (vs 5%)
+  min_confidence: 0.50         # 50% confidence (vs 70%)
+  max_daily_trades: 30         # 30 trades (vs 10)
+  max_daily_loss_pct: 0.15     # 15% daily loss limit (vs 10%)
+
+# Cost optimization - maximize savings for small portfolios
+cost_optimization:
+  enable_batch_analysis: true      # Analyze all pairs in one Claude call
+  enable_hybrid_mode: true         # Use rules for clear signals
+  enable_adaptive_schedule: true   # Less frequent checks for small portfolios
+  enable_decision_cache: false     # Enable if Redis available
+
+  # Hybrid mode thresholds (lower = more rules, less Claude)
+  hybrid:
+    direction_threshold: 0.6       # |direction| > 0.6 = use rules
+    confidence_threshold: 0.75     # confidence > 0.75 = use rules
+    disagreement_threshold: 0.2    # disagreement < 0.2 = use rules
+
+  # Adaptive scheduling tiers
+  tiers:
+    micro:
+      max_value: 500
+      interval: 120    # 2 hours for <$500
+    small:
+      max_value: 2000
+      interval: 60     # 1 hour for $500-$2K
+    medium:
+      max_value: 10000
+      interval: 30     # 30 min for $2K-$10K
+
+  # Decision caching (if enabled)
+  cache_ttl_seconds: 1800          # 30 min cache
+  cache_price_deviation: 0.03      # Invalidate if price moves >3%
+
+# Feature flags
+features:
+  enable_technical_analyst: true
+  enable_sentiment_analyst: false   # Enable in stage2+
+  enable_onchain_analyst: false
+  enable_macro_analyst: false
+  enable_orderbook_analyst: false
+  enable_intel_fusion: false
+  enable_regime_detection: false
+  enable_limit_orders: false
+  enable_smart_routing: false
+  enable_circuit_breakers: true     # Keep safety on
+  enable_anomaly_detection: false
+  enable_postgres: false
+  enable_learning: false
+  enable_event_bus: false
+  simulation_mode: true             # Default to paper trading
+
+# Circuit breakers (safety rails for aggressive mode)
+circuit_breakers:
+  max_daily_loss_pct: 0.15          # Match aggressive risk
+  max_daily_trades: 30
+  volatility_threshold_pct: 0.15    # Higher threshold for volatile pairs
+  consecutive_loss_limit: 4         # Allow more consecutive losses
+
+# Logging
+log_level: INFO

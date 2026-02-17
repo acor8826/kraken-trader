@@ -1,0 +1,31 @@
+# Environment / secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE / local config
+.vscode/
+.idea/
+*.swp
+.claude/
+settings.local.json
+
+# Runtime
+output/
+logs/
+data/cache/
+*.log

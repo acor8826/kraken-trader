@@ -1,0 +1,1603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#F8F9FC">
+    <meta name="description" content="Kraken Trading Agent - Autonomous crypto trading dashboard">
+    <title>Kraken Trading Agent</title>
+
+    <!-- Fonts - Cyberpunk Fintech -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Orbitron:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Icons - Lucide (specific version for stability) -->
+    <script src="https://unpkg.com/lucide@0.294.0/dist/umd/lucide.min.js"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+
+    <!-- TradingView Lightweight Charts for Candlestick Charts -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css?v=20260114d">
+</head>
+<body>
+    <!-- Skip Link for Accessibility -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Toast Container -->
+    <div id="toastContainer" class="toast-container" role="alert" aria-live="polite"></div>
+
+    <!-- Mobile Sidebar Overlay -->
+    <div id="sidebarOverlay" class="sidebar-overlay" aria-hidden="true"></div>
+
+    <!-- Sidebar Navigation -->
+    <aside id="sidebar" class="sidebar" role="navigation" aria-label="Main navigation">
+        <div class="sidebar-header">
+            <span class="sidebar-logo">
+                <i data-lucide="activity" aria-hidden="true"></i>
+            </span>
+            <span class="sidebar-title">Kraken Trader</span>
+            <button id="closeSidebar" class="sidebar-close" aria-label="Close menu">
+                <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+        </div>
+
+        <nav class="sidebar-nav">
+            <a href="#metrics-section" class="sidebar-link active" data-section="metrics">
+                <i data-lucide="layout-dashboard" aria-hidden="true"></i>
+                <span>Overview</span>
+            </a>
+            <a href="#pnl-section" class="sidebar-link" data-section="pnl">
+                <i data-lucide="trending-up" aria-hidden="true"></i>
+                <span>P&L</span>
+            </a>
+            <a href="#chart-section" class="sidebar-link" data-section="chart">
+                <i data-lucide="line-chart" aria-hidden="true"></i>
+                <span>Performance</span>
+            </a>
+            <a href="#trades-section" class="sidebar-link" data-section="trades">
+                <i data-lucide="repeat" aria-hidden="true"></i>
+                <span>Trades</span>
+            </a>
+            <a href="#phase2-section" class="sidebar-link" data-section="phase2">
+                <i data-lucide="brain" aria-hidden="true"></i>
+                <span>Intelligence</span>
+            </a>
+            <a href="#cost-section" class="sidebar-link" data-section="cost">
+                <i data-lucide="piggy-bank" aria-hidden="true"></i>
+                <span>Cost Optimization</span>
+            </a>
+        </nav>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-status">
+                <span class="status-dot" id="sidebarStatusDot"></span>
+                <span id="sidebarStatusText">Connecting...</span>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main App Container -->
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header" role="banner">
+            <div class="header-left">
+                <button id="menuToggle" class="header-menu-btn" aria-label="Open menu" aria-expanded="false">
+                    <i data-lucide="menu" aria-hidden="true"></i>
+                </button>
+                <div class="header-brand">
+                    <i data-lucide="activity" class="brand-icon" aria-hidden="true"></i>
+                    <h1 class="header-title">Kraken Trader</h1>
+                </div>
+            </div>
+
+            <div class="header-center">
+                <div class="header-status-bar">
+                    <div class="status-chip" id="connectionStatus">
+                        <span class="status-dot"></span>
+                        <span class="status-label">Connecting</span>
+                    </div>
+                    <div class="status-chip mode" id="modeChip">
+                        <i data-lucide="test-tube" aria-hidden="true"></i>
+                        <span>Simulation</span>
+                    </div>
+                    <div class="status-chip countdown" id="countdownChip">
+                        <i data-lucide="clock" aria-hidden="true"></i>
+                        <span id="nextCycleCountdown">--:--</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="header-right">
+                <button id="themeToggle" class="theme-toggle" aria-label="Toggle light/dark theme" title="Toggle theme">
+                    <i data-lucide="sun" class="icon-sun" aria-hidden="true"></i>
+                    <i data-lucide="moon" class="icon-moon" aria-hidden="true"></i>
+                </button>
+                <button id="notificationBtn" class="header-icon-btn" aria-label="Notifications" aria-haspopup="true">
+                    <i data-lucide="bell" aria-hidden="true"></i>
+                    <span class="notification-badge" id="notificationBadge" style="display: none;">0</span>
+                </button>
+                <button id="refreshBtn" class="header-icon-btn" aria-label="Refresh data">
+                    <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                </button>
+                <button id="settingsBtn" class="header-icon-btn" aria-label="Settings">
+                    <i data-lucide="settings" aria-hidden="true"></i>
+                </button>
+            </div>
+        </header>
+
+        <!-- Notification Panel -->
+        <div id="notificationPanel" class="notification-panel" role="dialog" aria-label="Notifications" aria-hidden="true">
+            <div class="notification-header">
+                <h3>Notifications</h3>
+                <button id="clearNotifications" class="btn-text">Clear all</button>
+            </div>
+            <div class="notification-list" id="notificationList">
+                <div class="notification-empty">
+                    <i data-lucide="inbox" aria-hidden="true"></i>
+                    <p>No notifications</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content with Holdings Sidebar -->
+        <div class="main-layout">
+            <!-- Holdings Sidebar -->
+            <aside class="holdings-sidebar" id="holdingsSidebar">
+                <div class="sidebar-header">
+                    <h3 class="sidebar-title font-display">
+                        <i data-lucide="wallet" aria-hidden="true"></i>
+                        HOLDINGS
+                    </h3>
+                </div>
+                <div class="holdings-list" id="holdingsList">
+                    <!-- Holdings will be populated by JavaScript -->
+                    <div class="holding-item skeleton-holding">
+                        <span class="skeleton skeleton-text" style="width: 60px;"></span>
+                        <span class="skeleton skeleton-text" style="width: 80px;"></span>
+                    </div>
+                </div>
+                <div class="sidebar-countdown">
+                    <div class="countdown-label font-display">NEXT CYCLE</div>
+                    <div class="countdown-timer font-mono neon-text" id="sidebarCountdown">--:--</div>
+                    <div class="countdown-status" id="sidebarStatus">
+                        <span class="pulse-indicator"></span>
+                        <span>ACTIVE</span>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content Area -->
+            <main id="main-content" class="main-content" role="main">
+                <!-- ========== PORTFOLIO HERO SECTION ========== -->
+                <section class="portfolio-hero" aria-label="Portfolio overview">
+                <div class="hero-grid">
+                    <!-- Portfolio Value - Primary -->
+                    <div class="hero-card hero-primary">
+                        <div class="hero-label font-display">PORTFOLIO VALUE</div>
+                        <div class="hero-value-container">
+                            <span class="hero-value font-mono neon-text" id="heroPortfolioValue">$1,000.00</span>
+                            <span class="hero-live-indicator">
+                                <span class="pulse-indicator"></span>
+                                <span class="hero-live-text">LIVE</span>
+                            </span>
+                        </div>
+                        <div class="hero-subtitle" id="heroAvailableQuote">
+                            Available: <span class="font-mono">$1,000.00</span>
+                        </div>
+                    </div>
+
+                    <!-- Net P&L -->
+                    <div class="hero-card hero-pnl">
+                        <div class="hero-label font-display">NET P&L</div>
+                        <div class="hero-value-container">
+                            <span class="hero-value font-mono" id="heroPnLValue">$0.00</span>
+                            <span class="hero-pnl-percent cyber-badge" id="heroPnLPercent">0.0%</span>
+                        </div>
+                        <div class="hero-pnl-bar">
+                            <div class="pnl-bar-negative"></div>
+                            <div class="pnl-bar-center"></div>
+                            <div class="pnl-bar-positive" id="heroPnLBar" style="width: 50%;"></div>
+                        </div>
+                    </div>
+
+                    <!-- Target Progress -->
+                    <div class="hero-card hero-target">
+                        <div class="hero-label font-display">TARGET PROGRESS</div>
+                        <div class="hero-target-display">
+                            <span class="hero-target-current font-mono" id="heroTargetCurrent">$1K</span>
+                            <span class="hero-target-arrow">→</span>
+                            <span class="hero-target-goal font-mono" id="heroTargetGoal">$5K</span>
+                        </div>
+                        <div class="cyber-progress hero-progress">
+                            <div class="cyber-progress-bar success" id="heroTargetBar" style="width: 0%;"></div>
+                        </div>
+                        <div class="hero-target-percent font-mono" id="heroTargetPercent">0%</div>
+                    </div>
+
+                    <!-- AI Status -->
+                    <div class="hero-card hero-ai-status">
+                        <div class="hero-label font-display">AI STATUS</div>
+                        <div class="hero-ai-indicator">
+                            <span class="pulse-indicator" id="heroAiPulse"></span>
+                            <span class="hero-ai-state font-mono" id="heroAiState">ACTIVE</span>
+                        </div>
+                        <div class="hero-ai-timing">
+                            <div class="hero-ai-row">
+                                <span class="hero-ai-label">Cycle</span>
+                                <span class="hero-ai-value font-mono" id="heroAiCycle">#0</span>
+                            </div>
+                            <div class="hero-ai-row">
+                                <span class="hero-ai-label">Next</span>
+                                <span class="hero-ai-value font-mono neon-text" id="heroAiNext">--:--</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Next Cycle Countdown Tile -->
+                    <div class="hero-card hero-countdown">
+                        <div class="hero-label font-display">NEXT CYCLE</div>
+                        <div class="hero-countdown-display">
+                            <div class="countdown-digits font-mono" id="heroCountdownDigits">
+                                <span class="countdown-segment">
+                                    <span class="digit" id="countdownMins">00</span>
+                                    <span class="digit-label">MIN</span>
+                                </span>
+                                <span class="countdown-colon">:</span>
+                                <span class="countdown-segment">
+                                    <span class="digit" id="countdownSecs">00</span>
+                                    <span class="digit-label">SEC</span>
+                                </span>
+                            </div>
+                        </div>
+                        <div class="countdown-progress-ring">
+                            <svg viewBox="0 0 36 36" class="countdown-svg">
+                                <circle class="countdown-bg" cx="18" cy="18" r="16" />
+                                <circle class="countdown-progress" id="countdownRing" cx="18" cy="18" r="16"
+                                    stroke-dasharray="100 100" stroke-dashoffset="0" />
+                            </svg>
+                            <div class="countdown-ring-label font-mono" id="countdownPercent">100%</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Action Buttons (Mobile) -->
+            <section class="mobile-actions">
+                <button id="pauseBtnMobile" class="btn btn-secondary" aria-label="Pause trading">
+                    <i data-lucide="pause" aria-hidden="true"></i>
+                    <span>Pause</span>
+                </button>
+                <button id="resumeBtnMobile" class="btn btn-secondary" style="display:none;" aria-label="Resume trading">
+                    <i data-lucide="play" aria-hidden="true"></i>
+                    <span>Resume</span>
+                </button>
+                <button id="triggerBtnMobile" class="btn btn-primary" aria-label="Trigger trading cycle">
+                    <i data-lucide="zap" aria-hidden="true"></i>
+                    <span>Trigger Cycle</span>
+                </button>
+            </section>
+
+            <!-- AI Activity Feed Section -->
+            <section id="ai-activity-section" class="section ai-activity-section" aria-labelledby="ai-activity-heading">
+                <div class="section-header collapsible" data-section="ai-activity">
+                    <h2 id="ai-activity-heading" class="section-title font-display">
+                        <i data-lucide="brain" aria-hidden="true"></i>
+                        AI ACTIVITY
+                    </h2>
+                    <div class="ai-activity-meta">
+                        <span class="ai-live-badge">
+                            <span class="pulse-indicator"></span>
+                            <span>LIVE</span>
+                        </span>
+                        <span class="ai-next-cycle font-mono" id="aiNextCycleTimer">Next: --:--</span>
+                    </div>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="ai-activity-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="ai-activity-content" class="section-content">
+                    <div class="ai-activity-feed" id="aiActivityFeed">
+                        <!-- Cycle entries will be populated by JavaScript -->
+                        <div class="ai-cycle-entry skeleton-cycle">
+                            <div class="cycle-header">
+                                <span class="skeleton skeleton-text" style="width: 150px;"></span>
+                                <span class="skeleton skeleton-text" style="width: 80px;"></span>
+                            </div>
+                            <div class="cycle-body">
+                                <div class="skeleton skeleton-text" style="width: 100%;"></div>
+                                <div class="skeleton skeleton-text" style="width: 80%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Trading Pairs Section -->
+            <section id="pairs-section" class="section pairs-section" aria-labelledby="pairs-heading">
+                <div class="section-header collapsible" data-section="pairs">
+                    <h2 id="pairs-heading" class="section-title font-display">
+                        <i data-lucide="candlestick-chart" aria-hidden="true"></i>
+                        TRADING PAIRS
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="pairs-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="pairs-content" class="section-content">
+                    <div class="pairs-grid" id="pairsGrid">
+                        <!-- Pair cards will be populated by JavaScript -->
+                        <div class="pair-card skeleton-pair">
+                            <div class="pair-header">
+                                <span class="skeleton skeleton-text" style="width: 80px;"></span>
+                                <span class="skeleton skeleton-text" style="width: 60px;"></span>
+                            </div>
+                            <div class="pair-chart-container skeleton-chart"></div>
+                        </div>
+                        <div class="pair-card skeleton-pair">
+                            <div class="pair-header">
+                                <span class="skeleton skeleton-text" style="width: 80px;"></span>
+                                <span class="skeleton skeleton-text" style="width: 60px;"></span>
+                            </div>
+                            <div class="pair-chart-container skeleton-chart"></div>
+                        </div>
+                        <div class="pair-card skeleton-pair">
+                            <div class="pair-header">
+                                <span class="skeleton skeleton-text" style="width: 80px;"></span>
+                                <span class="skeleton skeleton-text" style="width: 60px;"></span>
+                            </div>
+                            <div class="pair-chart-container skeleton-chart"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Metrics Cards Section -->
+            <section id="metrics-section" class="section metrics-section" aria-labelledby="metrics-heading">
+                <div class="section-header collapsible" data-section="metrics">
+                    <h2 id="metrics-heading" class="section-title">
+                        <i data-lucide="bar-chart-2" aria-hidden="true"></i>
+                        Overview
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="metrics-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="metrics-content" class="section-content">
+                    <div class="metrics-grid">
+                        <!-- Total P&L Card -->
+                        <div class="metric-card" data-metric="pnl">
+                            <div class="metric-icon">
+                                <i data-lucide="trending-up" aria-hidden="true"></i>
+                            </div>
+                            <div class="metric-content">
+                                <span class="metric-label">Total P&L</span>
+                                <span class="metric-value" id="totalPnL">
+                                    <span class="skeleton skeleton-text"></span>
+                                </span>
+                                <span class="metric-change" id="totalPnLPercent">0.00%</span>
+                            </div>
+                            <div class="metric-sparkline" id="pnlSparkline"></div>
+                        </div>
+
+                        <!-- Portfolio Value Card -->
+                        <div class="metric-card" data-metric="portfolio">
+                            <div class="metric-icon">
+                                <i data-lucide="wallet" aria-hidden="true"></i>
+                            </div>
+                            <div class="metric-content">
+                                <span class="metric-label">Portfolio Value</span>
+                                <span class="metric-value" id="portfolioValue">
+                                    <span class="skeleton skeleton-text"></span>
+                                </span>
+                                <span class="metric-change" id="portfolioPercent">0.00%</span>
+                            </div>
+                            <div class="metric-sparkline" id="portfolioSparkline"></div>
+                        </div>
+
+                        <!-- Win Rate Card with Gauge -->
+                        <div class="metric-card" data-metric="winrate">
+                            <div class="metric-icon">
+                                <i data-lucide="target" aria-hidden="true"></i>
+                            </div>
+                            <div class="metric-content">
+                                <span class="metric-label">Win Rate</span>
+                                <span class="metric-value" id="winRate">0%</span>
+                                <span class="metric-subtext" id="winCount">0 / 0 trades</span>
+                            </div>
+                            <div class="circular-gauge" id="winRateGauge" role="img" aria-label="Win rate gauge">
+                                <svg viewBox="0 0 36 36" class="gauge-svg">
+                                    <path class="gauge-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="gauge-fill" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Total Trades Card -->
+                        <div class="metric-card" data-metric="trades">
+                            <div class="metric-icon">
+                                <i data-lucide="repeat" aria-hidden="true"></i>
+                            </div>
+                            <div class="metric-content">
+                                <span class="metric-label">Total Trades</span>
+                                <span class="metric-value" id="totalTrades">0</span>
+                                <span class="metric-subtext" id="activePositions">0 active positions</span>
+                            </div>
+                        </div>
+
+                        <!-- Exposure Card with Gauge -->
+                        <div class="metric-card" data-metric="exposure">
+                            <div class="metric-icon">
+                                <i data-lucide="pie-chart" aria-hidden="true"></i>
+                            </div>
+                            <div class="metric-content">
+                                <span class="metric-label">Current Exposure</span>
+                                <span class="metric-value" id="exposure">0%</span>
+                                <span class="metric-subtext">max: 80%</span>
+                            </div>
+                            <div class="circular-gauge" id="exposureGauge" role="img" aria-label="Exposure gauge">
+                                <svg viewBox="0 0 36 36" class="gauge-svg">
+                                    <path class="gauge-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="gauge-fill" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                            </div>
+                        </div>
+
+                        <!-- Target Progress Card -->
+                        <div class="metric-card" data-metric="target">
+                            <div class="metric-icon">
+                                <i data-lucide="flag" aria-hidden="true"></i>
+                            </div>
+                            <div class="metric-content">
+                                <span class="metric-label">Target Progress</span>
+                                <span class="metric-value" id="targetProgress">0%</span>
+                                <span class="metric-subtext">$5,000 goal</span>
+                            </div>
+                            <div class="progress-bar-container">
+                                <div class="progress-bar animated">
+                                    <div class="progress-fill" id="targetProgressBar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- P&L Overview Section -->
+            <section id="pnl-section" class="section pnl-section" aria-labelledby="pnl-heading">
+                <div class="section-header collapsible" data-section="pnl">
+                    <h2 id="pnl-heading" class="section-title">
+                        <i data-lucide="dollar-sign" aria-hidden="true"></i>
+                        Profit & Loss
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="pnl-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="pnl-content" class="section-content">
+                    <div class="pnl-grid">
+                        <!-- Net Profit Card -->
+                        <div class="pnl-card highlight">
+                            <div class="pnl-header">
+                                <span class="pnl-label">Net Profit</span>
+                                <span class="badge" id="breakEvenStatus">Calculating...</span>
+                            </div>
+                            <div class="pnl-value" id="netProfit">$0.00</div>
+                            <div class="pnl-subtext">Trading P&L minus API costs</div>
+                            <div class="pnl-progress">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="profitProgressBar" style="width: 50%;"></div>
+                                </div>
+                                <div class="progress-labels">
+                                    <span>Loss</span>
+                                    <span>Break-even</span>
+                                    <span>Profit</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Realized P&L -->
+                        <div class="pnl-card">
+                            <div class="pnl-header">
+                                <span class="pnl-label">Realized P&L</span>
+                                <button class="help-tooltip" aria-label="Profit/loss from closed trades" data-tooltip="Profit/loss from closed trades">
+                                    <i data-lucide="help-circle" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                            <div class="pnl-value" id="realizedPnL">$0.00</div>
+                            <div class="pnl-subtext" id="realizedPnLPct">0.00%</div>
+                        </div>
+
+                        <!-- Unrealized P&L -->
+                        <div class="pnl-card">
+                            <div class="pnl-header">
+                                <span class="pnl-label">Unrealized P&L</span>
+                                <button class="help-tooltip" aria-label="Profit/loss from open positions" data-tooltip="Profit/loss from open positions">
+                                    <i data-lucide="help-circle" aria-hidden="true"></i>
+                                </button>
+                            </div>
+                            <div class="pnl-value" id="unrealizedPnL">$0.00</div>
+                            <div class="pnl-subtext" id="unrealizedPnLPct">0.00%</div>
+                        </div>
+
+                        <!-- API Costs -->
+                        <div class="pnl-card">
+                            <div class="pnl-header">
+                                <span class="pnl-label">API Costs</span>
+                                <span class="badge badge-neutral" id="apiCostsTrend">--</span>
+                            </div>
+                            <div class="pnl-value negative" id="actualApiCosts">$0.00</div>
+                            <div class="pnl-subtext">Today: <span id="apiCostsToday">$0.00</span></div>
+                        </div>
+                    </div>
+
+                    <!-- Token Usage & Cost Efficiency -->
+                    <div class="pnl-details-grid">
+                        <!-- Token Usage -->
+                        <div class="detail-card">
+                            <h4 class="detail-title">
+                                <i data-lucide="cpu" aria-hidden="true"></i>
+                                Token Usage
+                            </h4>
+                            <div class="detail-stats">
+                                <div class="detail-stat">
+                                    <span class="detail-label">Input</span>
+                                    <span class="detail-value" id="inputTokens">0</span>
+                                </div>
+                                <div class="detail-stat">
+                                    <span class="detail-label">Output</span>
+                                    <span class="detail-value" id="outputTokens">0</span>
+                                </div>
+                                <div class="detail-stat">
+                                    <span class="detail-label">Total</span>
+                                    <span class="detail-value" id="totalTokens">0</span>
+                                </div>
+                                <div class="detail-stat">
+                                    <span class="detail-label">API Calls</span>
+                                    <span class="detail-value" id="apiCallCount">0</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Cost Efficiency -->
+                        <div class="detail-card">
+                            <h4 class="detail-title">
+                                <i data-lucide="gauge" aria-hidden="true"></i>
+                                Cost Efficiency
+                            </h4>
+                            <div class="detail-stats">
+                                <div class="detail-stat">
+                                    <span class="detail-label">Profit Margin</span>
+                                    <span class="detail-value" id="profitMargin">--</span>
+                                </div>
+                                <div class="detail-stat">
+                                    <span class="detail-label">Break-even Trades</span>
+                                    <span class="detail-value" id="tradesToBreakeven">--</span>
+                                </div>
+                                <div class="detail-stat">
+                                    <span class="detail-label">Cost/Trade</span>
+                                    <span class="detail-value" id="costPerTrade">--</span>
+                                </div>
+                                <div class="detail-stat">
+                                    <span class="detail-label">Avg Profit/Trade</span>
+                                    <span class="detail-value" id="avgProfitPerTrade">--</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- P&L by Pair -->
+                        <div class="detail-card">
+                            <h4 class="detail-title">
+                                <i data-lucide="coins" aria-hidden="true"></i>
+                                P&L by Pair
+                            </h4>
+                            <div class="pair-pnl-list" id="pairPnLList">
+                                <div class="pair-pnl-item">
+                                    <span class="pair-name">Loading...</span>
+                                    <span class="pair-value">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Performance Chart Section -->
+            <section id="chart-section" class="section chart-section" aria-labelledby="chart-heading">
+                <div class="section-header">
+                    <h2 id="chart-heading" class="section-title">
+                        <i data-lucide="line-chart" aria-hidden="true"></i>
+                        Portfolio Performance
+                    </h2>
+                    <div class="chart-controls">
+                        <div class="time-range-selector" role="group" aria-label="Time range">
+                            <button class="time-btn" data-range="1h">1H</button>
+                            <button class="time-btn" data-range="4h">4H</button>
+                            <button class="time-btn active" data-range="1d">1D</button>
+                            <button class="time-btn" data-range="1w">1W</button>
+                            <button class="time-btn" data-range="1m">1M</button>
+                        </div>
+                        <span id="chartStatus" class="chart-status">
+                            <span class="live-indicator"></span>
+                            <span>Live</span>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="chart-container">
+                    <div class="chart-loading" id="chartLoading">
+                        <div class="skeleton skeleton-chart"></div>
+                    </div>
+                    <canvas id="performanceChart" aria-label="Portfolio performance chart"></canvas>
+                </div>
+            </section>
+
+            <!-- Recent Trades Section -->
+            <section id="trades-section" class="section trades-section" aria-labelledby="trades-heading">
+                <div class="section-header collapsible" data-section="trades">
+                    <h2 id="trades-heading" class="section-title">
+                        <i data-lucide="history" aria-hidden="true"></i>
+                        Recent Trades
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="trades-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="trades-content" class="section-content">
+                    <!-- Desktop Table View -->
+                    <div class="table-container desktop-only">
+                        <table class="trades-table" role="table" aria-label="Recent trades">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Time</th>
+                                    <th scope="col">Pair</th>
+                                    <th scope="col">Action</th>
+                                    <th scope="col">Price</th>
+                                    <th scope="col">Amount</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tradesBody">
+                                <tr class="loading-row">
+                                    <td colspan="7">
+                                        <div class="skeleton skeleton-text"></div>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <!-- Mobile Card View -->
+                    <div class="trades-cards mobile-only" id="tradesCards">
+                        <div class="trade-card skeleton-card">
+                            <div class="skeleton skeleton-text"></div>
+                            <div class="skeleton skeleton-text short"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Agent Status Section -->
+            <section id="status-section" class="section status-section" aria-labelledby="status-heading">
+                <div class="section-header collapsible" data-section="status">
+                    <h2 id="status-heading" class="section-title">
+                        <i data-lucide="server" aria-hidden="true"></i>
+                        Agent Status
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="status-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="status-content" class="section-content">
+                    <div class="status-grid">
+                        <div class="status-item">
+                            <i data-lucide="layers" class="status-icon" aria-hidden="true"></i>
+                            <span class="status-label">Stage</span>
+                            <span id="stage" class="status-value">-</span>
+                        </div>
+                        <div class="status-item">
+                            <i data-lucide="flask-conical" class="status-icon" aria-hidden="true"></i>
+                            <span class="status-label">Mode</span>
+                            <span id="mode" class="status-value">-</span>
+                        </div>
+                        <div class="status-item">
+                            <i data-lucide="timer" class="status-icon" aria-hidden="true"></i>
+                            <span class="status-label">Next Cycle</span>
+                            <span id="nextCycle" class="status-value">-</span>
+                        </div>
+                        <div class="status-item">
+                            <i data-lucide="rotate-cw" class="status-icon" aria-hidden="true"></i>
+                            <span class="status-label">Cycles Run</span>
+                            <span id="cycleCount" class="status-value">-</span>
+                        </div>
+                        <div class="status-item">
+                            <i data-lucide="activity" class="status-icon" aria-hidden="true"></i>
+                            <span class="status-label">Status</span>
+                            <span id="tradingStatus" class="status-value">-</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Phase 2 Intelligence Section -->
+            <section id="phase2-section" class="section phase2-section" aria-labelledby="phase2-heading">
+                <div class="section-header collapsible" data-section="phase2">
+                    <h2 id="phase2-heading" class="section-title">
+                        <i data-lucide="brain" aria-hidden="true"></i>
+                        Phase 2 Intelligence
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="phase2-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="phase2-content" class="section-content">
+                    <div class="phase2-grid">
+                        <!-- Analyst Signals -->
+                        <div class="phase2-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="users" aria-hidden="true"></i>
+                                    Analyst Signals
+                                </h3>
+                                <span id="analystCount" class="badge">0 analysts</span>
+                            </div>
+                            <div class="analyst-list" id="analystList">
+                                <div class="analyst-item">
+                                    <div class="analyst-info">
+                                        <i data-lucide="candlestick-chart" aria-hidden="true"></i>
+                                        <span class="analyst-name">Technical</span>
+                                    </div>
+                                    <div class="analyst-signal">
+                                        <span class="direction" id="techDirection">-</span>
+                                        <span class="confidence" id="techConfidence">-</span>
+                                    </div>
+                                </div>
+                                <div class="analyst-item" id="sentimentAnalyst" style="display: none;">
+                                    <div class="analyst-info">
+                                        <i data-lucide="heart-pulse" aria-hidden="true"></i>
+                                        <span class="analyst-name">Sentiment</span>
+                                    </div>
+                                    <div class="analyst-signal">
+                                        <span class="direction" id="sentDirection">-</span>
+                                        <span class="confidence" id="sentConfidence">-</span>
+                                    </div>
+                                </div>
+                                <div class="analyst-item" id="onchainAnalyst" style="display: none;">
+                                    <div class="analyst-info">
+                                        <i data-lucide="link" aria-hidden="true"></i>
+                                        <span class="analyst-name">On-Chain</span>
+                                    </div>
+                                    <div class="analyst-signal">
+                                        <span class="direction" id="onchainDirection">-</span>
+                                        <span class="confidence" id="onchainConfidence">-</span>
+                                    </div>
+                                </div>
+                                <div class="analyst-item" id="macroAnalyst" style="display: none;">
+                                    <div class="analyst-info">
+                                        <i data-lucide="globe" aria-hidden="true"></i>
+                                        <span class="analyst-name">Macro</span>
+                                    </div>
+                                    <div class="analyst-signal">
+                                        <span class="direction" id="macroDirection">-</span>
+                                        <span class="confidence" id="macroConfidence">-</span>
+                                    </div>
+                                </div>
+                                <div class="analyst-item" id="orderbookAnalyst" style="display: none;">
+                                    <div class="analyst-info">
+                                        <i data-lucide="book-open" aria-hidden="true"></i>
+                                        <span class="analyst-name">Order Book</span>
+                                    </div>
+                                    <div class="analyst-signal">
+                                        <span class="direction" id="orderbookDirection">-</span>
+                                        <span class="confidence" id="orderbookConfidence">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Intelligence Fusion -->
+                        <div class="phase2-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="merge" aria-hidden="true"></i>
+                                    Intelligence Fusion
+                                </h3>
+                                <span id="fusionStatus" class="badge badge-info">-</span>
+                            </div>
+                            <div class="fusion-display">
+                                <div class="fusion-meter">
+                                    <div class="meter-labels">
+                                        <span>Bearish</span>
+                                        <span>Neutral</span>
+                                        <span>Bullish</span>
+                                    </div>
+                                    <div class="meter-bar">
+                                        <div class="meter-fill" id="fusionMeter" style="left: 50%;"></div>
+                                    </div>
+                                </div>
+                                <div class="fusion-stats">
+                                    <div class="fusion-stat">
+                                        <span class="label">Direction</span>
+                                        <span class="value" id="fusedDirection">0.00</span>
+                                    </div>
+                                    <div class="fusion-stat">
+                                        <span class="label">Confidence</span>
+                                        <span class="value" id="fusedConfidence">0%</span>
+                                    </div>
+                                    <div class="fusion-stat">
+                                        <span class="label">Disagreement</span>
+                                        <span class="value" id="fusionDisagreement">0%</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Circuit Breakers -->
+                        <div class="phase2-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="shield" aria-hidden="true"></i>
+                                    Circuit Breakers
+                                </h3>
+                                <span id="breakerStatus" class="badge badge-success">Active</span>
+                            </div>
+                            <div class="breaker-list" id="breakerList">
+                                <div class="breaker-item" data-breaker="daily_loss">
+                                    <div class="breaker-info">
+                                        <span class="breaker-name">Daily Loss</span>
+                                        <span class="breaker-threshold">Max 10%</span>
+                                    </div>
+                                    <div class="breaker-status" id="dailyLossBreaker">
+                                        <span class="status-indicator ok"></span>
+                                        <span class="status-text">OK</span>
+                                    </div>
+                                </div>
+                                <div class="breaker-item" data-breaker="trade_frequency">
+                                    <div class="breaker-info">
+                                        <span class="breaker-name">Trade Frequency</span>
+                                        <span class="breaker-threshold">Max 15/day</span>
+                                    </div>
+                                    <div class="breaker-status" id="tradeFreqBreaker">
+                                        <span class="status-indicator ok"></span>
+                                        <span class="status-text">OK</span>
+                                    </div>
+                                </div>
+                                <div class="breaker-item" data-breaker="volatility">
+                                    <div class="breaker-info">
+                                        <span class="breaker-name">Volatility</span>
+                                        <span class="breaker-threshold">Max 10%/hr</span>
+                                    </div>
+                                    <div class="breaker-status" id="volatilityBreaker">
+                                        <span class="status-indicator ok"></span>
+                                        <span class="status-text">OK</span>
+                                    </div>
+                                </div>
+                                <div class="breaker-item" data-breaker="consecutive_loss">
+                                    <div class="breaker-info">
+                                        <span class="breaker-name">Consecutive Losses</span>
+                                        <span class="breaker-threshold">Max 3</span>
+                                    </div>
+                                    <div class="breaker-status" id="consLossBreaker">
+                                        <span class="status-indicator ok"></span>
+                                        <span class="status-text">OK</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Execution Stats -->
+                        <div class="phase2-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="zap" aria-hidden="true"></i>
+                                    Execution Stats
+                                </h3>
+                                <span id="execMode" class="badge">Market Orders</span>
+                            </div>
+                            <div class="exec-stats">
+                                <div class="exec-stat">
+                                    <span class="label">Limit Orders</span>
+                                    <span class="value" id="limitOrderCount">0</span>
+                                </div>
+                                <div class="exec-stat">
+                                    <span class="label">Fill Rate</span>
+                                    <span class="value" id="limitFillRate">-</span>
+                                </div>
+                                <div class="exec-stat">
+                                    <span class="label">Avg Slippage</span>
+                                    <span class="value" id="avgSlippage">-</span>
+                                </div>
+                                <div class="exec-stat">
+                                    <span class="label">Market Fallbacks</span>
+                                    <span class="value" id="marketFallbacks">0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Fear & Greed Index -->
+                    <div class="phase2-card wide" id="fearGreedCard" style="display: none;">
+                        <div class="card-header">
+                            <h3>
+                                <i data-lucide="gauge" aria-hidden="true"></i>
+                                Fear & Greed Index
+                            </h3>
+                            <span id="fearGreedValue" class="badge badge-warning">-</span>
+                        </div>
+                        <div class="fear-greed-display">
+                            <div class="fg-meter">
+                                <div class="fg-bar">
+                                    <div class="fg-fill" id="fgMeter" style="width: 50%;"></div>
+                                </div>
+                                <div class="fg-labels">
+                                    <span>Extreme Fear</span>
+                                    <span>Fear</span>
+                                    <span>Neutral</span>
+                                    <span>Greed</span>
+                                    <span>Extreme Greed</span>
+                                </div>
+                            </div>
+                            <div class="fg-interpretation" id="fgInterpretation">
+                                <span class="signal-label">Signal:</span>
+                                <span class="signal-value" id="fgSignal">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Phase 3 Section -->
+            <section id="phase3-section" class="section phase3-section" style="display: none;" aria-labelledby="phase3-heading">
+                <div class="section-header collapsible" data-section="phase3">
+                    <h2 id="phase3-heading" class="section-title">
+                        <i data-lucide="sparkles" aria-hidden="true"></i>
+                        Phase 3 Advanced
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="phase3-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="phase3-content" class="section-content">
+                    <div class="phase3-grid">
+                        <!-- Market Regime -->
+                        <div class="phase3-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="compass" aria-hidden="true"></i>
+                                    Market Regime
+                                </h3>
+                                <span id="regimeStatus" class="badge badge-info">Unknown</span>
+                            </div>
+                            <div class="regime-display">
+                                <div class="regime-indicator" id="regimeIndicator">
+                                    <div class="regime-icon" id="regimeIcon">
+                                        <i data-lucide="help-circle" aria-hidden="true"></i>
+                                    </div>
+                                    <div class="regime-name" id="regimeName">Detecting...</div>
+                                </div>
+                                <div class="regime-stats">
+                                    <div class="regime-stat">
+                                        <span class="label">Volatility</span>
+                                        <span class="value" id="regimeVolatility">-</span>
+                                    </div>
+                                    <div class="regime-stat">
+                                        <span class="label">Trend</span>
+                                        <span class="value" id="regimeTrend">-</span>
+                                    </div>
+                                    <div class="regime-stat">
+                                        <span class="label">Duration</span>
+                                        <span class="value" id="regimeDuration">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Analyst Performance -->
+                        <div class="phase3-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="award" aria-hidden="true"></i>
+                                    Analyst Performance
+                                </h3>
+                                <span id="adaptiveWeights" class="badge badge-success">Adaptive</span>
+                            </div>
+                            <div class="analyst-performance" id="analystPerformance">
+                                <div class="perf-item">
+                                    <span class="analyst-name">Technical</span>
+                                    <div class="perf-bar-container">
+                                        <div class="perf-bar" id="techPerfBar" style="width: 50%;"></div>
+                                    </div>
+                                    <span class="perf-value" id="techAccuracy">50%</span>
+                                </div>
+                                <div class="perf-item" id="sentPerfItem" style="display: none;">
+                                    <span class="analyst-name">Sentiment</span>
+                                    <div class="perf-bar-container">
+                                        <div class="perf-bar" id="sentPerfBar" style="width: 50%;"></div>
+                                    </div>
+                                    <span class="perf-value" id="sentAccuracy">50%</span>
+                                </div>
+                                <div class="perf-item" id="onchainPerfItem" style="display: none;">
+                                    <span class="analyst-name">On-Chain</span>
+                                    <div class="perf-bar-container">
+                                        <div class="perf-bar" id="onchainPerfBar" style="width: 50%;"></div>
+                                    </div>
+                                    <span class="perf-value" id="onchainAccuracy">50%</span>
+                                </div>
+                                <div class="perf-item" id="macroPerfItem" style="display: none;">
+                                    <span class="analyst-name">Macro</span>
+                                    <div class="perf-bar-container">
+                                        <div class="perf-bar" id="macroPerfBar" style="width: 50%;"></div>
+                                    </div>
+                                    <span class="perf-value" id="macroAccuracy">50%</span>
+                                </div>
+                                <div class="perf-item" id="orderbookPerfItem" style="display: none;">
+                                    <span class="analyst-name">Order Book</span>
+                                    <div class="perf-bar-container">
+                                        <div class="perf-bar" id="orderbookPerfBar" style="width: 50%;"></div>
+                                    </div>
+                                    <span class="perf-value" id="orderbookAccuracy">50%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Correlation Matrix -->
+                        <div class="phase3-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="grid-3x3" aria-hidden="true"></i>
+                                    Correlation Matrix
+                                </h3>
+                                <span id="correlationStatus" class="badge badge-success">Diversified</span>
+                            </div>
+                            <div class="correlation-display">
+                                <!-- Dynamic correlation matrix - populated by JavaScript -->
+                                <div class="correlation-matrix" id="correlationMatrixContainer">
+                                    <div class="correlation-loading">Loading correlations...</div>
+                                </div>
+                                <div class="correlation-warning" id="correlationWarning" style="display: none;">
+                                    <i data-lucide="alert-triangle" aria-hidden="true"></i>
+                                    <span>High correlation detected between assets</span>
+                                </div>
+                                <div class="correlation-legend">
+                                    <span class="legend-item"><span class="legend-color corr-high"></span> Self (1.0)</span>
+                                    <span class="legend-item"><span class="legend-color corr-danger"></span> High (&gt;0.8)</span>
+                                    <span class="legend-item"><span class="legend-color corr-med"></span> Medium (0.5-0.8)</span>
+                                    <span class="legend-item"><span class="legend-color corr-low"></span> Low (&lt;0.5)</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Alerting Status -->
+                        <div class="phase3-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="bell-ring" aria-hidden="true"></i>
+                                    Alerting
+                                </h3>
+                                <span id="alertingStatus" class="badge badge-success">Active</span>
+                            </div>
+                            <div class="alerting-display">
+                                <div class="alert-channels">
+                                    <div class="channel-item">
+                                        <span class="channel-icon">S</span>
+                                        <span class="channel-name">Slack</span>
+                                        <span class="channel-status" id="slackStatus">-</span>
+                                    </div>
+                                    <div class="channel-item">
+                                        <span class="channel-icon">D</span>
+                                        <span class="channel-name">Discord</span>
+                                        <span class="channel-status" id="discordStatus">-</span>
+                                    </div>
+                                    <div class="channel-item">
+                                        <span class="channel-icon">E</span>
+                                        <span class="channel-name">Email</span>
+                                        <span class="channel-status" id="emailStatus">-</span>
+                                    </div>
+                                </div>
+                                <div class="recent-alerts" id="recentAlerts">
+                                    <div class="alert-item">No recent alerts</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Anomaly Detection -->
+                    <div class="phase3-card wide">
+                        <div class="card-header">
+                            <h3>
+                                <i data-lucide="scan" aria-hidden="true"></i>
+                                Anomaly Detection
+                            </h3>
+                            <span id="anomalyScore" class="badge badge-success">Normal</span>
+                        </div>
+                        <div class="anomaly-display">
+                            <div class="anomaly-meter">
+                                <div class="anomaly-bar">
+                                    <div class="anomaly-fill" id="anomalyMeter" style="width: 15%;"></div>
+                                    <div class="anomaly-threshold"></div>
+                                </div>
+                                <div class="anomaly-labels">
+                                    <span>Normal</span>
+                                    <span>Elevated</span>
+                                    <span>High</span>
+                                    <span>Critical</span>
+                                </div>
+                            </div>
+                            <div class="anomaly-details" id="anomalyDetails">
+                                <div class="anomaly-stat">
+                                    <span class="label">Score</span>
+                                    <span class="value" id="anomalyValue">0.15</span>
+                                </div>
+                                <div class="anomaly-stat">
+                                    <span class="label">Threshold</span>
+                                    <span class="value">0.70</span>
+                                </div>
+                                <div class="anomaly-stat">
+                                    <span class="label">Last Alert</span>
+                                    <span class="value" id="lastAnomalyAlert">Never</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Cost Optimization Section -->
+            <section id="cost-section" class="section cost-section" aria-labelledby="cost-heading">
+                <div class="section-header collapsible" data-section="cost">
+                    <h2 id="cost-heading" class="section-title">
+                        <i data-lucide="piggy-bank" aria-hidden="true"></i>
+                        Cost Optimization
+                    </h2>
+                    <button class="section-toggle" aria-expanded="true" aria-controls="cost-content">
+                        <i data-lucide="chevron-down" aria-hidden="true"></i>
+                    </button>
+                </div>
+
+                <div id="cost-content" class="section-content">
+                    <div class="cost-grid">
+                        <!-- API Cost Savings -->
+                        <div class="cost-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="trending-down" aria-hidden="true"></i>
+                                    API Cost Savings
+                                </h3>
+                                <span id="costSavingsPercent" class="badge badge-success">0%</span>
+                            </div>
+                            <div class="cost-display">
+                                <div class="cost-meter">
+                                    <div class="cost-bar">
+                                        <div class="cost-fill" id="costSavingsMeter" style="width: 0%;"></div>
+                                    </div>
+                                    <div class="cost-labels">
+                                        <span>0%</span>
+                                        <span>50%</span>
+                                        <span>100%</span>
+                                    </div>
+                                </div>
+                                <div class="cost-stats">
+                                    <div class="cost-stat">
+                                        <span class="label">Estimated Savings</span>
+                                        <span class="value" id="estimatedSavings">$0.00</span>
+                                    </div>
+                                    <div class="cost-stat">
+                                        <span class="label">Projected Monthly</span>
+                                        <span class="value" id="projectedMonthlyCost">$0.00</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Optimization Methods -->
+                        <div class="cost-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="settings-2" aria-hidden="true"></i>
+                                    Optimization Methods
+                                </h3>
+                                <span id="optimizationStatus" class="badge badge-info">Active</span>
+                            </div>
+                            <div class="optimization-methods">
+                                <div class="method-item" id="batchMethod">
+                                    <div class="method-info">
+                                        <span class="method-name">Batch Analysis</span>
+                                        <span class="method-desc">3 pairs in 1 call</span>
+                                    </div>
+                                    <div class="method-status">
+                                        <span class="status-indicator" id="batchStatus"></span>
+                                        <span class="status-text" id="batchStatusText">-</span>
+                                    </div>
+                                </div>
+                                <div class="method-item" id="hybridMethod">
+                                    <div class="method-info">
+                                        <span class="method-name">Hybrid Mode</span>
+                                        <span class="method-desc">Rules vs Claude</span>
+                                    </div>
+                                    <div class="method-status">
+                                        <span class="status-indicator" id="hybridStatus"></span>
+                                        <span class="status-text" id="hybridStatusText">-</span>
+                                    </div>
+                                </div>
+                                <div class="method-item" id="cacheMethod">
+                                    <div class="method-info">
+                                        <span class="method-name">Decision Cache</span>
+                                        <span class="method-desc">Reuse if stable</span>
+                                    </div>
+                                    <div class="method-status">
+                                        <span class="status-indicator" id="cacheStatus"></span>
+                                        <span class="status-text" id="cacheStatusText">-</span>
+                                    </div>
+                                </div>
+                                <div class="method-item" id="adaptiveMethod">
+                                    <div class="method-info">
+                                        <span class="method-name">Adaptive Schedule</span>
+                                        <span class="method-desc">Portfolio-based</span>
+                                    </div>
+                                    <div class="method-status">
+                                        <span class="status-indicator" id="adaptiveStatus"></span>
+                                        <span class="status-text" id="adaptiveStatusText">-</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- API Call Statistics -->
+                        <div class="cost-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="bar-chart" aria-hidden="true"></i>
+                                    API Statistics
+                                </h3>
+                                <span id="totalCallsBadge" class="badge">0 calls</span>
+                            </div>
+                            <div class="call-stats">
+                                <div class="call-stat">
+                                    <span class="label">Total Calls</span>
+                                    <span class="value" id="totalApiCalls">0</span>
+                                </div>
+                                <div class="call-stat">
+                                    <span class="label">Claude Decisions</span>
+                                    <span class="value" id="claudeDecisions">0</span>
+                                </div>
+                                <div class="call-stat">
+                                    <span class="label">Rule Decisions</span>
+                                    <span class="value" id="ruleDecisions">0</span>
+                                </div>
+                                <div class="call-stat">
+                                    <span class="label">Cache Hits</span>
+                                    <span class="value" id="cacheHits">0</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Hybrid Mode Breakdown -->
+                        <div class="cost-card">
+                            <div class="card-header">
+                                <h3>
+                                    <i data-lucide="git-branch" aria-hidden="true"></i>
+                                    Hybrid Breakdown
+                                </h3>
+                                <span id="hybridRatio" class="badge badge-info">-</span>
+                            </div>
+                            <div class="hybrid-breakdown">
+                                <div class="hybrid-bar-container">
+                                    <div class="hybrid-bar">
+                                        <div class="hybrid-rules" id="hybridRulesBar" style="width: 0%;"></div>
+                                        <div class="hybrid-claude" id="hybridClaudeBar" style="width: 100%;"></div>
+                                    </div>
+                                    <div class="hybrid-labels">
+                                        <span class="rules-label">Rules: <span id="hybridRulesPercent">0%</span></span>
+                                        <span class="claude-label">Claude: <span id="hybridClaudePercent">100%</span></span>
+                                    </div>
+                                </div>
+                                <div class="hybrid-stats">
+                                    <div class="hybrid-stat">
+                                        <span class="label">Rule-Based</span>
+                                        <span class="value" id="hybridRuleCount">0</span>
+                                    </div>
+                                    <div class="hybrid-stat">
+                                        <span class="label">Claude</span>
+                                        <span class="value" id="hybridClaudeCount">0</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Cost Comparison -->
+                    <div class="cost-card wide">
+                        <div class="card-header">
+                            <h3>
+                                <i data-lucide="scale" aria-hidden="true"></i>
+                                Cost Comparison
+                            </h3>
+                            <span id="costComparisonBadge" class="badge badge-success">Optimized</span>
+                        </div>
+                        <div class="cost-comparison">
+                            <div class="comparison-item">
+                                <div class="comparison-label">Without Optimization</div>
+                                <div class="comparison-value baseline" id="baselineCost">$12.00/month</div>
+                            </div>
+                            <div class="comparison-arrow">
+                                <i data-lucide="arrow-right" aria-hidden="true"></i>
+                            </div>
+                            <div class="comparison-item">
+                                <div class="comparison-label">With Optimization</div>
+                                <div class="comparison-value optimized" id="optimizedCost">$2.00/month</div>
+                            </div>
+                            <div class="comparison-savings">
+                                <span class="savings-label">Monthly Savings:</span>
+                                <span class="savings-value" id="monthlySavings">$10.00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            </main>
+        </div> <!-- End main-layout -->
+
+        <!-- Bottom Navigation (Mobile) -->
+        <nav class="bottom-nav" role="navigation" aria-label="Main navigation">
+            <a href="#metrics-section" class="bottom-nav-item active" data-section="metrics">
+                <i data-lucide="layout-dashboard" aria-hidden="true"></i>
+                <span>Overview</span>
+            </a>
+            <a href="#chart-section" class="bottom-nav-item" data-section="chart">
+                <i data-lucide="line-chart" aria-hidden="true"></i>
+                <span>Chart</span>
+            </a>
+            <a href="#trades-section" class="bottom-nav-item" data-section="trades">
+                <i data-lucide="repeat" aria-hidden="true"></i>
+                <span>Trades</span>
+            </a>
+            <a href="#phase2-section" class="bottom-nav-item" data-section="intel">
+                <i data-lucide="brain" aria-hidden="true"></i>
+                <span>Intel</span>
+            </a>
+            <a href="#cost-section" class="bottom-nav-item" data-section="cost">
+                <i data-lucide="piggy-bank" aria-hidden="true"></i>
+                <span>Cost</span>
+            </a>
+        </nav>
+
+        <!-- Floating Action Button -->
+        <button id="fabButton" class="fab" aria-label="Quick actions" aria-haspopup="true" aria-expanded="false">
+            <i data-lucide="plus" class="fab-icon" aria-hidden="true"></i>
+        </button>
+
+        <!-- FAB Menu -->
+        <div id="fabMenu" class="fab-menu" role="menu" aria-hidden="true">
+            <button class="fab-menu-item" id="fabTrigger" role="menuitem">
+                <i data-lucide="zap" aria-hidden="true"></i>
+                <span>Trigger Cycle</span>
+            </button>
+            <button class="fab-menu-item" id="fabPause" role="menuitem">
+                <i data-lucide="pause" aria-hidden="true"></i>
+                <span>Pause Trading</span>
+            </button>
+            <button class="fab-menu-item" id="fabRefresh" role="menuitem">
+                <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                <span>Refresh Data</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Auth Modal Overlay -->
+    <div id="authOverlay" class="auth-overlay" aria-hidden="true">
+        <div id="authModal" class="auth-modal" role="dialog" aria-labelledby="authTitle">
+            <!-- Close button (hidden on login/signup, shown on change password) -->
+            <button id="authClose" class="auth-close" aria-label="Close" style="display: none;">
+                <i data-lucide="x" aria-hidden="true"></i>
+            </button>
+
+            <!-- Modal Header -->
+            <div class="auth-header">
+                <div class="auth-logo">
+                    <i data-lucide="activity" aria-hidden="true"></i>
+                </div>
+                <h2 id="authTitle" class="auth-title">Sign In</h2>
+                <p id="authSubtitle" class="auth-subtitle">Access your trading dashboard</p>
+            </div>
+
+            <!-- Sign In Form -->
+            <form id="signinForm" class="auth-form">
+                <div class="form-group">
+                    <label for="signinEmail">Email</label>
+                    <div class="input-wrapper">
+                        <i data-lucide="mail" aria-hidden="true"></i>
+                        <input type="email" id="signinEmail" name="email"
+                               placeholder="trader@example.com" required autocomplete="email">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="signinPassword">Password</label>
+                    <div class="input-wrapper">
+                        <i data-lucide="lock" aria-hidden="true"></i>
+                        <input type="password" id="signinPassword" name="password"
+                               placeholder="Enter password" required autocomplete="current-password">
+                        <button type="button" class="toggle-password" aria-label="Toggle password visibility">
+                            <i data-lucide="eye" aria-hidden="true"></i>
+                        </button>
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary btn-full">
+                    <i data-lucide="log-in" aria-hidden="true"></i>
+                    Sign In
+                </button>
+            </form>
+
+            <!-- Sign Up Form (hidden by default) -->
+            <form id="signupForm" class="auth-form" style="display: none;">
+                <div class="form-group">
+                    <label for="signupEmail">Email</label>
+                    <div class="input-wrapper">
+                        <i data-lucide="mail" aria-hidden="true"></i>
+                        <input type="email" id="signupEmail" name="email"
+                               placeholder="trader@example.com" required autocomplete="email">
+                    </div>
+                </div>
+                <p class="form-hint">A secure password will be generated for you.</p>
+                <button type="submit" class="btn btn-primary btn-full">
+                    <i data-lucide="user-plus" aria-hidden="true"></i>
+                    Create Account
+                </button>
+            </form>
+
+            <!-- Change Password Form (hidden by default) -->
+            <form id="changePasswordForm" class="auth-form" style="display: none;">
+                <div class="form-group">
+                    <label for="currentPassword">Current Password</label>
+                    <div class="input-wrapper">
+                        <i data-lucide="lock" aria-hidden="true"></i>
+                        <input type="password" id="currentPassword" required autocomplete="current-password">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="newPassword">New Password</label>
+                    <div class="input-wrapper">
+                        <i data-lucide="key" aria-hidden="true"></i>
+                        <input type="password" id="newPassword" required minlength="8" autocomplete="new-password">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="confirmPassword">Confirm New Password</label>
+                    <div class="input-wrapper">
+                        <i data-lucide="key" aria-hidden="true"></i>
+                        <input type="password" id="confirmPassword" required minlength="8" autocomplete="new-password">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary btn-full">
+                    <i data-lucide="save" aria-hidden="true"></i>
+                    Update Password
+                </button>
+            </form>
+
+            <!-- Divider -->
+            <div id="authDivider" class="auth-divider">
+                <span>or</span>
+            </div>
+
+            <!-- Google Sign In -->
+            <div id="googleSignInContainer">
+                <button id="googleSignIn" type="button" class="btn btn-google">
+                    <svg class="google-icon" viewBox="0 0 24 24" width="20" height="20">
+                        <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                        <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                        <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                        <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                    </svg>
+                    Continue with Google
+                </button>
+            </div>
+
+            <!-- Footer Toggle -->
+            <div id="authFooter" class="auth-footer">
+                <span id="authToggleText">Don't have an account?</span>
+                <button type="button" id="authToggle" class="btn-text">Sign Up</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Password Generated Popup -->
+    <div id="passwordPopup" class="password-popup" aria-hidden="true" role="alertdialog">
+        <div class="popup-content">
+            <div class="popup-icon">
+                <i data-lucide="key" aria-hidden="true"></i>
+            </div>
+            <h3>Your Password</h3>
+            <p class="popup-message">Save this password securely - it won't be shown again!</p>
+            <div class="password-display">
+                <code id="generatedPassword">XXXXXX</code>
+                <button type="button" id="copyPassword" class="btn-icon" aria-label="Copy password">
+                    <i data-lucide="copy" aria-hidden="true"></i>
+                </button>
+            </div>
+            <button type="button" id="passwordConfirm" class="btn btn-primary btn-full">
+                I've Saved My Password
+            </button>
+        </div>
+    </div>
+
+    <!-- Chart Modal -->
+    <div id="chartModal" class="chart-modal" role="dialog" aria-labelledby="chartModalTitle" aria-hidden="true">
+        <div class="chart-modal-backdrop" onclick="closeChartModal()"></div>
+        <div class="chart-modal-content">
+            <div class="chart-modal-header">
+                <div class="chart-modal-title-section">
+                    <h2 id="chartModalTitle" class="chart-modal-title font-display">
+                        <span id="chartModalPair">BTC/AUD</span>
+                    </h2>
+                    <div class="chart-modal-price-info">
+                        <span class="chart-modal-price font-mono" id="chartModalPrice">$0.00</span>
+                        <span class="chart-modal-change neutral font-mono" id="chartModalChange">0.0%</span>
+                    </div>
+                </div>
+                <div class="chart-modal-controls">
+                    <div class="chart-time-selector" role="tablist" aria-label="Chart time range">
+                        <button class="chart-time-btn" data-interval="60" role="tab" aria-selected="true">1H</button>
+                        <button class="chart-time-btn" data-interval="240" role="tab" aria-selected="false">4H</button>
+                        <button class="chart-time-btn active" data-interval="1440" role="tab" aria-selected="false">1D</button>
+                        <button class="chart-time-btn" data-interval="10080" role="tab" aria-selected="false">1W</button>
+                        <button class="chart-time-btn" data-interval="43200" role="tab" aria-selected="false">1M</button>
+                    </div>
+                    <button class="chart-modal-close" onclick="closeChartModal()" aria-label="Close chart">
+                        <i data-lucide="x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="chart-modal-body">
+                <div class="chart-main-area">
+                    <div class="chart-full-container" id="chartFullContainer">
+                        <!-- Full chart will be rendered here -->
+                    </div>
+                    <div class="chart-volume-container" id="chartVolumeContainer">
+                        <!-- Volume chart will be rendered here -->
+                    </div>
+                </div>
+                <div class="chart-sidebar">
+                    <div class="sidebar-section">
+                        <h3 class="sidebar-heading font-display">POSITION</h3>
+                        <div class="position-details" id="chartPositionDetails">
+                            <div class="position-empty">No active position</div>
+                        </div>
+                    </div>
+                    <div class="sidebar-section">
+                        <h3 class="sidebar-heading font-display">AI ANALYSIS</h3>
+                        <div class="ai-analysis-content" id="chartAiAnalysis">
+                            <div class="analysis-empty">No recent analysis</div>
+                        </div>
+                    </div>
+                    <div class="sidebar-section">
+                        <h3 class="sidebar-heading font-display">RECENT TRADES</h3>
+                        <div class="recent-trades-list" id="chartRecentTrades">
+                            <div class="trades-empty">No trades on this pair</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="auth.js?v=20260114d"></script>
+    <script src="dashboard.js?v=20260114d"></script>
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+    </script>
+</body>
+</html>

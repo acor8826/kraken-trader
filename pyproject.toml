@@ -1,0 +1,14 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: tests that hit the real Binance testnet (require API keys)",
+]
+addopts = "-m 'not integration' --strict-markers -v"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["integrations.exchanges.binance"]
+omit = ["tests/*"]
