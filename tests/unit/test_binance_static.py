@@ -221,25 +221,25 @@ class TestName:
 # ----------------------------------------------------------------
 
 class TestRateLimitTracking:
-    def test_weight_recorded(self, binance_prod):
-        binance_prod._record_weight(10)
+    async def test_weight_recorded(self, binance_prod):
+        await binance_prod._record_weight(10)
         assert len(binance_prod._request_log) == 1
 
-    def test_old_entries_pruned(self, binance_prod, monkeypatch):
+    async def test_old_entries_pruned(self, binance_prod, monkeypatch):
         # Insert an entry 61 seconds ago
         old_time = time.time() - 61
         binance_prod._request_log.append((old_time, 100))
         # Record a new entry; the old one should be pruned
-        binance_prod._record_weight(1)
+        await binance_prod._record_weight(1)
         assert len(binance_prod._request_log) == 1
 
-    def test_warning_at_80pct(self, binance_prod, caplog):
+    async def test_warning_at_80pct(self, binance_prod, caplog):
         with caplog.at_level(logging.WARNING):
             # 961 weight > 1200 * 0.8 = 960
-            binance_prod._record_weight(961)
+            await binance_prod._record_weight(961)
         assert "rate limit approaching" in caplog.text.lower()
 
-    def test_no_warning_below_threshold(self, binance_prod, caplog):
+    async def test_no_warning_below_threshold(self, binance_prod, caplog):
         with caplog.at_level(logging.WARNING):
-            binance_prod._record_weight(100)
+            await binance_prod._record_weight(100)
         assert "rate limit" not in caplog.text.lower()

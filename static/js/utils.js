@@ -14,7 +14,7 @@
  * @param {number} decimals - Decimal places (default: 2)
  * @returns {string} - Formatted currency string
  */
-export function formatCurrency(value, currency = 'AUD', decimals = 2) {
+export function formatCurrency(value, currency = 'USD', decimals = 2) {
     if (value === null || value === undefined || isNaN(value)) {
         return '$0.00';
     }
@@ -216,7 +216,7 @@ export function getBaseCurrency(pair) {
  * @returns {string} - Quote currency
  */
 export function getQuoteCurrency(pair) {
-    return pair?.split('/')[1] || 'AUD';
+    return pair?.split('/')[1] || 'USDT';
 }
 
 // ========================================

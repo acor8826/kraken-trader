@@ -6,6 +6,9 @@
 .git
 .gitignore
 
+# Claude Code
+.claude/
+
 # Python
 __pycache__
 *.py[cod]
@@ -88,3 +91,7 @@ scripts/ralph/
 *.temp
 .DS_Store
 Thumbs.db
+
+# Problematic files (colon in filename breaks Linux tar)
+C:*
+*.log

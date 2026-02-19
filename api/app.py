@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 import logging
+import time
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -25,6 +26,35 @@ orchestrator = None
 scheduler = None
 settings = None
 alert_manager = None
+
+# Portfolio cache (avoid hammering Binance on every dashboard poll)
+_portfolio_cache = None
+_portfolio_cache_ts = 0.0
+_PORTFOLIO_CACHE_TTL = 30  # seconds
+
+
+async def _get_cached_portfolio() -> dict | None:
+    """Return cached portfolio dict, refreshing from exchange if stale.
+
+    Returns None when orchestrator is not initialised and no cache exists.
+    """
+    global _portfolio_cache, _portfolio_cache_ts
+
+    now = time.time()
+    if _portfolio_cache is not None and (now - _portfolio_cache_ts) < _PORTFOLIO_CACHE_TTL:
+        return _portfolio_cache
+
+    if not orchestrator:
+        return _portfolio_cache  # may be None
+
+    try:
+        portfolio = await orchestrator._get_portfolio_state()
+        _portfolio_cache = portfolio.to_dict()
+        _portfolio_cache_ts = now
+        return _portfolio_cache
+    except Exception as e:
+        logger.warning("Portfolio fetch failed, returning stale cache: %s", e)
+        return _portfolio_cache  # may be None
 
 
 def create_app(stage: Stage = None) -> FastAPI:
@@ -239,10 +269,10 @@ async def _create_orchestrator(settings: Settings):
             from agents.sentinel.circuit_breakers import CircuitBreakers
 
             circuit_breakers = CircuitBreakers(
-                max_daily_loss_pct=settings.config.get("circuit_breakers", {}).get("max_daily_loss_pct", 0.10),
-                max_daily_trades=settings.config.get("circuit_breakers", {}).get("max_daily_trades", 15),
-                volatility_threshold_pct=settings.config.get("circuit_breakers", {}).get("volatility_threshold_pct", 0.10),
-                consecutive_loss_limit=settings.config.get("circuit_breakers", {}).get("consecutive_loss_limit", 3)
+                max_daily_loss_pct=settings.risk.max_daily_loss_pct,
+                max_daily_trades=settings.risk.max_daily_trades,
+                volatility_threshold_pct=0.10,
+                consecutive_loss_limit=3
             )
             logger.info("✅ Circuit breakers initialized")
 
@@ -270,9 +300,10 @@ async def _create_orchestrator(settings: Settings):
         settings=settings
     )
 
-    # Attach cache and circuit breakers for access in routes
+    # Attach cache, circuit breakers, and LLM for access in routes
     orch._cache = cache
     orch._circuit_breakers = getattr(sentinel, 'circuit_breakers', None)
+    orch._llm = llm
 
     # =========================================================================
     # Alert Manager
@@ -495,16 +526,16 @@ def _register_routes(app: FastAPI):
         """Prometheus metrics endpoint"""
         from api.metrics import get_metrics_response, metrics_collector
 
-        # Update metrics from current state if orchestrator is available
-        if orchestrator:
+        # Update metrics from cached portfolio (no extra Binance API calls)
+        cached = await _get_cached_portfolio()
+        if cached:
             try:
-                portfolio = await orchestrator._get_portfolio_state()
                 metrics_collector.update_portfolio(
-                    value=portfolio.total_value,
-                    pnl=portfolio.total_pnl,
-                    pnl_pct=portfolio.pnl_percent,
-                    progress=portfolio.progress_to_target,
-                    position_count=len(portfolio.positions)
+                    value=cached.get("total_value", 0),
+                    pnl=cached.get("total_pnl", 0),
+                    pnl_pct=cached.get("total_pnl_pct", 0),
+                    progress=cached.get("progress_to_target", 0),
+                    position_count=len(cached.get("positions", {}))
                 )
             except Exception as e:
                 logger.debug(f"Metrics portfolio update failed: {e}")
@@ -513,15 +544,14 @@ def _register_routes(app: FastAPI):
     
     @app.get("/portfolio")
     async def get_portfolio():
-        """Get current portfolio state"""
+        """Get current portfolio state (cached for 30s)"""
         if not orchestrator:
             raise HTTPException(status_code=503, detail="Agent not initialized")
-        
-        try:
-            portfolio = await orchestrator._get_portfolio_state()
-            return portfolio.to_dict()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+
+        result = await _get_cached_portfolio()
+        if result is None:
+            raise HTTPException(status_code=500, detail="Portfolio data unavailable")
+        return result
     
     @app.get("/status")
     async def get_status():
@@ -601,22 +631,30 @@ def _register_routes(app: FastAPI):
         connection_id = await connection_manager.connect(websocket)
 
         try:
-            # Send initial portfolio state
-            if orchestrator:
-                portfolio = await orchestrator._get_portfolio_state()
-                await websocket.send_json({
-                    "type": "connection",
-                    "message": "Connected to portfolio stream",
-                    "connection_id": connection_id,
-                    "initial_portfolio": portfolio.to_dict()
-                })
+            # Send initial portfolio state (from cache to avoid extra API calls)
+            cached = await _get_cached_portfolio()
+            await websocket.send_json({
+                "type": "connection",
+                "message": "Connected to portfolio stream",
+                "connection_id": connection_id,
+                "initial_portfolio": cached
+            })
 
             # Keep connection alive and handle ping/pong
             while True:
                 try:
                     data = await websocket.receive_text()
+                    # Handle both plain text "ping" and JSON {"type":"ping"}
                     if data == "ping":
                         await websocket.send_text("pong")
+                    else:
+                        try:
+                            import json
+                            msg = json.loads(data)
+                            if isinstance(msg, dict) and msg.get("type") == "ping":
+                                await websocket.send_json({"type": "pong"})
+                        except (json.JSONDecodeError, TypeError):
+                            pass
                 except WebSocketDisconnect:
                     break
         except Exception as e:
@@ -848,8 +886,8 @@ def _register_routes(app: FastAPI):
                 }
             }
             # Include LLM token usage if available
-            if llm and hasattr(llm, 'get_usage_stats'):
-                result["token_usage"] = llm.get_usage_stats()
+            if orchestrator and getattr(orchestrator, '_llm', None) and hasattr(orchestrator._llm, 'get_usage_stats'):
+                result["token_usage"] = orchestrator._llm.get_usage_stats()
             return result
         except Exception as e:
             logger.error(f"Error getting cost optimization stats: {e}")

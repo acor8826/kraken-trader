@@ -117,7 +117,7 @@ const PairsPage = {
     renderPairCard(pair, index) {
         const symbol = pair.symbol || pair.pair || 'UNKNOWN';
         const base = symbol.split('/')[0] || symbol;
-        const quote = symbol.split('/')[1] || 'AUD';
+        const quote = symbol.split('/')[1] || 'USDT';
         const amount = pair.amount || pair.quantity || 0;
         const currentPrice = pair.current_price || pair.price || 0;
         const entryPrice = pair.entry_price || pair.avg_price || currentPrice;

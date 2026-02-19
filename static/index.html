@@ -26,30 +26,36 @@
             </div>
         </header>
 
-        <!-- Metrics Cards -->
+        <!-- Portfolio Summary Cards -->
         <section class="metrics-section">
             <div class="metric-card">
-                <div class="metric-label">Total P&L</div>
-                <div class="metric-value" id="totalPnL">$0.00</div>
-                <div class="metric-change" id="totalPnLPercent">0.00%</div>
+                <div class="metric-label">Cash (USDT)</div>
+                <div class="metric-value" id="cashValue">$0.00</div>
+                <div class="metric-subtext" id="cashSubtext">Available balance</div>
             </div>
 
             <div class="metric-card">
-                <div class="metric-label">Portfolio Value</div>
-                <div class="metric-value" id="portfolioValue">$1,000.00</div>
-                <div class="metric-change" id="portfolioPercent">0.00%</div>
+                <div class="metric-label">Holdings Value</div>
+                <div class="metric-value" id="holdingsValue">$0.00</div>
+                <div class="metric-subtext" id="activePositions">0 active positions</div>
             </div>
 
             <div class="metric-card">
-                <div class="metric-label">Win Rate</div>
-                <div class="metric-value" id="winRate">0%</div>
-                <div class="metric-subtext" id="winCount">0 / 0 trades</div>
+                <div class="metric-label">Total Value</div>
+                <div class="metric-value" id="portfolioValue">$0.00</div>
+                <div class="metric-subtext" id="portfolioPercent"></div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Bot P&L</div>
+                <div class="metric-value" id="totalPnL">--</div>
+                <div class="metric-change" id="totalPnLPercent"></div>
             </div>
 
             <div class="metric-card">
                 <div class="metric-label">Total Trades</div>
                 <div class="metric-value" id="totalTrades">0</div>
-                <div class="metric-subtext" id="activePositions">0 active positions</div>
+                <div class="metric-subtext" id="winCount">0 / 0 trades won</div>
             </div>
 
             <div class="metric-card">
@@ -57,11 +63,32 @@
                 <div class="metric-value" id="exposure">0%</div>
                 <div class="metric-subtext">max: 80%</div>
             </div>
+        </section>
 
-            <div class="metric-card">
-                <div class="metric-label">Target Progress</div>
-                <div class="metric-value" id="targetProgress">0%</div>
-                <div class="metric-subtext">$5,000 goal</div>
+        <!-- Holdings Breakdown -->
+        <section class="holdings-section">
+            <h2>Holdings</h2>
+            <div class="table-container">
+                <table class="trades-table">
+                    <thead>
+                        <tr>
+                            <th>Asset</th>
+                            <th>Amount</th>
+                            <th>Price</th>
+                            <th>Value (USDT)</th>
+                            <th>Entry Price</th>
+                            <th>Stop Loss</th>
+                            <th>Take Profit</th>
+                            <th>Est. Sell</th>
+                            <th>P&L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="holdingsBody">
+                        <tr class="loading-row">
+                            <td colspan="9">Loading holdings...</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </section>
 

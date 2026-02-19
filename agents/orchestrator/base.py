@@ -7,7 +7,7 @@ Manages workflow between all agents.
 
 from typing import List, Optional
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.interfaces import IAnalyst, IStrategist, IExecutor, ISentinel, IExchange, IMemory
 from core.models import Portfolio, Position, MarketIntel
@@ -93,13 +93,6 @@ class Orchestrator:
             # Update risk manager with portfolio value for drawdown tracking
             await self._update_risk_manager_portfolio(portfolio)
             
-            # Check if target reached
-            if portfolio.total_value >= portfolio.target_value:
-                logger.info("🎯 TARGET REACHED! Stopping trading.")
-                results["target_reached"] = True
-                await self._send_milestone_alert(portfolio, 100.0)
-                return results
-
             # Check portfolio milestones (every 10%)
             await self._check_milestones(portfolio)
             
@@ -166,38 +159,106 @@ class Orchestrator:
         return results
     
     async def _get_portfolio_state(self) -> Portfolio:
-        """Fetch and construct current portfolio state"""
+        """Fetch and construct current portfolio state.
+
+        Only builds positions for base assets of configured trading pairs
+        to avoid excessive API calls on accounts with many assets.
+        """
+        quote = self.settings.trading.quote_currency  # e.g. "USDT"
         balance = await self.exchange.get_balance()
-        
-        # Build positions
+
+        # Only track assets from configured pairs (e.g. BTC, ETH, SOL)
+        tracked_assets = {
+            pair.split("/")[0] for pair in self.settings.trading.pairs
+        }
+
+        # Get effective stop-loss percentage
+        effective_risk = self.settings.get_effective_risk()
+        default_sl_pct = effective_risk.stop_loss_pct
+        take_profit_multiplier = 2.0  # Risk:reward = 1:2
+
         positions = {}
-        for asset, amount in balance.items():
-            if asset in ["AUD", "total"] or amount <= 0:
+        for asset in tracked_assets:
+            amount = balance.get(asset, 0)
+            if amount <= 0:
                 continue
-            
-            # Get current price
+
+            pair = f"{asset}/{quote}"
+
             try:
-                ticker = await self.exchange.get_ticker(f"{asset}/AUD")
+                ticker = await self.exchange.get_ticker(pair)
                 current_price = ticker.get("price", 0)
             except:
                 current_price = 0
-            
-            # Get entry price from memory
+
             entry_price = await self.memory.get_entry_price(asset)
-            
+
+            # Bootstrap entry price for pre-existing positions
+            if entry_price is None and current_price > 0:
+                entry_price = current_price
+                await self.memory.set_entry_price(asset, current_price)
+                logger.info(f"Bootstrapped entry price for {asset}: ${current_price:,.2f}")
+
+            # Compute stop-loss and take-profit prices
+            stop_loss_price = None
+            take_profit_price = None
+            estimated_sell_date = None
+
+            if entry_price and entry_price > 0:
+                # Per-pair stop-loss from sentinel, or default
+                sl_pct = default_sl_pct
+                if hasattr(self.sentinel, '_get_stop_loss_for_pair'):
+                    sl_pct = self.sentinel._get_stop_loss_for_pair(pair)
+                tp_pct = sl_pct * take_profit_multiplier
+
+                stop_loss_price = round(entry_price * (1 - sl_pct), 2)
+                take_profit_price = round(entry_price * (1 + tp_pct), 2)
+
+                # Estimate sell date using ATR
+                if current_price > 0 and current_price < take_profit_price:
+                    try:
+                        ohlcv = await self.exchange.get_ohlcv(pair, interval=60, limit=24)
+                        atr = self._calculate_atr(ohlcv)
+                        if atr and atr > 0:
+                            distance = take_profit_price - current_price
+                            candles_to_target = distance / atr
+                            hours = max(1, candles_to_target)  # At least 1 hour
+                            est_date = datetime.now(timezone.utc) + timedelta(hours=hours)
+                            estimated_sell_date = est_date.isoformat()
+                    except Exception as e:
+                        logger.debug(f"ATR estimation failed for {asset}: {e}")
+
             positions[asset] = Position(
                 symbol=asset,
                 amount=amount,
                 entry_price=entry_price,
-                current_price=current_price
+                current_price=current_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                estimated_sell_date=estimated_sell_date
             )
-        
+
         return Portfolio(
-            available_quote=balance.get("AUD", 0),
+            available_quote=balance.get(quote, 0),
             positions=positions,
             initial_value=self.settings.trading.initial_capital,
             target_value=self.settings.trading.target_capital
         )
+
+    @staticmethod
+    def _calculate_atr(ohlcv, period: int = 14) -> Optional[float]:
+        """Calculate Average True Range from OHLCV candles."""
+        if not ohlcv or len(ohlcv) < 2:
+            return None
+        true_ranges = []
+        for i in range(1, len(ohlcv)):
+            high = ohlcv[i][2]
+            low = ohlcv[i][3]
+            prev_close = ohlcv[i - 1][4]
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            true_ranges.append(tr)
+        recent = true_ranges[-min(period, len(true_ranges)):]
+        return sum(recent) / len(recent) if recent else None
     
     def _supports_batch_mode(self) -> bool:
         """Check if strategist supports batch analysis."""

@@ -130,7 +130,7 @@ class BasicSentinel(ISentinel):
                 continue
 
             # Get stop loss for this pair (per-pair or default)
-            pair = f"{symbol}/AUD"
+            pair = f"{symbol}/{self.settings.trading.quote_currency}"
             stop_loss = self._get_stop_loss_for_pair(pair)
 
             # Calculate loss percentage

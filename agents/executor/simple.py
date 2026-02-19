@@ -43,7 +43,7 @@ class SimpleExecutor(IExecutor):
         
         # Get current balance for position sizing
         balance = await self.exchange.get_balance()
-        available_quote = balance.get("AUD", 0)
+        available_quote = balance.get(self.settings.trading.quote_currency, 0)
         
         for signal in plan.actionable_signals:
             try:

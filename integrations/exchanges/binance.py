@@ -7,6 +7,7 @@ exchange info caching, LOT_SIZE/PRICE_FILTER rounding, rate limiting,
 and server time synchronisation.
 """
 
+import asyncio
 import os
 import time
 import hmac
@@ -66,6 +67,13 @@ class BinanceExchange(IExchange):
         self._time_offset_ms: int = 0
         self._time_synced: bool = False
         self._request_log: deque = deque()
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Return a shared httpx.AsyncClient, creating it on first use."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=30)
+        return self._client
 
     @property
     def name(self) -> str:
@@ -114,12 +122,29 @@ class BinanceExchange(IExchange):
 
     # ------------------------------------------------------- rate limiting
 
-    def _record_weight(self, weight: int) -> None:
+    async def _record_weight(self, weight: int) -> None:
         now = time.time()
-        self._request_log.append((now, weight))
         cutoff = now - 60
         while self._request_log and self._request_log[0][0] < cutoff:
             self._request_log.popleft()
+        total = sum(w for _, w in self._request_log)
+
+        # Block if adding this request would exceed the limit
+        if total + weight > self.RATE_LIMIT_PER_MINUTE:
+            oldest_ts = self._request_log[0][0] if self._request_log else now
+            wait = 60 - (now - oldest_ts) + 0.5
+            logger.warning(
+                "Binance rate limit reached (%d + %d > %d). Waiting %.1f s",
+                total, weight, self.RATE_LIMIT_PER_MINUTE, wait,
+            )
+            await asyncio.sleep(wait)
+            # Prune again after sleeping
+            now = time.time()
+            cutoff = now - 60
+            while self._request_log and self._request_log[0][0] < cutoff:
+                self._request_log.popleft()
+
+        self._request_log.append((now, weight))
         total = sum(w for _, w in self._request_log)
         if total > self.RATE_LIMIT_PER_MINUTE * 0.8:
             logger.warning(
@@ -143,18 +168,27 @@ class BinanceExchange(IExchange):
         self, path: str, params: Optional[Dict[str, Any]] = None,
         weight_key: str = "ticker",
     ) -> Any:
-        """Unauthenticated GET request."""
+        """Unauthenticated GET request with retry."""
         url = f"{self.base_url}{path}"
-        self._record_weight(self._WEIGHTS.get(weight_key, 1))
+        await self._record_weight(self._WEIGHTS.get(weight_key, 1))
 
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-
-        if isinstance(data, dict) and "code" in data and data["code"] != 200:
-            raise Exception(f"Binance API error {data['code']}: {data.get('msg', '')}")
-        return data
+        client = await self._get_client()
+        last_exc = None
+        for attempt in range(3):
+            try:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, dict) and "code" in data and data["code"] != 200:
+                    raise Exception(f"Binance API error {data['code']}: {data.get('msg', '')}")
+                return data
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                last_exc = exc
+                wait = 2 ** attempt
+                logger.warning("Binance request %s failed (attempt %d): %s. Retrying in %ds",
+                               path, attempt + 1, exc, wait)
+                await asyncio.sleep(wait)
+        raise last_exc
 
     async def _signed_request(
         self, method: str, path: str,
@@ -178,23 +212,37 @@ class BinanceExchange(IExchange):
 
         url = f"{self.base_url}{path}?{qs}"
         headers = {"X-MBX-APIKEY": self.api_key}
-        self._record_weight(self._WEIGHTS.get(weight_key, 1))
+        await self._record_weight(self._WEIGHTS.get(weight_key, 1))
 
-        async with httpx.AsyncClient() as client:
-            if method == "GET":
-                resp = await client.get(url, headers=headers, timeout=30)
-            elif method == "POST":
-                resp = await client.post(url, headers=headers, timeout=30)
-            elif method == "DELETE":
-                resp = await client.delete(url, headers=headers, timeout=30)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
-            resp.raise_for_status()
-            data = resp.json()
-
-        if isinstance(data, dict) and "code" in data and data["code"] != 200:
-            raise Exception(f"Binance API error {data['code']}: {data.get('msg', '')}")
-        return data
+        client = await self._get_client()
+        last_exc = None
+        for attempt in range(3):
+            try:
+                if method == "GET":
+                    resp = await client.get(url, headers=headers)
+                elif method == "POST":
+                    resp = await client.post(url, headers=headers)
+                elif method == "DELETE":
+                    resp = await client.delete(url, headers=headers)
+                else:
+                    raise ValueError(f"Unsupported HTTP method: {method}")
+                resp.raise_for_status()
+                data = resp.json()
+                if isinstance(data, dict) and "code" in data and data["code"] != 200:
+                    raise Exception(f"Binance API error {data['code']}: {data.get('msg', '')}")
+                return data
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                last_exc = exc
+                wait = 2 ** attempt
+                logger.warning("Binance signed request %s failed (attempt %d): %s. Retrying in %ds",
+                               path, attempt + 1, exc, wait)
+                await asyncio.sleep(wait)
+                # Re-sign on retry (timestamp may be stale)
+                params["timestamp"] = self._server_timestamp_ms()
+                qs = "&".join(f"{k}={v}" for k, v in params.items())
+                qs += f"&signature={self._sign(qs)}"
+                url = f"{self.base_url}{path}?{qs}"
+        raise last_exc
 
     # ------------------------------------------- exchange info & rounding
 
@@ -271,25 +319,42 @@ class BinanceExchange(IExchange):
     # ----------------------------------------------------------- get_balance
 
     async def get_balance(self) -> Dict[str, float]:
-        """Non-zero balances keyed by asset, plus ``total`` in USDT."""
+        """Non-zero balances keyed by asset, plus ``total`` in USDT.
+
+        Only values assets that have a USDT trading pair among
+        commonly traded assets to avoid exhausting the rate limit
+        on testnet accounts that hold hundreds of small assets.
+        """
         result = await self._signed_request("GET", "/api/v3/account", weight_key="account")
+
+        # Significant-balance threshold to skip dust amounts
+        _DUST_THRESHOLD = 1e-6
 
         balance: Dict[str, float] = {}
         total_usdt = 0.0
+        assets_to_value: List[tuple] = []
+
         for entry in result.get("balances", []):
             amount = float(entry["free"]) + float(entry["locked"])
-            if amount <= 0:
+            if amount <= _DUST_THRESHOLD:
                 continue
             asset = entry["asset"]
             balance[asset] = amount
             if asset == "USDT":
                 total_usdt += amount
             else:
-                try:
-                    ticker = await self.get_ticker(f"{asset}/USDT")
-                    total_usdt += amount * ticker.get("price", 0)
-                except Exception:
-                    pass  # no USDT pair for this asset
+                assets_to_value.append((asset, amount))
+
+        # Only price the top assets by balance size to avoid rate limit abuse
+        # (Binance testnet gives 50+ non-zero assets)
+        assets_to_value.sort(key=lambda x: x[1], reverse=True)
+        for asset, amount in assets_to_value[:10]:
+            try:
+                ticker = await self.get_ticker(f"{asset}/USDT")
+                total_usdt += amount * ticker.get("price", 0)
+            except Exception:
+                pass  # no USDT pair for this asset
+
         balance["total"] = total_usdt
         return balance
 

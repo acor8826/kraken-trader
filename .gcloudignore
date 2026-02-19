@@ -20,4 +20,7 @@ requirements-bassie.txt
 docker-compose-bassie.yml
 .pytest_cache
 .mypy_cache
+.claude
+C:*
+*.log
 prd.json

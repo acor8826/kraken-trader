@@ -137,15 +137,15 @@ class TestEdgeCases:
 # ----------------------------------------------------------------
 
 class TestRateLimitEdge:
-    def test_burst_requests(self, binance_prod, caplog):
+    async def test_burst_requests(self, binance_prod, caplog):
         import logging
         with caplog.at_level(logging.WARNING):
-            # Simulate 1201 weight in a single recording
-            binance_prod._record_weight(1201)
+            # Simulate weight above 80% threshold but below limit
+            await binance_prod._record_weight(1100)
 
         assert "rate limit approaching" in caplog.text.lower()
 
-    def test_weight_recovery_after_60s(self, binance_prod, caplog):
+    async def test_weight_recovery_after_60s(self, binance_prod, caplog):
         import time as time_mod
         import logging
 
@@ -155,7 +155,7 @@ class TestRateLimitEdge:
 
         # Record small new weight; old entry should be pruned
         with caplog.at_level(logging.WARNING):
-            binance_prod._record_weight(1)
+            await binance_prod._record_weight(1)
 
         # Only new entry remains, total=1 which is below threshold
         assert len(binance_prod._request_log) == 1

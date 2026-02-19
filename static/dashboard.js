@@ -5,7 +5,10 @@ const CONFIG = {
     INITIAL_CAPITAL: 1000,
     TARGET_CAPITAL: 5000,
     CHART_MAX_POINTS: 100,
-    WS_URL: 'ws://localhost:8080/ws/portfolio',
+    get WS_URL() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        return `${protocol}//${window.location.host}/ws/portfolio`;
+    },
     WS_RECONNECT_INTERVAL: 5000 // 5 seconds
 };
 
@@ -160,7 +163,7 @@ function handleWebSocketMessage(data) {
 
     } else if (msgType === 'portfolio_update') {
         console.log('[WebSocket] Portfolio update received');
-        console.log(`[WebSocket] Total Value: ${data.total_value} AUD`);
+        console.log(`[WebSocket] Total Value: ${data.total_value} USDT`);
         console.log('[WebSocket] Holdings:', data.holdings);
         console.log('[WebSocket] Timestamp:', data.timestamp);
 
@@ -221,42 +224,28 @@ function updateLiveChartData(portfolioValue, timestamp) {
 }
 
 function updatePortfolioMetricsFromWebSocket(data) {
-    // Update portfolio value metric card
+    // Update total value
     const totalValue = data.total_value || 0;
     document.getElementById('portfolioValue').textContent = formatCurrency(totalValue);
 
-    const portfolioPercent = ((totalValue - CONFIG.INITIAL_CAPITAL) / CONFIG.INITIAL_CAPITAL) * 100;
-    const percentElement = document.getElementById('portfolioPercent');
-    percentElement.textContent = `${portfolioPercent >= 0 ? '+' : ''}${portfolioPercent.toFixed(2)}%`;
-    percentElement.className = `metric-change ${portfolioPercent >= 0 ? 'positive' : 'negative'}`;
+    // Update holdings from WebSocket data if available
+    const holdings = data.holdings || {};
+    const cash = data.available_quote || (state.portfolio ? state.portfolio.available_quote : 0) || 0;
+    const positionsValue = totalValue - cash;
 
-    // Update P&L
-    const totalPnL = totalValue - CONFIG.INITIAL_CAPITAL;
-    const pnlPercent = (totalPnL / CONFIG.INITIAL_CAPITAL) * 100;
+    document.getElementById('cashValue').textContent = formatCurrency(cash);
+    document.getElementById('holdingsValue').textContent = formatCurrency(positionsValue);
 
-    const pnlElement = document.getElementById('totalPnL');
-    pnlElement.textContent = formatCurrency(totalPnL);
-    pnlElement.className = totalPnL >= 0 ? 'metric-value positive' : 'metric-value negative';
-
-    const pnlPercentElement = document.getElementById('totalPnLPercent');
-    pnlPercentElement.textContent = `${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%`;
-    pnlPercentElement.className = `metric-change ${pnlPercent >= 0 ? 'positive' : 'negative'}`;
-
-    // Update target progress
-    const progress = ((totalValue - CONFIG.INITIAL_CAPITAL) / (CONFIG.TARGET_CAPITAL - CONFIG.INITIAL_CAPITAL)) * 100;
-    const cappedProgress = Math.min(progress, 100);
-    document.getElementById('targetProgress').textContent = `${cappedProgress.toFixed(1)}%`;
+    const cashPct = totalValue > 0 ? ((cash / totalValue) * 100).toFixed(1) : '0.0';
+    document.getElementById('portfolioPercent').textContent = `${cashPct}% cash`;
 }
 
 function updateWebSocketStatus(connected) {
-    const statusDot = document.getElementById('statusIndicator');
-    const statusText = document.getElementById('statusText');
+    // Only update the chart live/polling indicator — NOT the main connection status.
+    // The main status is driven by HTTP polling success in updateConnectionStatus().
     const chartStatus = document.getElementById('chartStatus');
 
     if (connected) {
-        statusDot.className = 'status-dot active';
-        statusText.textContent = 'Connected (Live)';
-
         if (chartStatus) {
             chartStatus.className = 'chart-status';
             chartStatus.innerHTML = `
@@ -265,9 +254,6 @@ function updateWebSocketStatus(connected) {
             `;
         }
     } else {
-        statusDot.className = 'status-dot error';
-        statusText.textContent = 'Disconnected';
-
         if (chartStatus) {
             chartStatus.className = 'chart-status offline';
             chartStatus.innerHTML = `
@@ -281,51 +267,68 @@ function updateWebSocketStatus(connected) {
 // Main Dashboard Load
 async function loadDashboard() {
     console.log('[Dashboard] Starting load cycle...');
-    try {
-        // Fetch all data in parallel
-        const results = await Promise.all([
-            fetchPortfolio(),
-            fetchTradeHistory(),
-            fetchPerformance(),
-            fetchStatus(),
-            fetchPhase2Info()
-        ]);
 
-        const [portfolio, history, performance, status, phase2Info] = results;
+    // Use allSettled so one failing endpoint doesn't block the entire dashboard
+    const results = await Promise.allSettled([
+        fetchPortfolio(),
+        fetchTradeHistory(),
+        fetchPerformance(),
+        fetchStatus(),
+        fetchPhase2Info()
+    ]);
 
-        state.portfolio = portfolio;
-        state.trades = history.trades || [];
-        state.performance = performance;
-        state.status = status;
-        state.phase2.info = phase2Info;
-        state.phase2.enabled = phase2Info && phase2Info.is_phase2;
-        state.lastError = null;
+    const portfolio = results[0].status === 'fulfilled' ? results[0].value : null;
+    const history   = results[1].status === 'fulfilled' ? results[1].value : null;
+    const performance = results[2].status === 'fulfilled' ? results[2].value : null;
+    const status    = results[3].status === 'fulfilled' ? results[3].value : null;
+    const phase2Info = results[4].status === 'fulfilled' ? results[4].value : null;
 
-        console.log('[Dashboard] Data loaded successfully, updating UI...');
+    // Log any individual failures without blocking the dashboard
+    results.forEach((r, i) => {
+        if (r.status === 'rejected') {
+            const names = ['portfolio', 'history', 'performance', 'status', 'phase2Info'];
+            console.warn(`[Dashboard] ${names[i]} fetch failed:`, r.reason?.message || r.reason);
+        }
+    });
 
-        // Update UI
-        updateMetrics();
-        updateTradesTable();
-        updateStatusPanel();
-        updateChart();
-        updateConnectionStatus();
-
-        // Update Phase 2 UI if enabled
-        await updatePhase2Section();
-
-        // Update Phase 3 UI if enabled
-        await updatePhase3Section();
-
-        // Update Cost Optimization section
-        await updateCostSection();
-
-        console.log('[Dashboard] Load cycle completed successfully');
-    } catch (error) {
-        console.error('[Dashboard] Load error:', error);
+    // Only show connection error if BOTH critical endpoints failed
+    if (!portfolio && !status) {
+        const error = results[0].reason || results[3].reason || new Error('All endpoints failed');
+        console.error('[Dashboard] Critical endpoints failed:', error);
         state.lastError = error;
         updateConnectionStatus(error);
-        showError(`Connection Error: ${error.message}`);
+        showError(`Connection Error: ${error.message || error}`);
+        return;
     }
+
+    // Update state with whatever data we have
+    if (portfolio) state.portfolio = portfolio;
+    if (history) state.trades = history.trades || [];
+    if (performance) state.performance = performance;
+    if (status) state.status = status;
+    state.phase2.info = phase2Info;
+    state.phase2.enabled = phase2Info && phase2Info.is_phase2;
+    state.lastError = null;
+
+    console.log('[Dashboard] Data loaded, updating UI...');
+
+    // Update UI
+    updateMetrics();
+    updateTradesTable();
+    updateStatusPanel();
+    updateChart();
+    updateConnectionStatus();
+
+    // Update Phase 2 UI if enabled
+    await updatePhase2Section();
+
+    // Update Phase 3 UI if enabled
+    await updatePhase3Section();
+
+    // Update Cost Optimization section
+    await updateCostSection();
+
+    console.log('[Dashboard] Load cycle completed successfully');
 }
 
 // API Calls with Detailed Logging
@@ -407,64 +410,157 @@ async function fetchStatus() {
 
 // Metrics Updates
 function updateMetrics() {
-    if (!state.portfolio || !state.performance) return;
+    if (!state.portfolio) return;
 
     const portfolio = state.portfolio;
-    const perf = state.performance;
+    const perf = state.performance || {};
 
-    // Total P&L Calculation
-    const totalValue = (portfolio.total_value || 0);
-    const totalPnL = totalValue - CONFIG.INITIAL_CAPITAL;
-    const pnlPercent = (totalPnL / CONFIG.INITIAL_CAPITAL) * 100;
+    const cash = portfolio.available_quote || 0;
+    const totalValue = portfolio.total_value || 0;
+    const positionsValue = portfolio.positions_value || (totalValue - cash);
 
-    // Update P&L metrics
-    const pnlElement = document.getElementById('totalPnL');
-    const pnlPercentElement = document.getElementById('totalPnLPercent');
+    // Cash (USDT)
+    document.getElementById('cashValue').textContent = formatCurrency(cash);
 
-    pnlElement.textContent = formatCurrency(totalPnL);
-    pnlElement.className = totalPnL >= 0 ? 'metric-value positive' : 'metric-value negative';
+    // Holdings Value
+    document.getElementById('holdingsValue').textContent = formatCurrency(positionsValue);
 
-    pnlPercentElement.textContent = `${pnlPercent >= 0 ? '+' : ''}${pnlPercent.toFixed(2)}%`;
-    pnlPercentElement.className = `metric-change ${pnlPercent >= 0 ? 'positive' : 'negative'}`;
-
-    // Portfolio Value
-    document.getElementById('portfolioValue').textContent = formatCurrency(totalValue);
-    const portfolioPercent = ((totalValue - CONFIG.INITIAL_CAPITAL) / CONFIG.INITIAL_CAPITAL) * 100;
-    document.getElementById('portfolioPercent').textContent = `${portfolioPercent >= 0 ? '+' : ''}${portfolioPercent.toFixed(2)}%`;
-    document.getElementById('portfolioPercent').className = `metric-change ${portfolioPercent >= 0 ? 'positive' : 'negative'}`;
-
-    // Win Rate
-    const totalTrades = perf.total_trades || 0;
-    const winRate = perf.win_rate ? (perf.win_rate * 100) : 0;
-    const winningTrades = perf.winning_trades || 0;
-
-    document.getElementById('winRate').textContent = `${winRate.toFixed(1)}%`;
-    document.getElementById('winCount').textContent = `${winningTrades} / ${totalTrades} trades`;
-
-    // Total Trades
-    document.getElementById('totalTrades').textContent = totalTrades;
-
-    // Active Positions
+    // Active Positions count
     const positionsObj = portfolio.positions || {};
     const positionsArray = Object.values(positionsObj);
     const activePositions = positionsArray.filter(p => p.amount > 0).length;
-    document.getElementById('activePositions').textContent = `${activePositions} active positions`;
+    document.getElementById('activePositions').textContent = `${activePositions} active position${activePositions !== 1 ? 's' : ''}`;
+
+    // Total Value
+    document.getElementById('portfolioValue').textContent = formatCurrency(totalValue);
+    const cashPct = totalValue > 0 ? ((cash / totalValue) * 100).toFixed(1) : '0.0';
+    document.getElementById('portfolioPercent').textContent = `${cashPct}% cash`;
+
+    // Bot P&L — only show if the bot has actually traded (entry_price exists on any position)
+    const pnlElement = document.getElementById('totalPnL');
+    const pnlPercentElement = document.getElementById('totalPnLPercent');
+    const hasAnyEntry = positionsArray.some(p => p.entry_price != null);
+    const totalTrades = perf.total_trades || 0;
+
+    if (totalTrades > 0 || hasAnyEntry) {
+        const botPnl = portfolio.total_pnl || 0;
+        const botPnlPct = portfolio.total_pnl_pct || 0;
+        pnlElement.textContent = formatCurrency(botPnl);
+        pnlElement.className = botPnl >= 0 ? 'metric-value positive' : 'metric-value negative';
+        pnlPercentElement.textContent = `${botPnlPct >= 0 ? '+' : ''}${botPnlPct.toFixed(2)}%`;
+        pnlPercentElement.className = `metric-change ${botPnlPct >= 0 ? 'positive' : 'negative'}`;
+    } else {
+        pnlElement.textContent = '--';
+        pnlElement.className = 'metric-value';
+        pnlPercentElement.textContent = 'No trades yet';
+        pnlPercentElement.className = 'metric-change';
+    }
+
+    // Total Trades
+    document.getElementById('totalTrades').textContent = totalTrades;
+    const winningTrades = perf.winning_trades || 0;
+    document.getElementById('winCount').textContent = `${winningTrades} / ${totalTrades} trades won`;
 
     // Current Exposure
-    const totalQuote = portfolio.total_value || 0;
-    const investedAmount = totalQuote - (portfolio.available_quote || 0);
-    const exposure = totalQuote > 0 ? (investedAmount / totalQuote) * 100 : 0;
-
+    const exposure = totalValue > 0 ? (positionsValue / totalValue) * 100 : 0;
     document.getElementById('exposure').textContent = `${exposure.toFixed(1)}%`;
 
-    // Target Progress
-    const progress = ((totalValue - CONFIG.INITIAL_CAPITAL) / (CONFIG.TARGET_CAPITAL - CONFIG.INITIAL_CAPITAL)) * 100;
-    const cappedProgress = Math.min(progress, 100);
-
-    document.getElementById('targetProgress').textContent = `${cappedProgress.toFixed(1)}%`;
+    // Update holdings table
+    updateHoldingsTable();
 
     // Store for chart
     updateChartData(totalValue);
+}
+
+// Holdings Table
+function updateHoldingsTable() {
+    const tbody = document.getElementById('holdingsBody');
+    if (!tbody || !state.portfolio) return;
+
+    const positions = state.portfolio.positions || {};
+    const entries = Object.entries(positions).filter(([, p]) => p.amount > 0);
+
+    if (entries.length === 0) {
+        tbody.innerHTML = '<tr class="empty-state"><td colspan="9">No holdings</td></tr>';
+        return;
+    }
+
+    const html = entries.map(([symbol, pos]) => {
+        const amount = pos.amount || 0;
+        const price = pos.current_price || 0;
+        const value = amount * price;
+        const entryPrice = pos.entry_price;
+
+        // Stop loss
+        const slPrice = pos.stop_loss_price;
+        let slHtml = '<span style="color: var(--text-secondary);">--</span>';
+        if (slPrice != null) {
+            slHtml = `<span style="color: #ef4444;">${formatCurrency(slPrice)}</span>`;
+        }
+
+        // Take profit
+        const tpPrice = pos.take_profit_price;
+        let tpHtml = '<span style="color: var(--text-secondary);">--</span>';
+        if (tpPrice != null) {
+            tpHtml = `<span style="color: #10b981;">${formatCurrency(tpPrice)}</span>`;
+        }
+
+        // Estimated sell date
+        const estSell = pos.estimated_sell_date;
+        let estHtml = '<span style="color: var(--text-secondary);">--</span>';
+        if (estSell) {
+            estHtml = formatEstimatedSell(estSell);
+        }
+
+        // P&L
+        let pnlHtml = '<span style="color: var(--text-secondary);">--</span>';
+        if (entryPrice != null && entryPrice > 0) {
+            const pnl = (price - entryPrice) * amount;
+            const pnlPct = ((price - entryPrice) / entryPrice) * 100;
+            const pnlClass = pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
+            const sign = pnl >= 0 ? '+' : '';
+            pnlHtml = `<span class="${pnlClass}">${sign}${formatCurrency(pnl)} (${sign}${pnlPct.toFixed(2)}%)</span>`;
+        }
+
+        return `
+            <tr>
+                <td><strong>${symbol}</strong></td>
+                <td>${amount.toFixed(6)}</td>
+                <td>${formatCurrency(price)}</td>
+                <td>${formatCurrency(value)}</td>
+                <td>${entryPrice != null ? formatCurrency(entryPrice) : '<span style="color: var(--text-secondary);">--</span>'}</td>
+                <td>${slHtml}</td>
+                <td>${tpHtml}</td>
+                <td>${estHtml}</td>
+                <td>${pnlHtml}</td>
+            </tr>
+        `;
+    }).join('');
+
+    tbody.innerHTML = html;
+}
+
+// Format estimated sell date as relative time
+function formatEstimatedSell(isoString) {
+    try {
+        const target = new Date(isoString);
+        const now = new Date();
+        const diffMs = target - now;
+        if (diffMs <= 0) return '<span style="color: #f59e0b;">Due now</span>';
+
+        const hours = diffMs / (1000 * 60 * 60);
+        if (hours < 1) {
+            const mins = Math.round(hours * 60);
+            return `<span style="color: #10b981;">~${mins}m</span>`;
+        } else if (hours < 24) {
+            return `<span style="color: #10b981;">~${Math.round(hours)}h</span>`;
+        } else {
+            const days = Math.round(hours / 24);
+            return `<span style="color: #10b981;">~${days}d</span>`;
+        }
+    } catch {
+        return '<span style="color: var(--text-secondary);">--</span>';
+    }
 }
 
 // Chart Data Management
@@ -501,7 +597,7 @@ function updateChart() {
         labels: state.chartData.timestamps,
         datasets: [
             {
-                label: 'Portfolio Value (AUD)',
+                label: 'Portfolio Value (USDT)',
                 data: state.chartData.portfolioValues,
                 borderColor: '#00d4ff',
                 backgroundColor: 'rgba(0, 212, 255, 0.1)',
@@ -749,9 +845,9 @@ async function resumeTrading() {
 
 // Utility Functions
 function formatCurrency(value) {
-    return new Intl.NumberFormat('en-AU', {
+    return new Intl.NumberFormat('en-US', {
         style: 'currency',
-        currency: 'AUD',
+        currency: 'USD',
         minimumFractionDigits: 2,
         maximumFractionDigits: 2
     }).format(value);

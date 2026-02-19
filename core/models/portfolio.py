@@ -18,6 +18,9 @@ class Position:
     amount: float                        # Amount held
     entry_price: Optional[float] = None  # Average entry price
     current_price: Optional[float] = None
+    stop_loss_price: Optional[float] = None
+    take_profit_price: Optional[float] = None
+    estimated_sell_date: Optional[str] = None  # ISO format string
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     @property
@@ -47,6 +50,9 @@ class Position:
             "amount": self.amount,
             "entry_price": self.entry_price,
             "current_price": self.current_price,
+            "stop_loss_price": self.stop_loss_price,
+            "take_profit_price": self.take_profit_price,
+            "estimated_sell_date": self.estimated_sell_date,
             "value_quote": self.value_quote,
             "unrealized_pnl": self.unrealized_pnl,
             "unrealized_pnl_pct": self.unrealized_pnl_pct
@@ -58,7 +64,7 @@ class Portfolio:
     """
     Complete portfolio state.
     """
-    quote_currency: str = "AUD"          # Base currency for valuation
+    quote_currency: str = "USDT"         # Base currency for valuation
     available_quote: float = 0.0         # Available cash
     positions: Dict[str, Position] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
