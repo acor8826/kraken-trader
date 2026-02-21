@@ -30,6 +30,29 @@ class TradingConfig:
     target_capital: float = 5000.0
     check_interval_minutes: int = 60
 
+    @classmethod
+    def from_env(cls) -> "TradingConfig":
+        """Load trading config from environment variables"""
+        # Parse trading pairs from semicolon-separated string
+        pairs_str = os.getenv("TRADING_PAIRS", "")
+        if pairs_str:
+            pairs = pairs_str.split(";")
+        else:
+            # Default pairs based on quote currency
+            quote = os.getenv("QUOTE_CURRENCY", "USDT")
+            if quote == "AUD":
+                pairs = ["BTC/AUD", "ETH/AUD", "SOL/AUD"]
+            else:
+                pairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+        
+        return cls(
+            pairs=pairs,
+            quote_currency=os.getenv("QUOTE_CURRENCY", "USDT"),
+            initial_capital=float(os.getenv("INITIAL_CAPITAL", "1000")),
+            target_capital=float(os.getenv("TARGET_CAPITAL", "5000")),
+            check_interval_minutes=int(os.getenv("CHECK_INTERVAL_MINUTES", "60"))
+        )
+
 
 @dataclass
 class RiskConfig:
@@ -335,7 +358,7 @@ class Settings:
 
         return cls(
             stage=stage,
-            trading=TradingConfig(),
+            trading=TradingConfig.from_env(),
             risk=RiskConfig(),
             features=FeatureFlags.for_stage(stage),
             exchange=ExchangeConfig.from_env(),
