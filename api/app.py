@@ -907,8 +907,8 @@ def _register_routes(app: FastAPI):
                 }
             }
             # Include LLM token usage if available
-            if llm and hasattr(llm, 'get_usage_stats'):
-                result["token_usage"] = llm.get_usage_stats()
+            if orchestrator.llm and hasattr(orchestrator.llm, 'get_usage_stats'):
+                result["token_usage"] = orchestrator.llm.get_usage_stats()
             return result
         except Exception as e:
             logger.error(f"Error getting cost optimization stats: {e}")
