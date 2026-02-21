@@ -18,7 +18,7 @@ try {
     $json = $response | ConvertFrom-Json
     
     if ($json.stage -eq "stage2") {
-        Write-Host "   ✓ Stage: stage2 (correct!)" -ForegroundColor Green
+        Write-Host "   [OK] Stage: stage2 (correct!)" -ForegroundColor Green
     } else {
         Write-Host "   ✗ Stage: $($json.stage) (should be stage2)" -ForegroundColor Red
         $allPassed = $false
