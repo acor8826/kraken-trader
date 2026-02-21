@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0A0D14">
+    <meta name="description" content="Kraken Trading Agent - Autonomous crypto trading dashboard">
+    <title>Kraken Trading Agent</title>
+
+    <!-- Fonts - Cyberpunk Fintech -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+    <!-- Icons - Lucide -->
+    <script src="https://unpkg.com/lucide@0.294.0/dist/umd/lucide.min.js"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+
+    <!-- TradingView Lightweight Charts -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css?v=20260114shell">
+</head>
+<body data-theme="dark">
+    <!-- Skip Link -->
+    <a href="#app" class="skip-link">Skip to main content</a>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container" role="alert" aria-live="polite"></div>
+
+    <!-- ============================================================
+         COMMAND HEADER - Persistent Telemetry Strip
+         ============================================================ -->
+    <header id="app-header" class="command-header" role="banner">
+        <!-- Left: Menu + Brand -->
+        <div class="header-segment header-brand-segment">
+            <button id="menu-toggle" class="menu-toggle" aria-label="Open navigation" aria-expanded="false">
+                <span class="menu-bar"></span>
+                <span class="menu-bar"></span>
+                <span class="menu-bar"></span>
+            </button>
+            <div class="brand-mark">
+                <div class="brand-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                    </svg>
+                </div>
+                <span class="brand-text font-display">KRAKEN</span>
+            </div>
+        </div>
+
+        <!-- Center: Data Tiles (Telemetry Strip) -->
+        <div class="header-segment header-telemetry">
+            <!-- Portfolio Value -->
+            <div class="telemetry-tile" data-tile="portfolio">
+                <div class="tile-glow"></div>
+                <span class="tile-label font-display">PORTFOLIO</span>
+                <span class="tile-value font-mono" id="tile-portfolio">$1,000.00</span>
+            </div>
+
+            <!-- Separator -->
+            <div class="telemetry-divider"></div>
+
+            <!-- Net P&L -->
+            <div class="telemetry-tile" data-tile="pnl">
+                <div class="tile-glow"></div>
+                <span class="tile-label font-display">P&L</span>
+                <div class="tile-value-group">
+                    <span class="tile-value font-mono profit" id="tile-pnl">$0.00</span>
+                    <span class="tile-badge font-mono" id="tile-pnl-pct">0.0%</span>
+                </div>
+            </div>
+
+            <!-- Separator -->
+            <div class="telemetry-divider"></div>
+
+            <!-- Target Progress -->
+            <div class="telemetry-tile" data-tile="target">
+                <div class="tile-glow"></div>
+                <span class="tile-label font-display">TARGET</span>
+                <div class="tile-progress-wrap">
+                    <div class="tile-progress-bar">
+                        <div class="tile-progress-fill" id="tile-target-bar" style="width: 0%;"></div>
+                    </div>
+                    <span class="tile-value font-mono" id="tile-target">0%</span>
+                </div>
+            </div>
+
+            <!-- Separator -->
+            <div class="telemetry-divider"></div>
+
+            <!-- AI Status -->
+            <div class="telemetry-tile" data-tile="ai">
+                <div class="tile-glow"></div>
+                <span class="tile-label font-display">AI</span>
+                <div class="tile-status-group">
+                    <span class="status-pulse" id="ai-pulse"></span>
+                    <span class="tile-value font-mono status-active" id="tile-ai-status">ACTIVE</span>
+                </div>
+            </div>
+
+            <!-- Separator -->
+            <div class="telemetry-divider"></div>
+
+            <!-- Next Cycle Countdown -->
+            <div class="telemetry-tile countdown-tile" data-tile="countdown">
+                <div class="tile-glow countdown-glow"></div>
+                <span class="tile-label font-display">NEXT</span>
+                <div class="countdown-display">
+                    <span class="countdown-value font-mono" id="tile-countdown">--:--</span>
+                    <svg class="countdown-ring" viewBox="0 0 32 32">
+                        <circle class="ring-bg" cx="16" cy="16" r="14"/>
+                        <circle class="ring-progress" id="countdown-ring" cx="16" cy="16" r="14"
+                                stroke-dasharray="88 88" stroke-dashoffset="0"/>
+                    </svg>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right: Actions -->
+        <div class="header-segment header-actions">
+            <div id="connection-indicator" class="connection-indicator disconnected" title="Disconnected">
+                <span class="connection-dot"></span>
+            </div>
+            <button id="theme-toggle" class="action-btn" aria-label="Toggle theme" title="Toggle theme">
+                <i data-lucide="sun" class="icon-sun"></i>
+                <i data-lucide="moon" class="icon-moon"></i>
+            </button>
+            <button id="refresh-btn" class="action-btn" aria-label="Refresh data" title="Refresh">
+                <i data-lucide="refresh-cw"></i>
+            </button>
+            <button id="trigger-btn" class="action-btn accent" aria-label="Trigger cycle" title="Trigger cycle">
+                <i data-lucide="zap"></i>
+            </button>
+        </div>
+    </header>
+
+    <!-- ============================================================
+         NAVIGATION SIDEBAR - Slide-out Panel
+         ============================================================ -->
+    <nav id="nav-sidebar" class="nav-sidebar" role="navigation" aria-label="Main navigation">
+        <div class="nav-header">
+            <div class="nav-brand">
+                <div class="nav-brand-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                    </svg>
+                </div>
+                <div class="nav-brand-text">
+                    <span class="nav-title font-display">KRAKEN</span>
+                    <span class="nav-subtitle">Trading Agent</span>
+                </div>
+            </div>
+            <button id="nav-close" class="nav-close" aria-label="Close navigation">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+
+        <div class="nav-content">
+            <div class="nav-section">
+                <span class="nav-section-label font-display">MAIN</span>
+                <a href="#/" class="nav-item active" data-path="/">
+                    <i data-lucide="layout-dashboard"></i>
+                    <span>Dashboard</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#/pairs" class="nav-item" data-path="/pairs">
+                    <i data-lucide="candlestick-chart"></i>
+                    <span>Trading Pairs</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#/trades" class="nav-item" data-path="/trades">
+                    <i data-lucide="history"></i>
+                    <span>Trade History</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#/pnl" class="nav-item" data-path="/pnl">
+                    <i data-lucide="trending-up"></i>
+                    <span>P&L Breakdown</span>
+                    <span class="nav-indicator"></span>
+                </a>
+            </div>
+
+            <div class="nav-section">
+                <span class="nav-section-label font-display">INTELLIGENCE</span>
+                <a href="#/agents" class="nav-item" data-path="/agents">
+                    <i data-lucide="brain"></i>
+                    <span>Agents</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#/metrics" class="nav-item" data-path="/metrics">
+                    <i data-lucide="bar-chart-3"></i>
+                    <span>Metrics</span>
+                    <span class="nav-indicator"></span>
+                </a>
+            </div>
+
+            <div class="nav-section">
+                <span class="nav-section-label font-display">SYSTEM</span>
+                <a href="#/costs" class="nav-item" data-path="/costs">
+                    <i data-lucide="piggy-bank"></i>
+                    <span>Cost Optimization</span>
+                    <span class="nav-indicator"></span>
+                </a>
+                <a href="#/settings" class="nav-item" data-path="/settings">
+                    <i data-lucide="settings"></i>
+                    <span>Settings</span>
+                    <span class="nav-indicator"></span>
+                </a>
+            </div>
+        </div>
+
+        <div class="nav-footer">
+            <div class="nav-status">
+                <span class="nav-status-dot" id="nav-status-dot"></span>
+                <span class="nav-status-text" id="nav-status-text">Connecting...</span>
+            </div>
+            <div class="nav-version">
+                <span>v2.0.0</span>
+                <span class="nav-stage font-mono">STAGE 2</span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Sidebar Overlay -->
+    <div id="nav-overlay" class="nav-overlay" aria-hidden="true"></div>
+
+    <!-- ============================================================
+         MAIN CONTENT AREA - Dynamic Page Container
+         ============================================================ -->
+    <main id="app" class="app-main" role="main">
+        <!-- Pages will be dynamically loaded here -->
+        <div class="page-loading">
+            <div class="loading-spinner">
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+                <div class="spinner-ring"></div>
+            </div>
+            <span class="loading-text font-display">INITIALIZING</span>
+        </div>
+    </main>
+
+    <!-- ============================================================
+         SCRIPTS
+         ============================================================ -->
+    <!-- Auth (if needed) -->
+    <script src="auth.js"></script>
+
+    <!-- Main App Entry Point (ES6 Module) -->
+    <script type="module" src="js/app.js"></script>
+
+    <!-- Fallback for icons -->
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            if (window.lucide) {
+                lucide.createIcons();
+            }
+        });
+    </script>
+</body>
+</html>

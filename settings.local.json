@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "mcp__*",
+      "WebFetch(domain:api.kraken.com)",
+      "WebFetch(domain:api.binance.com)",
+      "WebFetch(domain:testnet.binance.vision)",
+      "WebFetch(domain:api.anthropic.com)",
+      "WebFetch(domain:pro.kraken.com)"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "trading": {
+    "check_interval_minutes": 15,
+    "min_hold_time_hours": 0.5,
+    "pairs": [
+      "BTC/AUD",
+      "ETH/AUD",
+      "SOL/AUD"
+    ]
+  },
+  "volatility": {
+    "atr_period": 7,
+    "min_candles_required": 7,
+    "timeframe": "15m",
+    "fallback_enabled": true
+  },
+  "risk": {
+    "max_position_pct": 0.25,
+    "max_total_exposure_pct": 0.9,
+    "min_confidence": 0.6,
+    "stop_loss_multiplier": 1.5,
+    "take_profit_multiplier": 2.0
+  },
+  "features": {
+    "use_volatility_stops": true,
+    "enable_limit_orders": false,
+    "aggressive_mode": true
+  }
+}

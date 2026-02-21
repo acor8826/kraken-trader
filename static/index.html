@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kraken Trading Agent - Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>Kraken Trading Agent</h1>
+                <div class="header-status">
+                    <span id="statusIndicator" class="status-dot"></span>
+                    <span id="statusText">Loading...</span>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button id="pauseBtn" class="btn btn-secondary" title="Pause trading">Pause</button>
+                <button id="resumeBtn" class="btn btn-secondary" style="display:none;" title="Resume trading">Resume</button>
+                <button id="triggerBtn" class="btn btn-primary" title="Trigger manual trading cycle">Trigger Cycle</button>
+                <button id="refreshBtn" class="btn btn-secondary" title="Refresh data">Refresh</button>
+            </div>
+        </header>
+
+        <!-- Metrics Cards -->
+        <section class="metrics-section">
+            <div class="metric-card">
+                <div class="metric-label">Total P&L</div>
+                <div class="metric-value" id="totalPnL">$0.00</div>
+                <div class="metric-change" id="totalPnLPercent">0.00%</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Portfolio Value</div>
+                <div class="metric-value" id="portfolioValue">$1,000.00</div>
+                <div class="metric-change" id="portfolioPercent">0.00%</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Win Rate</div>
+                <div class="metric-value" id="winRate">0%</div>
+                <div class="metric-subtext" id="winCount">0 / 0 trades</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Total Trades</div>
+                <div class="metric-value" id="totalTrades">0</div>
+                <div class="metric-subtext" id="activePositions">0 active positions</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Current Exposure</div>
+                <div class="metric-value" id="exposure">0%</div>
+                <div class="metric-subtext">max: 80%</div>
+            </div>
+
+            <div class="metric-card">
+                <div class="metric-label">Target Progress</div>
+                <div class="metric-value" id="targetProgress">0%</div>
+                <div class="metric-subtext">$5,000 goal</div>
+            </div>
+        </section>
+
+        <!-- Performance Chart -->
+        <section class="chart-section">
+            <div class="chart-header">
+                <h2>Portfolio Performance</h2>
+                <span id="chartStatus" class="chart-status">
+                    <span class="live-indicator"></span>
+                    Live Updates
+                </span>
+            </div>
+            <div class="chart-container">
+                <canvas id="performanceChart"></canvas>
+            </div>
+        </section>
+
+        <!-- Trade History Table -->
+        <section class="trades-section">
+            <h2>Recent Trades</h2>
+            <div class="table-container">
+                <table class="trades-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Pair</th>
+                            <th>Action</th>
+                            <th>Price</th>
+                            <th>Amount</th>
+                            <th>Status</th>
+                            <th>P&L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tradesBody">
+                        <tr class="loading-row">
+                            <td colspan="7">Loading trades...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Agent Status -->
+        <section class="status-section">
+            <h2>Agent Status</h2>
+            <div class="status-details">
+                <div class="status-item">
+                    <span class="label">Stage:</span>
+                    <span id="stage" class="value">-</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Mode:</span>
+                    <span id="mode" class="value">-</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Next Cycle:</span>
+                    <span id="nextCycle" class="value">-</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Cycles Run:</span>
+                    <span id="cycleCount" class="value">-</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Trading Status:</span>
+                    <span id="tradingStatus" class="value">-</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Phase 2 Features Section -->
+        <section class="phase2-section" id="phase2Section">
+            <h2>Phase 2 Intelligence</h2>
+
+            <!-- Analyst Signals -->
+            <div class="phase2-grid">
+                <div class="phase2-card">
+                    <div class="card-header">
+                        <h3>Analyst Signals</h3>
+                        <span id="analystCount" class="badge">0 analysts</span>
+                    </div>
+                    <div class="analyst-list" id="analystList">
+                        <div class="analyst-item">
+                            <div class="analyst-name">Technical</div>
+                            <div class="analyst-signal">
+                                <span class="direction" id="techDirection">-</span>
+                                <span class="confidence" id="techConfidence">-</span>
+                            </div>
+                        </div>
+                        <div class="analyst-item" id="sentimentAnalyst" style="display: none;">
+                            <div class="analyst-name">Sentiment</div>
+                            <div class="analyst-signal">
+                                <span class="direction" id="sentDirection">-</span>
+                                <span class="confidence" id="sentConfidence">-</span>
+                            </div>
+                        </div>
+                        <div class="analyst-item" id="onchainAnalyst" style="display: none;">
+                            <div class="analyst-name">On-Chain</div>
+                            <div class="analyst-signal">
+                                <span class="direction" id="onchainDirection">-</span>
+                                <span class="confidence" id="onchainConfidence">-</span>
+                            </div>
+                        </div>
+                        <div class="analyst-item" id="macroAnalyst" style="display: none;">
+                            <div class="analyst-name">Macro</div>
+                            <div class="analyst-signal">
+                                <span class="direction" id="macroDirection">-</span>
+                                <span class="confidence" id="macroConfidence">-</span>
+                            </div>
+                        </div>
+                        <div class="analyst-item" id="orderbookAnalyst" style="display: none;">
+                            <div class="analyst-name">Order Book</div>
+                            <div class="analyst-signal">
+                                <span class="direction" id="orderbookDirection">-</span>
+                                <span class="confidence" id="orderbookConfidence">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Intelligence Fusion -->
+                <div class="phase2-card">
+                    <div class="card-header">
+                        <h3>Intelligence Fusion</h3>
+                        <span id="fusionStatus" class="badge badge-info">-</span>
+                    </div>
+                    <div class="fusion-display">
+                        <div class="fusion-meter">
+                            <div class="meter-labels">
+                                <span>Bearish</span>
+                                <span>Neutral</span>
+                                <span>Bullish</span>
+                            </div>
+                            <div class="meter-bar">
+                                <div class="meter-fill" id="fusionMeter" style="left: 50%;"></div>
+                            </div>
+                        </div>
+                        <div class="fusion-stats">
+                            <div class="stat">
+                                <span class="label">Fused Direction</span>
+                                <span class="value" id="fusedDirection">0.00</span>
+                            </div>
+                            <div class="stat">
+                                <span class="label">Confidence</span>
+                                <span class="value" id="fusedConfidence">0%</span>
+                            </div>
+                            <div class="stat">
+                                <span class="label">Disagreement</span>
+                                <span class="value" id="fusionDisagreement">0%</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Circuit Breakers -->
+                <div class="phase2-card">
+                    <div class="card-header">
+                        <h3>Circuit Breakers</h3>
+                        <span id="breakerStatus" class="badge badge-success">Active</span>
+                    </div>
+                    <div class="breaker-list" id="breakerList">
+                        <div class="breaker-item" data-breaker="daily_loss">
+                            <div class="breaker-info">
+                                <span class="breaker-name">Daily Loss</span>
+                                <span class="breaker-threshold">Max 10%</span>
+                            </div>
+                            <div class="breaker-status" id="dailyLossBreaker">
+                                <span class="status-indicator ok"></span>
+                                <span class="status-text">OK</span>
+                            </div>
+                        </div>
+                        <div class="breaker-item" data-breaker="trade_frequency">
+                            <div class="breaker-info">
+                                <span class="breaker-name">Trade Frequency</span>
+                                <span class="breaker-threshold">Max 15/day</span>
+                            </div>
+                            <div class="breaker-status" id="tradeFreqBreaker">
+                                <span class="status-indicator ok"></span>
+                                <span class="status-text">OK</span>
+                            </div>
+                        </div>
+                        <div class="breaker-item" data-breaker="volatility">
+                            <div class="breaker-info">
+                                <span class="breaker-name">Volatility</span>
+                                <span class="breaker-threshold">Max 10%/hr</span>
+                            </div>
+                            <div class="breaker-status" id="volatilityBreaker">
+                                <span class="status-indicator ok"></span>
+                                <span class="status-text">OK</span>
+                            </div>
+                        </div>
+                        <div class="breaker-item" data-breaker="consecutive_loss">
+                            <div class="breaker-info">
+                                <span class="breaker-name">Consecutive Losses</span>
+                                <span class="breaker-threshold">Max 3</span>
+                            </div>
+                            <div class="breaker-status" id="consLossBreaker">
+                                <span class="status-indicator ok"></span>
+                                <span class="status-text">OK</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Limit Order Stats -->
+                <div class="phase2-card">
+                    <div class="card-header">
+                        <h3>Execution Stats</h3>
+                        <span id="execMode" class="badge">Market Orders</span>
+                    </div>
+                    <div class="exec-stats">
+                        <div class="exec-stat">
+                            <span class="label">Limit Orders</span>
+                            <span class="value" id="limitOrderCount">0</span>
+                        </div>
+                        <div class="exec-stat">
+                            <span class="label">Fill Rate</span>
+                            <span class="value" id="limitFillRate">-</span>
+                        </div>
+                        <div class="exec-stat">
+                            <span class="label">Avg Slippage</span>
+                            <span class="value" id="avgSlippage">-</span>
+                        </div>
+                        <div class="exec-stat">
+                            <span class="label">Market Fallbacks</span>
+                            <span class="value" id="marketFallbacks">0</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Fear & Greed Index -->
+            <div class="phase2-card wide" id="fearGreedCard" style="display: none;">
+                <div class="card-header">
+                    <h3>Fear & Greed Index</h3>
+                    <span id="fearGreedValue" class="badge badge-warning">-</span>
+                </div>
+                <div class="fear-greed-display">
+                    <div class="fg-meter">
+                        <div class="fg-bar">
+                            <div class="fg-fill" id="fgMeter" style="width: 50%;"></div>
+                        </div>
+                        <div class="fg-labels">
+                            <span>Extreme Fear</span>
+                            <span>Fear</span>
+                            <span>Neutral</span>
+                            <span>Greed</span>
+                            <span>Extreme Greed</span>
+                        </div>
+                    </div>
+                    <div class="fg-interpretation" id="fgInterpretation">
+                        <span class="signal-label">Signal:</span>
+                        <span class="signal-value" id="fgSignal">-</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Phase 3 Features Section -->
+        <section class="phase3-section" id="phase3Section" style="display: none;">
+            <h2>Phase 3 Advanced Analytics</h2>
+
+            <div class="phase3-grid">
+                <!-- Market Regime -->
+                <div class="phase3-card">
+                    <div class="card-header">
+                        <h3>Market Regime</h3>
+                        <span id="regimeStatus" class="badge badge-info">Unknown</span>
+                    </div>
+                    <div class="regime-display">
+                        <div class="regime-indicator" id="regimeIndicator">
+                            <div class="regime-icon" id="regimeIcon">?</div>
+                            <div class="regime-name" id="regimeName">Detecting...</div>
+                        </div>
+                        <div class="regime-stats">
+                            <div class="regime-stat">
+                                <span class="label">Volatility</span>
+                                <span class="value" id="regimeVolatility">-</span>
+                            </div>
+                            <div class="regime-stat">
+                                <span class="label">Trend Strength</span>
+                                <span class="value" id="regimeTrend">-</span>
+                            </div>
+                            <div class="regime-stat">
+                                <span class="label">Duration</span>
+                                <span class="value" id="regimeDuration">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analyst Performance -->
+                <div class="phase3-card">
+                    <div class="card-header">
+                        <h3>Analyst Performance</h3>
+                        <span id="adaptiveWeights" class="badge badge-success">Adaptive</span>
+                    </div>
+                    <div class="analyst-performance" id="analystPerformance">
+                        <div class="perf-item">
+                            <span class="analyst-name">Technical</span>
+                            <div class="perf-bar-container">
+                                <div class="perf-bar" id="techPerfBar" style="width: 50%;"></div>
+                            </div>
+                            <span class="perf-value" id="techAccuracy">50%</span>
+                        </div>
+                        <div class="perf-item" id="sentPerfItem" style="display: none;">
+                            <span class="analyst-name">Sentiment</span>
+                            <div class="perf-bar-container">
+                                <div class="perf-bar" id="sentPerfBar" style="width: 50%;"></div>
+                            </div>
+                            <span class="perf-value" id="sentAccuracy">50%</span>
+                        </div>
+                        <div class="perf-item" id="onchainPerfItem" style="display: none;">
+                            <span class="analyst-name">On-Chain</span>
+                            <div class="perf-bar-container">
+                                <div class="perf-bar" id="onchainPerfBar" style="width: 50%;"></div>
+                            </div>
+                            <span class="perf-value" id="onchainAccuracy">50%</span>
+                        </div>
+                        <div class="perf-item" id="macroPerfItem" style="display: none;">
+                            <span class="analyst-name">Macro</span>
+                            <div class="perf-bar-container">
+                                <div class="perf-bar" id="macroPerfBar" style="width: 50%;"></div>
+                            </div>
+                            <span class="perf-value" id="macroAccuracy">50%</span>
+                        </div>
+                        <div class="perf-item" id="orderbookPerfItem" style="display: none;">
+                            <span class="analyst-name">Order Book</span>
+                            <div class="perf-bar-container">
+                                <div class="perf-bar" id="orderbookPerfBar" style="width: 50%;"></div>
+                            </div>
+                            <span class="perf-value" id="orderbookAccuracy">50%</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Position Correlation -->
+                <div class="phase3-card">
+                    <div class="card-header">
+                        <h3>Position Correlation</h3>
+                        <span id="correlationStatus" class="badge badge-success">Diversified</span>
+                    </div>
+                    <div class="correlation-display">
+                        <div class="correlation-matrix" id="correlationMatrix">
+                            <table class="corr-table">
+                                <thead>
+                                    <tr>
+                                        <th></th>
+                                        <th>BTC</th>
+                                        <th>ETH</th>
+                                        <th>SOL</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td>BTC</td>
+                                        <td class="corr-cell corr-high">1.00</td>
+                                        <td class="corr-cell corr-med" id="corrBtcEth">0.85</td>
+                                        <td class="corr-cell corr-med" id="corrBtcSol">0.78</td>
+                                    </tr>
+                                    <tr>
+                                        <td>ETH</td>
+                                        <td class="corr-cell corr-med" id="corrEthBtc">0.85</td>
+                                        <td class="corr-cell corr-high">1.00</td>
+                                        <td class="corr-cell corr-med" id="corrEthSol">0.82</td>
+                                    </tr>
+                                    <tr>
+                                        <td>SOL</td>
+                                        <td class="corr-cell corr-med" id="corrSolBtc">0.78</td>
+                                        <td class="corr-cell corr-med" id="corrSolEth">0.82</td>
+                                        <td class="corr-cell corr-high">1.00</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="correlation-warning" id="correlationWarning" style="display: none;">
+                            <span class="warning-icon">!</span>
+                            <span class="warning-text">High correlation detected</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alerting Status -->
+                <div class="phase3-card">
+                    <div class="card-header">
+                        <h3>Alerting</h3>
+                        <span id="alertingStatus" class="badge badge-success">Active</span>
+                    </div>
+                    <div class="alerting-display">
+                        <div class="alert-channels">
+                            <div class="channel-item">
+                                <span class="channel-icon">S</span>
+                                <span class="channel-name">Slack</span>
+                                <span class="channel-status" id="slackStatus">-</span>
+                            </div>
+                            <div class="channel-item">
+                                <span class="channel-icon">D</span>
+                                <span class="channel-name">Discord</span>
+                                <span class="channel-status" id="discordStatus">-</span>
+                            </div>
+                            <div class="channel-item">
+                                <span class="channel-icon">E</span>
+                                <span class="channel-name">Email</span>
+                                <span class="channel-status" id="emailStatus">-</span>
+                            </div>
+                        </div>
+                        <div class="recent-alerts" id="recentAlerts">
+                            <div class="alert-item">No recent alerts</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Anomaly Detection -->
+            <div class="phase3-card wide">
+                <div class="card-header">
+                    <h3>Anomaly Detection</h3>
+                    <span id="anomalyScore" class="badge badge-success">Normal</span>
+                </div>
+                <div class="anomaly-display">
+                    <div class="anomaly-meter">
+                        <div class="anomaly-bar">
+                            <div class="anomaly-fill" id="anomalyMeter" style="width: 15%;"></div>
+                            <div class="anomaly-threshold"></div>
+                        </div>
+                        <div class="anomaly-labels">
+                            <span>Normal</span>
+                            <span>Elevated</span>
+                            <span>High</span>
+                            <span>Critical</span>
+                        </div>
+                    </div>
+                    <div class="anomaly-details" id="anomalyDetails">
+                        <div class="anomaly-stat">
+                            <span class="label">Score</span>
+                            <span class="value" id="anomalyValue">0.15</span>
+                        </div>
+                        <div class="anomaly-stat">
+                            <span class="label">Threshold</span>
+                            <span class="value">0.70</span>
+                        </div>
+                        <div class="anomaly-stat">
+                            <span class="label">Last Alert</span>
+                            <span class="value" id="lastAnomalyAlert">Never</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Phase 4: Cost Optimization Section -->
+        <section class="cost-section" id="costSection">
+            <h2>Cost Optimization</h2>
+
+            <div class="cost-grid">
+                <!-- API Cost Savings -->
+                <div class="cost-card">
+                    <div class="card-header">
+                        <h3>API Cost Savings</h3>
+                        <span id="costSavingsPercent" class="badge badge-success">0%</span>
+                    </div>
+                    <div class="cost-display">
+                        <div class="cost-meter">
+                            <div class="cost-bar">
+                                <div class="cost-fill" id="costSavingsMeter" style="width: 0%;"></div>
+                            </div>
+                            <div class="cost-labels">
+                                <span>0%</span>
+                                <span>50%</span>
+                                <span>100%</span>
+                            </div>
+                        </div>
+                        <div class="cost-stats">
+                            <div class="cost-stat">
+                                <span class="label">Estimated Savings</span>
+                                <span class="value" id="estimatedSavings">$0.00</span>
+                            </div>
+                            <div class="cost-stat">
+                                <span class="label">Projected Monthly</span>
+                                <span class="value" id="projectedMonthlyCost">$0.00</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Optimization Methods -->
+                <div class="cost-card">
+                    <div class="card-header">
+                        <h3>Optimization Methods</h3>
+                        <span id="optimizationStatus" class="badge badge-info">Active</span>
+                    </div>
+                    <div class="optimization-methods">
+                        <div class="method-item" id="batchMethod">
+                            <div class="method-info">
+                                <span class="method-name">Batch Analysis</span>
+                                <span class="method-desc">3 pairs in 1 call</span>
+                            </div>
+                            <div class="method-status">
+                                <span class="status-indicator" id="batchStatus"></span>
+                                <span class="status-text" id="batchStatusText">-</span>
+                            </div>
+                        </div>
+                        <div class="method-item" id="hybridMethod">
+                            <div class="method-info">
+                                <span class="method-name">Hybrid Mode</span>
+                                <span class="method-desc">Rules vs Claude</span>
+                            </div>
+                            <div class="method-status">
+                                <span class="status-indicator" id="hybridStatus"></span>
+                                <span class="status-text" id="hybridStatusText">-</span>
+                            </div>
+                        </div>
+                        <div class="method-item" id="cacheMethod">
+                            <div class="method-info">
+                                <span class="method-name">Decision Cache</span>
+                                <span class="method-desc">Reuse if stable</span>
+                            </div>
+                            <div class="method-status">
+                                <span class="status-indicator" id="cacheStatus"></span>
+                                <span class="status-text" id="cacheStatusText">-</span>
+                            </div>
+                        </div>
+                        <div class="method-item" id="adaptiveMethod">
+                            <div class="method-info">
+                                <span class="method-name">Adaptive Schedule</span>
+                                <span class="method-desc">Portfolio-based</span>
+                            </div>
+                            <div class="method-status">
+                                <span class="status-indicator" id="adaptiveStatus"></span>
+                                <span class="status-text" id="adaptiveStatusText">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API Call Statistics -->
+                <div class="cost-card">
+                    <div class="card-header">
+                        <h3>API Call Statistics</h3>
+                        <span id="totalCallsBadge" class="badge">0 calls</span>
+                    </div>
+                    <div class="call-stats">
+                        <div class="call-stat">
+                            <span class="label">Total Calls</span>
+                            <span class="value" id="totalApiCalls">0</span>
+                        </div>
+                        <div class="call-stat">
+                            <span class="label">Claude Decisions</span>
+                            <span class="value" id="claudeDecisions">0</span>
+                        </div>
+                        <div class="call-stat">
+                            <span class="label">Rule Decisions</span>
+                            <span class="value" id="ruleDecisions">0</span>
+                        </div>
+                        <div class="call-stat">
+                            <span class="label">Cache Hits</span>
+                            <span class="value" id="cacheHits">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Hybrid Mode Breakdown -->
+                <div class="cost-card">
+                    <div class="card-header">
+                        <h3>Hybrid Mode Breakdown</h3>
+                        <span id="hybridRatio" class="badge badge-info">-</span>
+                    </div>
+                    <div class="hybrid-breakdown">
+                        <div class="hybrid-bar-container">
+                            <div class="hybrid-bar">
+                                <div class="hybrid-rules" id="hybridRulesBar" style="width: 0%;"></div>
+                                <div class="hybrid-claude" id="hybridClaudeBar" style="width: 100%;"></div>
+                            </div>
+                            <div class="hybrid-labels">
+                                <span class="rules-label">Rules: <span id="hybridRulesPercent">0%</span></span>
+                                <span class="claude-label">Claude: <span id="hybridClaudePercent">100%</span></span>
+                            </div>
+                        </div>
+                        <div class="hybrid-stats">
+                            <div class="hybrid-stat">
+                                <span class="label">Rule-Based</span>
+                                <span class="value" id="hybridRuleCount">0</span>
+                            </div>
+                            <div class="hybrid-stat">
+                                <span class="label">Claude</span>
+                                <span class="value" id="hybridClaudeCount">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cost Comparison -->
+            <div class="cost-card wide">
+                <div class="card-header">
+                    <h3>Cost Comparison</h3>
+                    <span id="costComparisonBadge" class="badge badge-success">Optimized</span>
+                </div>
+                <div class="cost-comparison">
+                    <div class="comparison-item">
+                        <div class="comparison-label">Without Optimization</div>
+                        <div class="comparison-value baseline" id="baselineCost">$12.00/month</div>
+                    </div>
+                    <div class="comparison-arrow">vs</div>
+                    <div class="comparison-item">
+                        <div class="comparison-label">With Optimization</div>
+                        <div class="comparison-value optimized" id="optimizedCost">$2.00/month</div>
+                    </div>
+                    <div class="comparison-savings">
+                        <span class="savings-label">Monthly Savings:</span>
+                        <span class="savings-value" id="monthlySavings">$10.00</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>
