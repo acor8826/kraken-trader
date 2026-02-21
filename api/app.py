@@ -907,7 +907,7 @@ def _register_routes(app: FastAPI):
                 }
             }
             # Include LLM token usage if available
-            if orchestrator.llm and hasattr(orchestrator.llm, 'get_usage_stats'):
+            if hasattr(orchestrator, 'llm') and orchestrator.llm and hasattr(orchestrator.llm, 'get_usage_stats'):
                 result["token_usage"] = orchestrator.llm.get_usage_stats()
             return result
         except Exception as e:
