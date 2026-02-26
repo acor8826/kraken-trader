@@ -207,14 +207,19 @@ async def _create_orchestrator(settings: Settings):
             from memory.postgres import PostgresStore
             from memory.redis_cache import RedisCache
 
-            # Initialize Redis cache (env-driven)
-            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            # Initialize Redis cache (optional)
+            redis_url = os.getenv("REDIS_URL", "")
             cache_ttl = 300
-            cache = RedisCache(redis_url, default_ttl=cache_ttl)
-            await cache.connect()
-            logger.info(f"Redis cache connected (TTL={cache_ttl}s)")
+            if redis_url:
+                try:
+                    cache = RedisCache(redis_url, default_ttl=cache_ttl)
+                    await cache.connect()
+                    logger.info(f"Redis cache connected (TTL={cache_ttl}s)")
+                except Exception as redis_err:
+                    cache = None
+                    logger.warning(f"Redis unavailable, continuing without cache: {redis_err}")
 
-            # Initialize PostgreSQL (env-driven)
+            # Initialize PostgreSQL (required for Phase 2 persistence)
             db_url = os.getenv("DATABASE_URL", "postgresql://trader:trader@localhost:5432/trader")
             memory = PostgresStore(db_url)
             await memory.connect()
