@@ -13,12 +13,6 @@ class Router {
 
         // Listen for hash changes
         window.addEventListener('hashchange', () => this.handleRoute());
-
-        // Handle initial route on page load
-        window.addEventListener('DOMContentLoaded', () => {
-            // Small delay to ensure all pages are registered
-            setTimeout(() => this.handleRoute(), 0);
-        });
     }
 
     /**

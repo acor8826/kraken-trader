@@ -26,6 +26,7 @@ orchestrator = None
 scheduler = None
 settings = None
 alert_manager = None
+seed_improver = None
 
 # Portfolio cache (avoid hammering Binance on every dashboard poll)
 _portfolio_cache = None
@@ -99,6 +100,17 @@ def create_app(stage: Stage = None) -> FastAPI:
             )
             logger.info(f"Meme scheduler started: every {meme_config.cycle_interval_seconds}s")
 
+        # Seed improver daily review: 6:00 PM Australia/Sydney
+        scheduler.add_job(
+            _run_seed_improver_daily,
+            'cron',
+            hour=18,
+            minute=0,
+            timezone='Australia/Sydney',
+            id='seed_improver_daily',
+            replace_existing=True,
+        )
+
         scheduler.start()
 
         logger.info(f"Scheduler started: every {settings.trading.check_interval_minutes} minutes")
@@ -160,6 +172,7 @@ async def _create_orchestrator(settings: Settings):
 
             sim_config = SimulationConfig(
                 initial_balance=settings.trading.initial_capital,
+                quote_currency=settings.trading.quote_currency,
                 scenario=scenario,
                 slippage_pct=float(os.getenv("SIMULATION_SLIPPAGE", "0.001")),
                 failure_rate=float(os.getenv("SIMULATION_FAILURE_RATE", "0.02")),
@@ -171,7 +184,8 @@ async def _create_orchestrator(settings: Settings):
             from api.routes.simulation import set_simulation_exchange
             set_simulation_exchange(exchange)
         except ImportError:
-            exchange = MockExchange(initial_balance=settings.trading.initial_capital)
+            exchange = MockExchange(initial_balance=settings.trading.initial_capital,
+                                    quote_currency=settings.trading.quote_currency)
             logger.info("Using MOCK exchange (paper trading)")
     else:
         exchange = create_exchange(settings.exchange.name)
@@ -192,15 +206,15 @@ async def _create_orchestrator(settings: Settings):
             from memory.postgres import PostgresStore
             from memory.redis_cache import RedisCache
 
-            # Initialize Redis cache
-            redis_url = settings.config.get("redis", {}).get("url", "redis://localhost:6379")
-            cache_ttl = settings.config.get("redis", {}).get("cache_ttl_seconds", 300)
+            # Initialize Redis cache (env-driven to avoid Settings schema drift)
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            cache_ttl = int(os.getenv("REDIS_CACHE_TTL_SECONDS", "300"))
             cache = RedisCache(redis_url, default_ttl=cache_ttl)
             await cache.connect()
             logger.info(f"Redis cache connected (TTL={cache_ttl}s)")
 
-            # Initialize PostgreSQL
-            db_url = settings.config.get("database", {}).get("url", "postgresql://trader:trader@localhost:5432/trader")
+            # Initialize PostgreSQL (explicit env first)
+            db_url = os.getenv("DATABASE_URL", "postgresql://trader:trader@localhost:5432/trader")
             memory = PostgresStore(db_url)
             await memory.connect()
             logger.info("PostgreSQL storage connected")
@@ -452,6 +466,15 @@ async def _create_orchestrator(settings: Settings):
     else:
         logger.info("Meme trading module disabled (set ENABLE_MEME_TRADING=true to enable)")
 
+    # Seed improver service (Phase 0)
+    global seed_improver
+    try:
+        from agents.seed_improver import SeedImproverService
+        seed_improver = SeedImproverService(memory=memory)
+        logger.info("✅ SeedImprover initialized (Phase 0)")
+    except Exception as e:
+        logger.warning(f"Failed to initialize SeedImprover: {e}")
+
     logger.info(f"🚀 Orchestrator initialized ({len(analysts)} analysts)")
     return orch
 
@@ -474,6 +497,16 @@ async def _run_meme_cycle():
             await orchestrator._meme_orchestrator.run_cycle()
         except Exception as e:
             logger.error(f"Meme trading cycle error: {e}", exc_info=True)
+
+
+async def _run_seed_improver_daily():
+    """Daily autonomous seed improver run (6:00 PM Australia/Sydney)."""
+    global seed_improver
+    if seed_improver:
+        try:
+            await seed_improver.run("scheduled", {"source": "apscheduler"})
+        except Exception as e:
+            logger.error(f"Seed improver daily run error: {e}", exc_info=True)
 
 
 def _register_routes(app: FastAPI):
@@ -593,6 +626,39 @@ def _register_routes(app: FastAPI):
         
         result = await orchestrator.run_cycle()
         return {"status": "completed", "result": result}
+
+    @app.post("/internal/seed-improver/run")
+    async def seed_improver_run(payload: Optional[dict] = None):
+        """Trigger seed improver cycle (scheduled/manual)."""
+        if not seed_improver:
+            raise HTTPException(status_code=503, detail="Seed improver not initialized")
+
+        body = payload or {}
+        trigger_type = body.get("trigger_type", "manual")
+        context = body.get("context", {})
+        result = await seed_improver.run(trigger_type, context)
+        return {
+            "status": result.status,
+            "run_id": result.run_id,
+            "trigger_type": result.trigger_type,
+            "summary": result.summary,
+        }
+
+    @app.post("/internal/seed-improver/loss")
+    async def seed_improver_loss(payload: Optional[dict] = None):
+        """Event-driven trigger for losing trade analysis."""
+        if not seed_improver:
+            raise HTTPException(status_code=503, detail="Seed improver not initialized")
+
+        body = payload or {}
+        trade = body.get("trade", body)
+        result = await seed_improver.run("losing_trade", {"trade": trade})
+        return {
+            "status": result.status,
+            "run_id": result.run_id,
+            "trigger_type": result.trigger_type,
+            "summary": result.summary,
+        }
     
     @app.post("/pause")
     async def pause_trading():
@@ -935,6 +1001,27 @@ def _register_routes(app: FastAPI):
 
         estimated = base_cost * multiplier
         return f"${estimated:.2f}"
+
+    @app.get("/api/ai/cycle/current")
+    async def get_current_cycle():
+        """Get current cycle timing info for dashboard countdown"""
+        jobs = scheduler.get_jobs() if scheduler else []
+        next_run = None
+        seconds_until_next = None
+
+        for job in jobs:
+            if job.id == 'trading_cycle' and job.next_run_time:
+                next_run = job.next_run_time
+                seconds_until_next = max(0, (job.next_run_time - datetime.now(timezone.utc)).total_seconds())
+                break
+
+        return {
+            "seconds_until_next": int(seconds_until_next) if seconds_until_next is not None else None,
+            "cycle_count": orchestrator._cycle_count if orchestrator else 0,
+            "is_paused": orchestrator.sentinel.is_paused if orchestrator else False,
+            "scheduler_running": scheduler.running if scheduler else False,
+            "next_cycle": next_run.isoformat() if next_run else None
+        }
 
     @app.get("/api/risk/profile")
     async def get_risk_profile():
