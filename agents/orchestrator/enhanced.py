@@ -145,28 +145,43 @@ class EnhancedOrchestrator:
                 results["target_reached"] = True
                 return results
 
-            # 4. Check stop-losses
-            stop_trades = await self.sentinel.check_stop_losses(portfolio.positions)
-            if stop_trades:
-                logger.warning(f"Executing {len(stop_trades)} stop-loss trades")
+            # 4. Check exits (stop-loss + take-profit)
+            if hasattr(self.sentinel, "check_exit_triggers"):
+                exit_trades = await self.sentinel.check_exit_triggers(portfolio.positions)
+            else:
+                exit_trades = await self.sentinel.check_stop_losses(portfolio.positions)
 
-                for trade in stop_trades:
-                    await self.event_bus.emit(
-                        EventType.STOP_LOSS_TRIGGERED,
-                        {"pair": trade.pair, "entry": trade.entry_price},
-                        source="sentinel"
-                    )
+            if exit_trades:
+                logger.warning(f"Executing {len(exit_trades)} exit trades")
 
-                stop_report = await self.executor.execute_stop_loss(stop_trades)
+                for trade in exit_trades:
+                    if trade.order_type.value in ("stop_loss", "trailing_stop", "breakeven_stop"):
+                        await self.event_bus.emit(
+                            EventType.STOP_LOSS_TRIGGERED,
+                            {"pair": trade.pair, "entry": trade.entry_price,
+                             "type": trade.order_type.value},
+                            source="sentinel"
+                        )
 
-                # Record stop-loss results for circuit breakers
+                stop_report = await self.executor.execute_stop_loss(exit_trades)
+
+                # Record exit results for circuit breakers and clear peak prices
                 for trade in stop_report.trades:
                     if trade.realized_pnl:
                         self.circuit_breakers.record_trade(trade.realized_pnl)
+                    if trade.is_successful and hasattr(self.memory, 'clear_peak_price'):
+                        base_asset = trade.pair.split("/")[0]
+                        await self.memory.clear_peak_price(base_asset)
 
-                # Refresh portfolio after stops
+                # Refresh portfolio after exits
                 portfolio = await self._get_portfolio_state()
-                results["stop_losses_executed"] = len(stop_trades)
+                results["stop_losses_executed"] = len(
+                    [t for t in exit_trades if t.order_type.value in
+                     ("stop_loss", "trailing_stop", "breakeven_stop")]
+                )
+                results["take_profits_executed"] = len(
+                    [t for t in exit_trades if t.order_type.value == "take_profit"]
+                )
 
             # 5. Analyze each trading pair
             for pair in self.settings.trading.pairs:

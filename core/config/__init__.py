@@ -12,5 +12,8 @@ from core.config.settings import (
     HybridThresholds,
     AdaptiveTier,
     AggressiveRiskConfig,
-    AlertConfig
+    AlertConfig,
+    TrailingStopConfig,
+    BreakevenConfig,
+    ExitManagementConfig,
 )

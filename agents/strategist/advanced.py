@@ -13,13 +13,12 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 
-from core.interfaces import IStrategist, ILLM, IExchange
+from core.interfaces import IStrategist, ILLM
 from core.models import (
     MarketIntel, Portfolio, TradingPlan, TradeSignal,
     TradeAction, OrderType, Regime
 )
 from core.config import Settings, get_settings
-from core.risk import VolatilityCalculator, VolatilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -135,45 +134,11 @@ class AdvancedStrategist(IStrategist):
     - LLM-powered decision making with fallback
     """
 
-    def __init__(self, llm: ILLM = None, settings: Settings = None, exchange: IExchange = None):
+    def __init__(self, llm: ILLM = None, settings: Settings = None):
         self.llm = llm
         self.settings = settings or get_settings()
-        self.exchange = exchange
         self._last_strategy = None
-        
-        # Initialize volatility-based risk management
-        self.volatility_enabled = self.settings.config.get("volatility_risk", {}).get("enabled", True)
-        if self.volatility_enabled and exchange:
-            volatility_config = self._load_volatility_config()
-            self.volatility_calculator = VolatilityCalculator(volatility_config)
-            logger.info("AdvancedStrategist initialized with volatility-aware take-profits")
-        else:
-            self.volatility_calculator = None
-            logger.info("AdvancedStrategist initialized with fixed take-profits")
-        
         logger.info("AdvancedStrategist initialized with strategy library")
-
-    def _load_volatility_config(self) -> VolatilityConfig:
-        """Load volatility configuration from settings"""
-        vol_config = self.settings.config.get("volatility_risk", {})
-        
-        return VolatilityConfig(
-            atr_period=vol_config.get("atr_period", 14),
-            volatility_lookback=vol_config.get("volatility_lookback", 20),
-            base_stop_multiplier=vol_config.get("base_stop_multiplier", 2.0),
-            base_tp_multiplier=vol_config.get("base_tp_multiplier", 3.0),
-            low_volatility_threshold=vol_config.get("low_volatility_threshold", 0.02),
-            high_volatility_threshold=vol_config.get("high_volatility_threshold", 0.06),
-            low_vol_stop_multiplier=vol_config.get("low_vol_stop_multiplier", 1.5),
-            medium_vol_stop_multiplier=vol_config.get("medium_vol_stop_multiplier", 2.0),
-            high_vol_stop_multiplier=vol_config.get("high_vol_stop_multiplier", 2.5),
-            low_vol_tp_multiplier=vol_config.get("low_vol_tp_multiplier", 2.0),
-            medium_vol_tp_multiplier=vol_config.get("medium_vol_tp_multiplier", 3.0),
-            high_vol_tp_multiplier=vol_config.get("high_vol_tp_multiplier", 4.0),
-            fallback_stop_loss_pct=vol_config.get("fallback_stop_loss_pct", 0.05),
-            fallback_take_profit_pct=vol_config.get("fallback_take_profit_pct", 0.10),
-            min_candles_required=vol_config.get("min_candles_required", 14)
-        )
 
     async def create_plan(
         self,
@@ -208,13 +173,13 @@ class AdvancedStrategist(IStrategist):
         if self.llm:
             try:
                 decision = await self._llm_decision(intel, portfolio, risk, strategy)
-                return await self._build_plan(intel, decision, strategy_config, risk)
+                return self._build_plan(intel, decision, strategy_config, risk)
             except Exception as e:
                 logger.warning(f"LLM decision failed, using rule-based: {e}")
 
         # Fall back to rule-based decision
         decision = self._rule_based_decision(intel, strategy, risk)
-        return await self._build_plan(intel, decision, strategy_config, risk)
+        return self._build_plan(intel, decision, strategy_config, risk)
 
     def _select_strategy(self, intel: MarketIntel) -> Strategy:
         """Select the best strategy for current conditions"""
@@ -363,21 +328,20 @@ Generate your decision as JSON."""
             "key_signals": []
         }
 
-    async def _build_plan(
+    def _build_plan(
         self,
         intel: MarketIntel,
         decision: Dict,
         strategy_config: StrategyConfig,
         risk: Dict
     ) -> TradingPlan:
-        """Build TradingPlan from decision with volatility-aware risk levels"""
+        """Build TradingPlan from decision"""
         action_str = decision.get("action", "HOLD").upper()
         action = TradeAction[action_str] if action_str in TradeAction.__members__ else TradeAction.HOLD
 
-        # Calculate stop loss and take profit with volatility awareness
-        stop_loss_pct, take_profit_pct = await self._calculate_risk_levels(
-            intel.pair, decision, strategy_config, risk
-        )
+        # Calculate stop loss with strategy multiplier
+        base_stop = risk["stop_loss_pct"]
+        stop_loss = decision.get("stop_distance_pct", base_stop * strategy_config.stop_loss_multiplier)
 
         signal = TradeSignal(
             pair=intel.pair,
@@ -386,7 +350,7 @@ Generate your decision as JSON."""
             size_pct=float(decision.get("size_pct", 0)),
             reasoning=decision.get("reasoning", ""),
             order_type=OrderType.LIMIT if self.settings.features.enable_limit_orders else OrderType.MARKET,
-            stop_loss_pct=stop_loss_pct
+            stop_loss_pct=stop_loss
         )
 
         return TradingPlan(
@@ -401,77 +365,7 @@ Generate your decision as JSON."""
                     "stop_multiplier": strategy_config.stop_loss_multiplier,
                     "take_profit_multiplier": strategy_config.take_profit_multiplier
                 },
-                "volatility_risk": {
-                    "stop_loss_pct": stop_loss_pct,
-                    "take_profit_pct": take_profit_pct,
-                    "volatility_enabled": self.volatility_enabled
-                },
                 "regime_assessment": decision.get("regime_assessment", ""),
                 "key_signals": decision.get("key_signals", [])
             }
         )
-
-    async def _calculate_risk_levels(
-        self,
-        pair: str,
-        decision: Dict,
-        strategy_config: StrategyConfig,
-        risk: Dict
-    ) -> tuple[float, float]:
-        """
-        Calculate stop-loss and take-profit levels using volatility if available.
-        
-        Returns (stop_loss_pct, take_profit_pct)
-        """
-        # Start with base levels
-        base_stop = risk["stop_loss_pct"]
-        base_tp = base_stop * 2.0  # Default 2:1 reward/risk ratio
-        
-        # Try volatility-based calculation
-        if self.volatility_calculator and self.exchange:
-            try:
-                # Get volatility profile
-                profile = await self.volatility_calculator.get_volatility_profile(
-                    pair, self.exchange
-                )
-                
-                # Use volatility-suggested levels as base
-                vol_stop = profile.suggested_stop_loss_pct
-                vol_tp = profile.suggested_take_profit_pct
-                
-                # Apply strategy multipliers on top of volatility-based levels
-                strategy_multipliers = {
-                    'stop_loss_multiplier': strategy_config.stop_loss_multiplier,
-                    'take_profit_multiplier': strategy_config.take_profit_multiplier
-                }
-                
-                # Calculate final levels
-                final_stop = vol_stop * strategy_config.stop_loss_multiplier
-                final_tp = vol_tp * strategy_config.take_profit_multiplier
-                
-                # Apply reasonable bounds
-                final_stop = max(0.01, min(0.15, final_stop))  # 1% to 15%
-                final_tp = max(0.02, min(0.30, final_tp))      # 2% to 30%
-                
-                logger.debug(
-                    f"[STRATEGIST] Volatility risk for {pair}: "
-                    f"SL={final_stop:.2%} (vol: {vol_stop:.2%}, mult: {strategy_config.stop_loss_multiplier}x), "
-                    f"TP={final_tp:.2%} (vol: {vol_tp:.2%}, mult: {strategy_config.take_profit_multiplier}x), "
-                    f"Rank={profile.volatility_rank}"
-                )
-                
-                return final_stop, final_tp
-                
-            except Exception as e:
-                logger.warning(f"[STRATEGIST] Failed to calculate volatility risk for {pair}: {e}")
-        
-        # Fallback to strategy-multiplied fixed levels
-        decision_stop = decision.get("stop_distance_pct", base_stop * strategy_config.stop_loss_multiplier)
-        calculated_tp = base_tp * strategy_config.take_profit_multiplier
-        
-        logger.debug(
-            f"[STRATEGIST] Fixed risk for {pair}: "
-            f"SL={decision_stop:.2%}, TP={calculated_tp:.2%} (fallback)"
-        )
-        
-        return decision_stop, calculated_tp

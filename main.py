@@ -68,8 +68,22 @@ def main():
     # Check required credentials
     if not os.getenv("SIMULATION_MODE", "").lower() == "true":
         exchange = os.getenv("EXCHANGE", "binance")
-        api_key_var = "BINANCE_API_KEY" if exchange == "binance" else "KRAKEN_API_KEY"
-        if not os.getenv(api_key_var):
+        if exchange == "binance":
+            testnet = os.getenv("BINANCE_TESTNET", "").lower() in ("1", "true", "yes")
+            if testnet:
+                api_key = os.getenv("BINANCE_TESTNET_KEY") or os.getenv("BINANCE_API_KEY")
+                api_secret = os.getenv("BINANCE_TESTNET_SECRET") or os.getenv("BINANCE_API_SECRET")
+                api_key_var = "BINANCE_TESTNET_KEY"
+            else:
+                api_key = os.getenv("BINANCE_API_KEY")
+                api_secret = os.getenv("BINANCE_API_SECRET")
+                api_key_var = "BINANCE_API_KEY"
+        else:
+            api_key = os.getenv("KRAKEN_API_KEY")
+            api_secret = os.getenv("KRAKEN_API_SECRET")
+            api_key_var = "KRAKEN_API_KEY"
+
+        if not api_key or not api_secret:
             logger.warning(f"{api_key_var} not set - will run in simulation mode")
             os.environ["SIMULATION_MODE"] = "true"
     

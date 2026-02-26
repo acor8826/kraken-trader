@@ -11,15 +11,27 @@ trading:
   quote_currency: USDT
   initial_capital: 1000.0
   target_capital: 5000.0
-  check_interval_minutes: 60
+  check_interval_minutes: 15
 
 risk:
   max_position_pct: 0.20
   max_total_exposure_pct: 0.80
-  stop_loss_pct: 0.05
-  min_confidence: 0.70
-  max_daily_trades: 10
+  stop_loss_pct: 0.025
+  take_profit_multiplier: 2.0
+  min_confidence: 0.65
+  max_daily_trades: 6
   max_daily_loss_pct: 0.10
+
+# Exit management
+exit_management:
+  enable_trailing_stop: true
+  enable_breakeven_stop: true
+  trailing_stop:
+    activation_pct: 0.01
+    distance_pct: 0.007
+  breakeven:
+    activation_pct: 0.005
+    buffer_pct: 0.001
 
 features:
   # Analysts
@@ -47,5 +59,15 @@ features:
   # Other
   enable_event_bus: false
   simulation_mode: false
+
+cost_optimization:
+  enable_batch_analysis: true
+  enable_hybrid_mode: true
+  enable_adaptive_schedule: true
+  enable_decision_cache: false
+  hybrid:
+    direction_threshold: 0.4
+    confidence_threshold: 0.60
+    disagreement_threshold: 0.3
 
 log_level: INFO

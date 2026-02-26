@@ -199,6 +199,22 @@ body {
     margin-top: 8px;
 }
 
+/* Holdings Section */
+.holdings-section {
+    margin-bottom: 32px;
+    padding: 24px;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    box-shadow: var(--shadow);
+}
+
+.holdings-section h2 {
+    font-size: 20px;
+    color: var(--text-primary);
+    margin-bottom: 16px;
+}
+
 /* Chart Section */
 .chart-section {
     margin-bottom: 32px;
@@ -1815,5 +1831,336 @@ body {
     .call-stats,
     .hybrid-stats {
         grid-template-columns: 1fr;
+    }
+}
+
+/* =============================================================================
+   UI POLISH OVERRIDES
+   ============================================================================= */
+
+:root {
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-7: 32px;
+    --focus-ring: 0 0 0 3px rgba(0, 212, 255, 0.3);
+    --shadow-soft: 0 6px 18px rgba(0, 0, 0, 0.28);
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    color-scheme: dark;
+    background-image:
+        radial-gradient(circle at 15% -10%, rgba(0, 212, 255, 0.08), transparent 35%),
+        radial-gradient(circle at 85% -20%, rgba(124, 58, 237, 0.07), transparent 40%);
+    min-height: 100vh;
+}
+
+.container {
+    padding: clamp(14px, 2vw, 28px);
+}
+
+.header,
+.holdings-section,
+.chart-section,
+.trades-section,
+.status-section,
+.phase2-section,
+.phase3-section,
+.cost-section {
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-soft);
+    backdrop-filter: blur(6px);
+}
+
+.header-content h1 {
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+}
+
+.holdings-section h2,
+.chart-section h2,
+.trades-section h2,
+.status-section h2,
+.phase2-section h2,
+.phase3-section h2,
+.cost-section h2 {
+    letter-spacing: -0.01em;
+    margin-bottom: var(--space-5);
+}
+
+.metrics-section {
+    gap: clamp(12px, 1.4vw, 20px);
+}
+
+.metric-card {
+    border-radius: var(--radius-md);
+    position: relative;
+    overflow: hidden;
+}
+
+.metric-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 38%);
+}
+
+.metric-value {
+    letter-spacing: -0.02em;
+}
+
+.btn {
+    min-height: 40px;
+    border-radius: var(--radius-sm);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+}
+
+.btn:focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+}
+
+.btn:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+.btn:disabled {
+    filter: grayscale(0.2);
+}
+
+.table-container {
+    border-radius: var(--radius-sm);
+    scrollbar-width: thin;
+}
+
+.trades-table {
+    font-variant-numeric: tabular-nums;
+}
+
+.trades-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background-color: var(--bg-tertiary);
+}
+
+.trades-table tbody tr:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.015);
+}
+
+.trades-table tbody tr:hover {
+    background-color: rgba(0, 212, 255, 0.08);
+}
+
+.trades-table td,
+.trades-table th {
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.trades-table .pair,
+.trades-table td:nth-child(3),
+.trades-table td:nth-child(4),
+.trades-table td:nth-child(5),
+.trades-table td:nth-child(6) {
+    font-family: "Consolas", "SFMono-Regular", "Menlo", monospace;
+}
+
+.action-buy,
+.action-sell,
+.action-hold,
+.status-filled,
+.status-pending,
+.status-failed {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    letter-spacing: 0.02em;
+}
+
+.action-buy {
+    background-color: rgba(16, 185, 129, 0.14);
+}
+
+.action-sell {
+    background-color: rgba(239, 68, 68, 0.14);
+}
+
+.action-hold {
+    background-color: rgba(160, 169, 184, 0.12);
+}
+
+.status-filled {
+    background-color: rgba(16, 185, 129, 0.14);
+}
+
+.status-pending {
+    background-color: rgba(245, 158, 11, 0.14);
+}
+
+.status-failed {
+    background-color: rgba(239, 68, 68, 0.14);
+}
+
+.status-item,
+.analyst-item,
+.breaker-item,
+.exec-stat,
+.regime-stat,
+.perf-item,
+.channel-item,
+.cost-card,
+.method-item,
+.call-stat,
+.hybrid-stat,
+.comparison-item {
+    border-radius: var(--radius-sm);
+}
+
+.status-item .label,
+.metric-label,
+.phase2-card .card-header h3,
+.phase3-card .card-header h3 {
+    font-weight: 700;
+}
+
+.chart-container {
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.loading-row td,
+.empty-state {
+    position: relative;
+    color: #b6c0ce;
+}
+
+.loading-row td::after {
+    content: "";
+    display: block;
+    height: 2px;
+    margin-top: 12px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, transparent, rgba(0, 212, 255, 0.65), transparent);
+    background-size: 180% 100%;
+    animation: shimmer 1.2s linear infinite;
+}
+
+.empty-state {
+    border: 1px dashed var(--border-color);
+    border-radius: var(--radius-sm);
+    background-color: rgba(255, 255, 255, 0.01);
+}
+
+@keyframes shimmer {
+    0% { background-position: 100% 0; }
+    100% { background-position: -100% 0; }
+}
+
+.toast {
+    border-radius: var(--radius-sm);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    font-weight: 600;
+}
+
+.error {
+    border-radius: var(--radius-sm);
+    line-height: 1.45;
+}
+
+@media (max-width: 1024px) {
+    .header {
+        margin-bottom: 24px;
+    }
+
+    .trades-section,
+    .chart-section,
+    .holdings-section,
+    .status-section,
+    .phase2-section,
+    .phase3-section,
+    .cost-section {
+        padding: 20px;
+    }
+}
+
+@media (max-width: 768px) {
+    .header-actions .btn {
+        min-height: 42px;
+    }
+
+    .table-container {
+        border-left: 0;
+        border-right: 0;
+        border-radius: 0;
+        margin-left: -8px;
+        margin-right: -8px;
+    }
+
+    .trades-table th,
+    .trades-table td {
+        padding: 11px 10px;
+    }
+
+    .status-item {
+        padding: 10px 12px;
+    }
+
+    .comparison-item,
+    .comparison-savings {
+        width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    .header {
+        padding: 14px;
+    }
+
+    .header-content {
+        width: 100%;
+        align-items: flex-start;
+    }
+
+    .header-status {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .trades-table td,
+    .trades-table th {
+        font-size: 12px;
+    }
+
+    .metric-value {
+        font-size: 22px;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
     }
 }

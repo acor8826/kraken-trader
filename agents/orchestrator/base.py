@@ -7,7 +7,7 @@ Manages workflow between all agents.
 
 from typing import List, Optional
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.interfaces import IAnalyst, IStrategist, IExecutor, ISentinel, IExchange, IMemory
 from core.models import Portfolio, Position, MarketIntel
@@ -93,25 +93,28 @@ class Orchestrator:
             # Update risk manager with portfolio value for drawdown tracking
             await self._update_risk_manager_portfolio(portfolio)
             
-            # Check if target reached
-            if portfolio.total_value >= portfolio.target_value:
-                logger.info("🎯 TARGET REACHED! Stopping trading.")
-                results["target_reached"] = True
-                await self._send_milestone_alert(portfolio, 100.0)
-                return results
-
             # Check portfolio milestones (every 10%)
             await self._check_milestones(portfolio)
             
-            # 3. Check stop-losses
-            stop_trades = await self.sentinel.check_stop_losses(portfolio.positions)
-            if stop_trades:
-                logger.warning(f"Executing {len(stop_trades)} stop-loss trades")
-                # Alert for each stop-loss
-                for trade in stop_trades:
-                    await self._send_stop_loss_alert(trade)
-                await self.executor.execute_stop_loss(stop_trades)
-                # Refresh portfolio after stops
+            # 3. Check exits (stop-loss + take-profit)
+            if hasattr(self.sentinel, "check_exit_triggers"):
+                exit_trades = await self.sentinel.check_exit_triggers(portfolio.positions)
+            else:
+                exit_trades = await self.sentinel.check_stop_losses(portfolio.positions)
+
+            if exit_trades:
+                logger.warning(f"Executing {len(exit_trades)} exit trades")
+                # Send alerts for stop-loss type exits
+                for trade in exit_trades:
+                    if trade.order_type.value in ("stop_loss", "trailing_stop", "breakeven_stop"):
+                        await self._send_stop_loss_alert(trade)
+                exit_report = await self.executor.execute_stop_loss(exit_trades)
+                # Clear peak prices for exited positions
+                for trade in exit_report.trades:
+                    if trade.is_successful and hasattr(self.memory, 'clear_peak_price'):
+                        base_asset = trade.pair.split("/")[0]
+                        await self.memory.clear_peak_price(base_asset)
+                # Refresh portfolio after exits
                 portfolio = await self._get_portfolio_state()
             
             # 4. Analyze trading pairs (batch or sequential)
@@ -179,25 +182,103 @@ class Orchestrator:
             pair.split("/")[0] for pair in self.settings.trading.pairs
         }
 
+        # Get effective stop-loss percentage
+        effective_risk = self.settings.get_effective_risk()
+        default_sl_pct = effective_risk.stop_loss_pct
+        take_profit_multiplier = effective_risk.take_profit_multiplier
+
         positions = {}
         for asset in tracked_assets:
             amount = balance.get(asset, 0)
             if amount <= 0:
                 continue
 
+            pair = f"{asset}/{quote}"
+
             try:
-                ticker = await self.exchange.get_ticker(f"{asset}/{quote}")
+                ticker = await self.exchange.get_ticker(pair)
                 current_price = ticker.get("price", 0)
             except:
                 current_price = 0
 
             entry_price = await self.memory.get_entry_price(asset)
 
+            # Bootstrap entry price for pre-existing positions
+            if entry_price is None and current_price > 0:
+                entry_price = current_price
+                await self.memory.set_entry_price(asset, current_price)
+                logger.info(f"Bootstrapped entry price for {asset}: ${current_price:,.2f}")
+
+            # Compute stop-loss and take-profit prices
+            stop_loss_price = None
+            take_profit_price = None
+            estimated_sell_date = None
+            peak_price = None
+            trailing_stop_active = False
+            trailing_stop_price = None
+
+            if entry_price and entry_price > 0:
+                # Per-pair stop-loss from sentinel, or default
+                sl_pct = default_sl_pct
+                if hasattr(self.sentinel, '_get_stop_loss_for_pair'):
+                    sl_pct = self.sentinel._get_stop_loss_for_pair(pair)
+                tp_pct = sl_pct * take_profit_multiplier
+
+                stop_loss_price = round(entry_price * (1 - sl_pct), 2)
+                take_profit_price = round(entry_price * (1 + tp_pct), 2)
+
+                # Track peak price for trailing stop
+                if hasattr(self.memory, 'get_peak_price'):
+                    stored_peak = await self.memory.get_peak_price(asset)
+                    if stored_peak is None:
+                        # Initialize peak to entry price
+                        peak_price = current_price if current_price > 0 else entry_price
+                        await self.memory.set_peak_price(asset, peak_price)
+                    else:
+                        peak_price = stored_peak
+                        # Update peak if current price is higher
+                        if current_price > peak_price:
+                            peak_price = current_price
+                            await self.memory.set_peak_price(asset, peak_price)
+
+                    # Compute trailing stop state
+                    exit_cfg = self.settings.exit_management
+                    if exit_cfg.enable_trailing_stop and current_price > 0:
+                        gain_pct = (current_price - entry_price) / entry_price
+                        if gain_pct >= exit_cfg.trailing_stop.activation_pct:
+                            trailing_stop_active = True
+                            trailing_stop_price = round(
+                                peak_price * (1 - exit_cfg.trailing_stop.distance_pct), 2
+                            )
+                            # Trailing stop overrides fixed stop when it's higher
+                            if trailing_stop_price > stop_loss_price:
+                                stop_loss_price = trailing_stop_price
+
+                # Estimate sell date using ATR
+                if current_price > 0 and current_price < take_profit_price:
+                    try:
+                        ohlcv = await self.exchange.get_ohlcv(pair, interval=60, limit=24)
+                        atr = self._calculate_atr(ohlcv)
+                        if atr and atr > 0:
+                            distance = take_profit_price - current_price
+                            candles_to_target = distance / atr
+                            hours = max(1, candles_to_target)  # At least 1 hour
+                            est_date = datetime.now(timezone.utc) + timedelta(hours=hours)
+                            estimated_sell_date = est_date.isoformat()
+                    except Exception as e:
+                        logger.debug(f"ATR estimation failed for {asset}: {e}")
+
             positions[asset] = Position(
                 symbol=asset,
                 amount=amount,
                 entry_price=entry_price,
-                current_price=current_price
+                current_price=current_price,
+                stop_loss_price=stop_loss_price,
+                take_profit_price=take_profit_price,
+                estimated_sell_date=estimated_sell_date,
+                peak_price=peak_price,
+                trailing_stop_active=trailing_stop_active,
+                trailing_stop_price=trailing_stop_price,
             )
 
         return Portfolio(
@@ -206,6 +287,21 @@ class Orchestrator:
             initial_value=self.settings.trading.initial_capital,
             target_value=self.settings.trading.target_capital
         )
+
+    @staticmethod
+    def _calculate_atr(ohlcv, period: int = 14) -> Optional[float]:
+        """Calculate Average True Range from OHLCV candles."""
+        if not ohlcv or len(ohlcv) < 2:
+            return None
+        true_ranges = []
+        for i in range(1, len(ohlcv)):
+            high = ohlcv[i][2]
+            low = ohlcv[i][3]
+            prev_close = ohlcv[i - 1][4]
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            true_ranges.append(tr)
+        recent = true_ranges[-min(period, len(true_ranges)):]
+        return sum(recent) / len(recent) if recent else None
     
     def _supports_batch_mode(self) -> bool:
         """Check if strategist supports batch analysis."""
@@ -263,8 +359,8 @@ class Orchestrator:
                     )
 
                 intel_list.append(intel)
-                logger.info(f"{pair}: direction={intel.fused_direction:+.2f}, "
-                           f"confidence={intel.fused_confidence:.0%}")
+                logger.info(f"[PIPELINE] {pair}: analyst output: direction={intel.fused_direction:+.3f}, "
+                           f"confidence={intel.fused_confidence:.3f}")
 
             except Exception as e:
                 logger.error(f"Error gathering intel for {pair}: {e}")
@@ -275,12 +371,24 @@ class Orchestrator:
         # 2. Get batch trading plan (single Claude call)
         plan = await self.strategist.create_batch_plan(intel_list, portfolio)
 
+        # Log strategist output
+        for signal in plan.signals:
+            logger.info(f"[PIPELINE] {signal.pair}: strategist output: action={signal.action.value}, "
+                       f"confidence={signal.confidence:.3f}, size_pct={signal.size_pct:.3f}")
+
         # Store latest fusion for dashboard
         if intel_list:
             self._latest_fusion = intel_list[-1]
 
         # 3. Validate through sentinel
         validated_plan = await self.sentinel.validate_plan(plan, portfolio)
+
+        # Log sentinel results
+        for signal in validated_plan.signals:
+            if signal.status.value == "approved":
+                logger.info(f"[PIPELINE] {signal.pair}: sentinel: APPROVED")
+            elif signal.rejection_reason:
+                logger.info(f"[PIPELINE] {signal.pair}: sentinel: REJECTED - {signal.rejection_reason}")
 
         # 4. Execute approved trades
         results = {}
@@ -358,18 +466,30 @@ class Orchestrator:
                 regime=Regime.UNKNOWN
             )
         
-        logger.info(f"{pair}: direction={intel.fused_direction:+.2f}, "
-                   f"confidence={intel.fused_confidence:.0%}")
+        logger.info(f"[PIPELINE] {pair}: analyst output: direction={intel.fused_direction:+.3f}, "
+                   f"confidence={intel.fused_confidence:.3f}")
 
         # Store latest fusion for dashboard API
         self._latest_fusion = intel
 
         # 4. Get trading plan from strategist
         plan = await self.strategist.create_plan(intel, portfolio)
-        
+
+        # Log strategist output
+        for signal in plan.signals:
+            logger.info(f"[PIPELINE] {signal.pair}: strategist output: action={signal.action.value}, "
+                       f"confidence={signal.confidence:.3f}, size_pct={signal.size_pct:.3f}")
+
         # 5. Validate through sentinel
         validated_plan = await self.sentinel.validate_plan(plan, portfolio)
-        
+
+        # Log sentinel results
+        for signal in validated_plan.signals:
+            if signal.status.value == "approved":
+                logger.info(f"[PIPELINE] {signal.pair}: sentinel: APPROVED")
+            elif signal.rejection_reason:
+                logger.info(f"[PIPELINE] {signal.pair}: sentinel: REJECTED - {signal.rejection_reason}")
+
         # 6. Execute approved trades
         if validated_plan.actionable_signals:
             report = await self.executor.execute(validated_plan)

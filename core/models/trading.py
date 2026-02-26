@@ -36,6 +36,8 @@ class OrderType(Enum):
     LIMIT = "limit"
     STOP_LOSS = "stop_loss"
     TAKE_PROFIT = "take_profit"
+    TRAILING_STOP = "trailing_stop"
+    BREAKEVEN_STOP = "breakeven_stop"
 
 
 @dataclass
@@ -112,7 +114,17 @@ class Trade:
     entry_price: Optional[float] = None
     exit_price: Optional[float] = None
     realized_pnl: Optional[float] = None
+    realized_pnl_after_fees: Optional[float] = None
+    fees_quote: Optional[float] = None
     realized_pnl_percent: Optional[float] = None  # P&L as percentage
+
+    # Observability timestamps/latencies
+    decision_timestamp: Optional[datetime] = None
+    submitted_timestamp: Optional[datetime] = None
+    filled_timestamp: Optional[datetime] = None
+    latency_decision_to_submit_ms: Optional[float] = None
+    latency_submit_to_fill_ms: Optional[float] = None
+    latency_decision_to_fill_ms: Optional[float] = None
 
     # Aliases for analytics compatibility
     @property
@@ -152,7 +164,18 @@ class Trade:
             "signal_confidence": self.signal_confidence,
             "reasoning": self.reasoning,
             "timestamp": self.timestamp.isoformat(),
-            "realized_pnl": self.realized_pnl
+            "entry_price": self.entry_price,
+            "exit_price": self.exit_price,
+            "realized_pnl": self.realized_pnl,
+            "realized_pnl_after_fees": self.realized_pnl_after_fees,
+            "fees_quote": self.fees_quote,
+            "realized_pnl_percent": self.realized_pnl_percent,
+            "decision_timestamp": self.decision_timestamp.isoformat() if self.decision_timestamp else None,
+            "submitted_timestamp": self.submitted_timestamp.isoformat() if self.submitted_timestamp else None,
+            "filled_timestamp": self.filled_timestamp.isoformat() if self.filled_timestamp else None,
+            "latency_decision_to_submit_ms": self.latency_decision_to_submit_ms,
+            "latency_submit_to_fill_ms": self.latency_submit_to_fill_ms,
+            "latency_decision_to_fill_ms": self.latency_decision_to_fill_ms
         }
 
 

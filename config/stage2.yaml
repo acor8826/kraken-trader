@@ -16,40 +16,22 @@ trading:
 risk:
   max_position_pct: 0.20
   max_total_exposure_pct: 0.80
-  stop_loss_pct: 0.05  # Fallback when volatility calculation fails
+  stop_loss_pct: 0.025
+  take_profit_multiplier: 2.0
   min_confidence: 0.65  # Slightly lower with more signals
   max_daily_trades: 15
   max_daily_loss_pct: 0.10
 
-# Volatility-Based Risk Configuration
-volatility_risk:
-  enabled: true  # Enable volatility-aware stop-losses and take-profits
-  atr_period: 14  # ATR calculation period (standard is 14)
-  volatility_lookback: 20  # Candles to look back for volatility analysis
-  
-  # ATR multipliers for stop-loss calculation
-  base_stop_multiplier: 2.0  # Base ATR multiplier for stop-loss
-  low_vol_stop_multiplier: 1.5    # BTC, ETH - tighter stops
-  medium_vol_stop_multiplier: 2.0  # Default multiplier
-  high_vol_stop_multiplier: 2.5   # SOL, meme coins - wider stops
-  
-  # ATR multipliers for take-profit calculation  
-  base_tp_multiplier: 3.0  # Base ATR multiplier for take-profit
-  low_vol_tp_multiplier: 2.0      # Conservative targets for stable assets
-  medium_vol_tp_multiplier: 3.0   # Standard targets
-  high_vol_tp_multiplier: 4.0     # Aggressive targets for volatile assets
-  
-  # Volatility classification thresholds (ATR as % of price)
-  low_volatility_threshold: 0.02   # 2% - anything below is "low vol"
-  high_volatility_threshold: 0.06  # 6% - anything above is "high vol"
-  
-  # Fallback values when volatility data is unavailable
-  fallback_stop_loss_pct: 0.05    # 5% fallback stop-loss
-  fallback_take_profit_pct: 0.10  # 10% fallback take-profit
-  
-  # Data quality requirements
-  min_candles_required: 14  # Minimum candles needed for volatility calculation
-  cache_ttl_minutes: 30     # How long to cache volatility profiles
+# Exit management
+exit_management:
+  enable_trailing_stop: true
+  enable_breakeven_stop: true
+  trailing_stop:
+    activation_pct: 0.01
+    distance_pct: 0.007
+  breakeven:
+    activation_pct: 0.005
+    buffer_pct: 0.001
 
 features:
   # Analysts
@@ -61,9 +43,6 @@ features:
   # Intelligence
   enable_intel_fusion: true        # NEW: Combine analyst signals
   enable_regime_detection: false
-
-  # Strategy  
-  enable_advanced_strategies: true  # NEW: Advanced strategist with volatility-aware risk
 
   # Execution
   enable_limit_orders: true        # NEW: Better fills

@@ -315,19 +315,21 @@ class RuleBasedBatchStrategist(IStrategist):
         signals = []
         for intel in intel_list:
             action = TradeAction.HOLD
-            confidence = abs(intel.fused_direction) * intel.fused_confidence
             size_pct = 0.0
             reasoning = "Rule-based batch: "
 
-            if intel.fused_direction > 0.3 and intel.fused_confidence > 0.6:
+            if intel.fused_direction > 0.3 and intel.fused_confidence > 0.5:
                 action = TradeAction.BUY
-                size_pct = risk["max_position_pct"] * confidence
+                confidence = intel.fused_confidence
+                size_pct = risk["max_position_pct"] * min(1.0, abs(intel.fused_direction) + 0.2)
                 reasoning += f"Bullish ({intel.fused_direction:+.2f})"
-            elif intel.fused_direction < -0.3 and intel.fused_confidence > 0.6:
+            elif intel.fused_direction < -0.3 and intel.fused_confidence > 0.5:
                 action = TradeAction.SELL
+                confidence = intel.fused_confidence
                 size_pct = 1.0
                 reasoning += f"Bearish ({intel.fused_direction:+.2f})"
             else:
+                confidence = intel.fused_confidence * 0.5
                 reasoning += f"No signal ({intel.fused_direction:+.2f})"
 
             signals.append(TradeSignal(

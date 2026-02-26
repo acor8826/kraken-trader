@@ -26,6 +26,7 @@ orchestrator = None
 scheduler = None
 settings = None
 alert_manager = None
+seed_improver = None
 
 # Portfolio cache (avoid hammering Binance on every dashboard poll)
 _portfolio_cache = None
@@ -99,6 +100,17 @@ def create_app(stage: Stage = None) -> FastAPI:
             )
             logger.info(f"Meme scheduler started: every {meme_config.cycle_interval_seconds}s")
 
+        # Seed improver daily review: 6:00 PM Australia/Sydney
+        scheduler.add_job(
+            _run_seed_improver_daily,
+            'cron',
+            hour=18,
+            minute=0,
+            timezone='Australia/Sydney',
+            id='seed_improver_daily',
+            replace_existing=True,
+        )
+
         scheduler.start()
 
         logger.info(f"Scheduler started: every {settings.trading.check_interval_minutes} minutes")
@@ -160,6 +172,7 @@ async def _create_orchestrator(settings: Settings):
 
             sim_config = SimulationConfig(
                 initial_balance=settings.trading.initial_capital,
+                quote_currency=settings.trading.quote_currency,
                 scenario=scenario,
                 slippage_pct=float(os.getenv("SIMULATION_SLIPPAGE", "0.001")),
                 failure_rate=float(os.getenv("SIMULATION_FAILURE_RATE", "0.02")),
@@ -171,7 +184,8 @@ async def _create_orchestrator(settings: Settings):
             from api.routes.simulation import set_simulation_exchange
             set_simulation_exchange(exchange)
         except ImportError:
-            exchange = MockExchange(initial_balance=settings.trading.initial_capital)
+            exchange = MockExchange(initial_balance=settings.trading.initial_capital,
+                                    quote_currency=settings.trading.quote_currency)
             logger.info("Using MOCK exchange (paper trading)")
     else:
         exchange = create_exchange(settings.exchange.name)
@@ -232,15 +246,9 @@ async def _create_orchestrator(settings: Settings):
             opt_features.append("cache")
         logger.info(f"[COST_OPT] Using cost-optimized strategist: {', '.join(opt_features)}")
     elif llm:
-        # Check if we should use Advanced Strategist for Stage 2+
-        if settings.stage.value in ["stage2", "stage3"] and hasattr(settings, 'features') and getattr(settings.features, 'enable_advanced_strategies', False):
-            from agents.strategist.advanced import AdvancedStrategist
-            strategist = AdvancedStrategist(llm, settings, exchange)
-            logger.info("Using Advanced Strategist with volatility-aware take-profits")
-        else:
-            # Standard LLM strategist
-            strategist = SimpleStrategist(llm, settings)
-            logger.info("Using standard Claude strategist")
+        # Standard LLM strategist
+        strategist = SimpleStrategist(llm, settings)
+        logger.info("Using standard Claude strategist")
     else:
         # No LLM - rules only
         strategist = RuleBasedStrategist(settings)
@@ -275,22 +283,22 @@ async def _create_orchestrator(settings: Settings):
             from agents.sentinel.circuit_breakers import CircuitBreakers
 
             circuit_breakers = CircuitBreakers(
-                max_daily_loss_pct=settings.config.get("circuit_breakers", {}).get("max_daily_loss_pct", 0.10),
-                max_daily_trades=settings.config.get("circuit_breakers", {}).get("max_daily_trades", 15),
-                volatility_threshold_pct=settings.config.get("circuit_breakers", {}).get("volatility_threshold_pct", 0.10),
-                consecutive_loss_limit=settings.config.get("circuit_breakers", {}).get("consecutive_loss_limit", 3)
+                max_daily_loss_pct=settings.risk.max_daily_loss_pct,
+                max_daily_trades=settings.risk.max_daily_trades,
+                volatility_threshold_pct=0.10,
+                consecutive_loss_limit=3
             )
             logger.info("✅ Circuit breakers initialized")
 
             # TODO: Create EnhancedSentinel that uses circuit_breakers
-            # For now, use BasicSentinel with exchange for volatility-aware stops
-            sentinel = BasicSentinel(memory, settings, exchange)
+            # For now, use BasicSentinel
+            sentinel = BasicSentinel(memory, settings)
             sentinel.circuit_breakers = circuit_breakers  # Attach for manual use
         except Exception as e:
             logger.warning(f"Failed to initialize circuit breakers: {e}")
-            sentinel = BasicSentinel(memory, settings, exchange)
+            sentinel = BasicSentinel(memory, settings)
     else:
-        sentinel = BasicSentinel(memory, settings, exchange)
+        sentinel = BasicSentinel(memory, settings)
 
     # Executor
     executor = SimpleExecutor(exchange, memory, settings)
@@ -306,9 +314,10 @@ async def _create_orchestrator(settings: Settings):
         settings=settings
     )
 
-    # Attach cache and circuit breakers for access in routes
+    # Attach cache, circuit breakers, and LLM for access in routes
     orch._cache = cache
     orch._circuit_breakers = getattr(sentinel, 'circuit_breakers', None)
+    orch._llm = llm
 
     # =========================================================================
     # Alert Manager
@@ -457,6 +466,15 @@ async def _create_orchestrator(settings: Settings):
     else:
         logger.info("Meme trading module disabled (set ENABLE_MEME_TRADING=true to enable)")
 
+    # Seed improver service (Phase 0)
+    global seed_improver
+    try:
+        from agents.seed_improver import SeedImproverService
+        seed_improver = SeedImproverService(memory=memory)
+        logger.info("✅ SeedImprover initialized (Phase 0)")
+    except Exception as e:
+        logger.warning(f"Failed to initialize SeedImprover: {e}")
+
     logger.info(f"🚀 Orchestrator initialized ({len(analysts)} analysts)")
     return orch
 
@@ -479,6 +497,16 @@ async def _run_meme_cycle():
             await orchestrator._meme_orchestrator.run_cycle()
         except Exception as e:
             logger.error(f"Meme trading cycle error: {e}", exc_info=True)
+
+
+async def _run_seed_improver_daily():
+    """Daily autonomous seed improver run (6:00 PM Australia/Sydney)."""
+    global seed_improver
+    if seed_improver:
+        try:
+            await seed_improver.run("scheduled", {"source": "apscheduler"})
+        except Exception as e:
+            logger.error(f"Seed improver daily run error: {e}", exc_info=True)
 
 
 def _register_routes(app: FastAPI):
@@ -549,29 +577,13 @@ def _register_routes(app: FastAPI):
     
     @app.get("/portfolio")
     async def get_portfolio():
-        """Get current portfolio state with enhanced risk levels (cached for 30s)"""
+        """Get current portfolio state (cached for 30s)"""
         if not orchestrator:
             raise HTTPException(status_code=503, detail="Agent not initialized")
 
         result = await _get_cached_portfolio()
         if result is None:
             raise HTTPException(status_code=500, detail="Portfolio data unavailable")
-        
-        # Enhance with volatility-aware risk levels if available
-        try:
-            if hasattr(orchestrator, 'sentinel') and orchestrator.sentinel:
-                portfolio = await orchestrator._get_portfolio_state()
-                risk_levels = await orchestrator.sentinel.get_position_risk_levels(portfolio.positions)
-                
-                # Add risk levels to the result
-                result['risk_levels'] = risk_levels
-                
-                logger.debug(f"[API] Enhanced portfolio with risk levels for {len(risk_levels)} positions")
-            
-        except Exception as e:
-            logger.warning(f"[API] Failed to calculate portfolio risk levels: {e}")
-            # Continue without risk levels
-        
         return result
     
     @app.get("/status")
@@ -614,6 +626,39 @@ def _register_routes(app: FastAPI):
         
         result = await orchestrator.run_cycle()
         return {"status": "completed", "result": result}
+
+    @app.post("/internal/seed-improver/run")
+    async def seed_improver_run(payload: Optional[dict] = None):
+        """Trigger seed improver cycle (scheduled/manual)."""
+        if not seed_improver:
+            raise HTTPException(status_code=503, detail="Seed improver not initialized")
+
+        body = payload or {}
+        trigger_type = body.get("trigger_type", "manual")
+        context = body.get("context", {})
+        result = await seed_improver.run(trigger_type, context)
+        return {
+            "status": result.status,
+            "run_id": result.run_id,
+            "trigger_type": result.trigger_type,
+            "summary": result.summary,
+        }
+
+    @app.post("/internal/seed-improver/loss")
+    async def seed_improver_loss(payload: Optional[dict] = None):
+        """Event-driven trigger for losing trade analysis."""
+        if not seed_improver:
+            raise HTTPException(status_code=503, detail="Seed improver not initialized")
+
+        body = payload or {}
+        trade = body.get("trade", body)
+        result = await seed_improver.run("losing_trade", {"trade": trade})
+        return {
+            "status": result.status,
+            "run_id": result.run_id,
+            "trigger_type": result.trigger_type,
+            "summary": result.summary,
+        }
     
     @app.post("/pause")
     async def pause_trading():
@@ -907,8 +952,8 @@ def _register_routes(app: FastAPI):
                 }
             }
             # Include LLM token usage if available
-            if hasattr(orchestrator, 'llm') and orchestrator.llm and hasattr(orchestrator.llm, 'get_usage_stats'):
-                result["token_usage"] = orchestrator.llm.get_usage_stats()
+            if orchestrator and getattr(orchestrator, '_llm', None) and hasattr(orchestrator._llm, 'get_usage_stats'):
+                result["token_usage"] = orchestrator._llm.get_usage_stats()
             return result
         except Exception as e:
             logger.error(f"Error getting cost optimization stats: {e}")
@@ -971,85 +1016,8 @@ def _register_routes(app: FastAPI):
                 "max_daily_loss_pct": settings.get_effective_risk().max_daily_loss_pct
             },
             "aggressive_available": settings.aggressive_risk is not None,
-            "pairs": settings.trading.pairs,
-            "volatility_enabled": settings.config.get("volatility_risk", {}).get("enabled", True)
+            "pairs": settings.trading.pairs
         }
-
-    @app.get("/api/volatility/profiles")
-    async def get_volatility_profiles():
-        """Get volatility profiles for all trading pairs"""
-        if not orchestrator or not orchestrator.sentinel:
-            raise HTTPException(status_code=503, detail="Agent not initialized")
-        
-        if not orchestrator.sentinel.volatility_enabled:
-            return {
-                "enabled": False,
-                "message": "Volatility-based risk management disabled"
-            }
-        
-        try:
-            profiles = {}
-            for pair in settings.trading.pairs:
-                try:
-                    profile = await orchestrator.sentinel.volatility_calculator.get_volatility_profile(
-                        pair, orchestrator.exchange
-                    )
-                    profiles[pair] = {
-                        "asset": profile.asset,
-                        "atr_14": profile.atr_14,
-                        "atr_pct": profile.atr_pct,
-                        "volatility_rank": profile.volatility_rank,
-                        "suggested_stop_loss_pct": profile.suggested_stop_loss_pct,
-                        "suggested_take_profit_pct": profile.suggested_take_profit_pct,
-                        "confidence": profile.confidence,
-                        "last_updated": profile.last_updated.isoformat()
-                    }
-                except Exception as e:
-                    logger.warning(f"Failed to get volatility profile for {pair}: {e}")
-                    profiles[pair] = {"error": str(e)}
-            
-            return {
-                "enabled": True,
-                "profiles": profiles,
-                "config": {
-                    "atr_period": orchestrator.sentinel.volatility_calculator.config.atr_period,
-                    "low_volatility_threshold": orchestrator.sentinel.volatility_calculator.config.low_volatility_threshold,
-                    "high_volatility_threshold": orchestrator.sentinel.volatility_calculator.config.high_volatility_threshold
-                }
-            }
-        except Exception as e:
-            logger.error(f"Error getting volatility profiles: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-
-    @app.get("/api/volatility/profile/{pair}")
-    async def get_volatility_profile(pair: str):
-        """Get volatility profile for a specific trading pair"""
-        if not orchestrator or not orchestrator.sentinel:
-            raise HTTPException(status_code=503, detail="Agent not initialized")
-        
-        if not orchestrator.sentinel.volatility_enabled:
-            raise HTTPException(status_code=400, detail="Volatility-based risk management disabled")
-        
-        try:
-            # Force refresh to get latest data
-            profile = await orchestrator.sentinel.volatility_calculator.get_volatility_profile(
-                pair, orchestrator.exchange, force_refresh=True
-            )
-            
-            return {
-                "pair": pair,
-                "asset": profile.asset,
-                "atr_14": profile.atr_14,
-                "atr_pct": profile.atr_pct,
-                "volatility_rank": profile.volatility_rank,
-                "suggested_stop_loss_pct": profile.suggested_stop_loss_pct,
-                "suggested_take_profit_pct": profile.suggested_take_profit_pct,
-                "confidence": profile.confidence,
-                "last_updated": profile.last_updated.isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Error getting volatility profile for {pair}: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
 
     # Serve dashboard static files
     static_dir = Path(__file__).parent.parent / "static"

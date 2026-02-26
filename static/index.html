@@ -5,99 +5,152 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Kraken Trading Agent - Dashboard</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            z-index: 1000;
+        }
+        .skip-link:focus {
+            top: 0;
+        }
+    </style>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
 </head>
 <body>
-    <div class="container">
+    <a href="#mainContent" class="skip-link">Skip to main content</a>
+    <main id="mainContent" class="container" role="main">
         <!-- Header -->
-        <header class="header">
+        <header class="header" role="banner">
             <div class="header-content">
                 <h1>Kraken Trading Agent</h1>
-                <div class="header-status">
-                    <span id="statusIndicator" class="status-dot"></span>
-                    <span id="statusText">Loading...</span>
+                <div class="header-status" role="status" aria-live="polite" aria-atomic="true">
+                    <span id="statusIndicator" class="status-dot" aria-hidden="true"></span>
+                    <span id="statusText">Loading dashboard status...</span>
                 </div>
             </div>
-            <div class="header-actions">
-                <button id="pauseBtn" class="btn btn-secondary" title="Pause trading">Pause</button>
-                <button id="resumeBtn" class="btn btn-secondary" style="display:none;" title="Resume trading">Resume</button>
-                <button id="triggerBtn" class="btn btn-primary" title="Trigger manual trading cycle">Trigger Cycle</button>
-                <button id="refreshBtn" class="btn btn-secondary" title="Refresh data">Refresh</button>
+            <div class="header-actions" role="toolbar" aria-label="Trading controls">
+                <button id="pauseBtn" class="btn btn-secondary" title="Pause trading" aria-label="Pause trading" accesskey="p" aria-keyshortcuts="Alt+P">Pause</button>
+                <button id="resumeBtn" class="btn btn-secondary" style="display:none;" title="Resume trading" aria-label="Resume trading" accesskey="u" aria-keyshortcuts="Alt+U">Resume</button>
+                <button id="triggerBtn" class="btn btn-primary" title="Trigger manual trading cycle" aria-label="Trigger manual trading cycle" accesskey="t" aria-keyshortcuts="Alt+T">Trigger Cycle</button>
+                <button id="refreshBtn" class="btn btn-secondary" title="Refresh data" aria-label="Refresh dashboard data" accesskey="r" aria-keyshortcuts="Alt+R">Refresh</button>
             </div>
         </header>
 
-        <!-- Metrics Cards -->
-        <section class="metrics-section">
-            <div class="metric-card">
-                <div class="metric-label">Total P&L</div>
-                <div class="metric-value" id="totalPnL">$0.00</div>
-                <div class="metric-change" id="totalPnLPercent">0.00%</div>
+        <!-- Portfolio Summary Cards -->
+        <section class="metrics-section" aria-labelledby="summaryHeading" role="region">
+            <h2 id="summaryHeading" class="sr-only">Portfolio summary</h2>
+            <div class="metric-card" role="group" aria-labelledby="cashLabel" aria-describedby="cashSubtext">
+                <div class="metric-label" id="cashLabel">Cash (USDT)</div>
+                <div class="metric-value" id="cashValue" aria-live="polite">$0.00</div>
+                <div class="metric-subtext" id="cashSubtext">Available balance</div>
             </div>
 
-            <div class="metric-card">
-                <div class="metric-label">Portfolio Value</div>
-                <div class="metric-value" id="portfolioValue">$1,000.00</div>
-                <div class="metric-change" id="portfolioPercent">0.00%</div>
-            </div>
-
-            <div class="metric-card">
-                <div class="metric-label">Win Rate</div>
-                <div class="metric-value" id="winRate">0%</div>
-                <div class="metric-subtext" id="winCount">0 / 0 trades</div>
-            </div>
-
-            <div class="metric-card">
-                <div class="metric-label">Total Trades</div>
-                <div class="metric-value" id="totalTrades">0</div>
+            <div class="metric-card" role="group" aria-labelledby="holdingsLabel" aria-describedby="activePositions">
+                <div class="metric-label" id="holdingsLabel">Holdings Value</div>
+                <div class="metric-value" id="holdingsValue" aria-live="polite">$0.00</div>
                 <div class="metric-subtext" id="activePositions">0 active positions</div>
             </div>
 
-            <div class="metric-card">
-                <div class="metric-label">Current Exposure</div>
-                <div class="metric-value" id="exposure">0%</div>
-                <div class="metric-subtext">max: 80%</div>
+            <div class="metric-card" role="group" aria-labelledby="portfolioLabel" aria-describedby="portfolioPercent">
+                <div class="metric-label" id="portfolioLabel">Total Value</div>
+                <div class="metric-value" id="portfolioValue" aria-live="polite">$0.00</div>
+                <div class="metric-subtext" id="portfolioPercent"></div>
             </div>
 
-            <div class="metric-card">
-                <div class="metric-label">Target Progress</div>
-                <div class="metric-value" id="targetProgress">0%</div>
-                <div class="metric-subtext">$5,000 goal</div>
+            <div class="metric-card" role="group" aria-labelledby="pnlLabel" aria-describedby="totalPnLPercent">
+                <div class="metric-label" id="pnlLabel">Bot P&L</div>
+                <div class="metric-value" id="totalPnL" aria-live="polite">--</div>
+                <div class="metric-change" id="totalPnLPercent"></div>
+            </div>
+
+            <div class="metric-card" role="group" aria-labelledby="tradesLabel" aria-describedby="winCount">
+                <div class="metric-label" id="tradesLabel">Total Trades</div>
+                <div class="metric-value" id="totalTrades" aria-live="polite">0</div>
+                <div class="metric-subtext" id="winCount">0 / 0 trades won</div>
+            </div>
+
+            <div class="metric-card" role="group" aria-labelledby="exposureLabel">
+                <div class="metric-label" id="exposureLabel">Current Exposure</div>
+                <div class="metric-value" id="exposure" aria-live="polite">0%</div>
+                <div class="metric-subtext">max: 80%</div>
+            </div>
+        </section>
+
+        <!-- Holdings Breakdown -->
+        <section class="holdings-section" aria-labelledby="holdingsHeading" role="region">
+            <h2 id="holdingsHeading">Holdings</h2>
+            <div class="table-container" tabindex="0">
+                <table class="trades-table">
+                    <caption class="sr-only">Current portfolio holdings with entry, risk, and profit targets</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col">Asset</th>
+                            <th scope="col">Amount</th>
+                            <th scope="col">Price</th>
+                            <th scope="col">Value (USDT)</th>
+                            <th scope="col">Entry Price</th>
+                            <th scope="col">Stop Loss</th>
+                            <th scope="col">Take Profit</th>
+                            <th scope="col">Est. Sell</th>
+                            <th scope="col">P&L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="holdingsBody" aria-live="polite">
+                        <tr class="loading-row">
+                            <td colspan="9" role="status">Loading holdings...</td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </section>
 
         <!-- Performance Chart -->
-        <section class="chart-section">
+        <section class="chart-section" aria-labelledby="performanceHeading" role="region">
             <div class="chart-header">
-                <h2>Portfolio Performance</h2>
-                <span id="chartStatus" class="chart-status">
-                    <span class="live-indicator"></span>
+                <h2 id="performanceHeading">Portfolio Performance</h2>
+                <span id="chartStatus" class="chart-status" role="status" aria-live="polite">
+                    <span class="live-indicator" aria-hidden="true"></span>
                     Live Updates
                 </span>
             </div>
             <div class="chart-container">
-                <canvas id="performanceChart"></canvas>
+                <canvas id="performanceChart" role="img" aria-label="Portfolio performance trend chart" aria-describedby="chartStatus" tabindex="0"></canvas>
             </div>
         </section>
 
         <!-- Trade History Table -->
-        <section class="trades-section">
-            <h2>Recent Trades</h2>
-            <div class="table-container">
+        <section class="trades-section" aria-labelledby="recentTradesHeading" role="region">
+            <h2 id="recentTradesHeading">Recent Trades</h2>
+            <div class="table-container" tabindex="0">
                 <table class="trades-table">
+                    <caption class="sr-only">Most recent trade executions and outcomes</caption>
                     <thead>
                         <tr>
-                            <th>Time</th>
-                            <th>Pair</th>
-                            <th>Action</th>
-                            <th>Price</th>
-                            <th>Amount</th>
-                            <th>Status</th>
-                            <th>P&L</th>
+                            <th scope="col">Time</th>
+                            <th scope="col">Pair</th>
+                            <th scope="col">Action</th>
+                            <th scope="col">Price</th>
+                            <th scope="col">Amount</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">P&L</th>
                         </tr>
                     </thead>
-                    <tbody id="tradesBody">
+                    <tbody id="tradesBody" aria-live="polite">
                         <tr class="loading-row">
-                            <td colspan="7">Loading trades...</td>
+                            <td colspan="7" role="status">Loading trades...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -105,42 +158,42 @@
         </section>
 
         <!-- Agent Status -->
-        <section class="status-section">
-            <h2>Agent Status</h2>
+        <section class="status-section" aria-labelledby="agentStatusHeading" role="region">
+            <h2 id="agentStatusHeading">Agent Status</h2>
             <div class="status-details">
                 <div class="status-item">
                     <span class="label">Stage:</span>
-                    <span id="stage" class="value">-</span>
+                    <span id="stage" class="value" aria-live="polite">-</span>
                 </div>
                 <div class="status-item">
                     <span class="label">Mode:</span>
-                    <span id="mode" class="value">-</span>
+                    <span id="mode" class="value" aria-live="polite">-</span>
                 </div>
                 <div class="status-item">
                     <span class="label">Next Cycle:</span>
-                    <span id="nextCycle" class="value">-</span>
+                    <span id="nextCycle" class="value" aria-live="polite">-</span>
                 </div>
                 <div class="status-item">
                     <span class="label">Cycles Run:</span>
-                    <span id="cycleCount" class="value">-</span>
+                    <span id="cycleCount" class="value" aria-live="polite">-</span>
                 </div>
                 <div class="status-item">
                     <span class="label">Trading Status:</span>
-                    <span id="tradingStatus" class="value">-</span>
+                    <span id="tradingStatus" class="value" role="status" aria-live="polite">-</span>
                 </div>
             </div>
         </section>
 
         <!-- Phase 2 Features Section -->
-        <section class="phase2-section" id="phase2Section">
-            <h2>Phase 2 Intelligence</h2>
+        <section class="phase2-section" id="phase2Section" aria-labelledby="phase2Heading" role="region">
+            <h2 id="phase2Heading">Phase 2 Intelligence</h2>
 
             <!-- Analyst Signals -->
             <div class="phase2-grid">
-                <div class="phase2-card">
+                <div class="phase2-card" role="region" aria-labelledby="analystSignalsHeading">
                     <div class="card-header">
-                        <h3>Analyst Signals</h3>
-                        <span id="analystCount" class="badge">0 analysts</span>
+                        <h3 id="analystSignalsHeading">Analyst Signals</h3>
+                        <span id="analystCount" class="badge" role="status" aria-live="polite">0 analysts</span>
                     </div>
                     <div class="analyst-list" id="analystList">
                         <div class="analyst-item">
@@ -185,7 +238,7 @@
                 <div class="phase2-card">
                     <div class="card-header">
                         <h3>Intelligence Fusion</h3>
-                        <span id="fusionStatus" class="badge badge-info">-</span>
+                        <span id="fusionStatus" class="badge badge-info" role="status" aria-live="polite">-</span>
                     </div>
                     <div class="fusion-display">
                         <div class="fusion-meter">
@@ -194,8 +247,8 @@
                                 <span>Neutral</span>
                                 <span>Bullish</span>
                             </div>
-                            <div class="meter-bar">
-                                <div class="meter-fill" id="fusionMeter" style="left: 50%;"></div>
+                            <div class="meter-bar" role="progressbar" aria-label="Fused sentiment position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+                                <div class="meter-fill" id="fusionMeter" style="left: 50%;" aria-hidden="true"></div>
                             </div>
                         </div>
                         <div class="fusion-stats">
@@ -219,7 +272,7 @@
                 <div class="phase2-card">
                     <div class="card-header">
                         <h3>Circuit Breakers</h3>
-                        <span id="breakerStatus" class="badge badge-success">Active</span>
+                        <span id="breakerStatus" class="badge badge-success" role="status" aria-live="polite">Active</span>
                     </div>
                     <div class="breaker-list" id="breakerList">
                         <div class="breaker-item" data-breaker="daily_loss">
@@ -269,7 +322,7 @@
                 <div class="phase2-card">
                     <div class="card-header">
                         <h3>Execution Stats</h3>
-                        <span id="execMode" class="badge">Market Orders</span>
+                        <span id="execMode" class="badge" role="status" aria-live="polite">Market Orders</span>
                     </div>
                     <div class="exec-stats">
                         <div class="exec-stat">
@@ -296,11 +349,11 @@
             <div class="phase2-card wide" id="fearGreedCard" style="display: none;">
                 <div class="card-header">
                     <h3>Fear & Greed Index</h3>
-                    <span id="fearGreedValue" class="badge badge-warning">-</span>
+                    <span id="fearGreedValue" class="badge badge-warning" role="status" aria-live="polite">-</span>
                 </div>
                 <div class="fear-greed-display">
                     <div class="fg-meter">
-                        <div class="fg-bar">
+                        <div class="fg-bar" role="progressbar" aria-label="Fear and greed index" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
                             <div class="fg-fill" id="fgMeter" style="width: 50%;"></div>
                         </div>
                         <div class="fg-labels">
@@ -320,15 +373,15 @@
         </section>
 
         <!-- Phase 3 Features Section -->
-        <section class="phase3-section" id="phase3Section" style="display: none;">
-            <h2>Phase 3 Advanced Analytics</h2>
+        <section class="phase3-section" id="phase3Section" style="display: none;" aria-labelledby="phase3Heading" role="region">
+            <h2 id="phase3Heading">Phase 3 Advanced Analytics</h2>
 
             <div class="phase3-grid">
                 <!-- Market Regime -->
                 <div class="phase3-card">
                     <div class="card-header">
                         <h3>Market Regime</h3>
-                        <span id="regimeStatus" class="badge badge-info">Unknown</span>
+                        <span id="regimeStatus" class="badge badge-info" role="status" aria-live="polite">Unknown</span>
                     </div>
                     <div class="regime-display">
                         <div class="regime-indicator" id="regimeIndicator">
@@ -356,7 +409,7 @@
                 <div class="phase3-card">
                     <div class="card-header">
                         <h3>Analyst Performance</h3>
-                        <span id="adaptiveWeights" class="badge badge-success">Adaptive</span>
+                        <span id="adaptiveWeights" class="badge badge-success" role="status" aria-live="polite">Adaptive</span>
                     </div>
                     <div class="analyst-performance" id="analystPerformance">
                         <div class="perf-item">
@@ -406,29 +459,30 @@
                     <div class="correlation-display">
                         <div class="correlation-matrix" id="correlationMatrix">
                             <table class="corr-table">
+                                <caption class="sr-only">Correlation matrix between held assets</caption>
                                 <thead>
                                     <tr>
-                                        <th></th>
-                                        <th>BTC</th>
-                                        <th>ETH</th>
-                                        <th>SOL</th>
+                                        <th scope="col"></th>
+                                        <th scope="col">BTC</th>
+                                        <th scope="col">ETH</th>
+                                        <th scope="col">SOL</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     <tr>
-                                        <td>BTC</td>
+                                        <th scope="row">BTC</th>
                                         <td class="corr-cell corr-high">1.00</td>
                                         <td class="corr-cell corr-med" id="corrBtcEth">0.85</td>
                                         <td class="corr-cell corr-med" id="corrBtcSol">0.78</td>
                                     </tr>
                                     <tr>
-                                        <td>ETH</td>
+                                        <th scope="row">ETH</th>
                                         <td class="corr-cell corr-med" id="corrEthBtc">0.85</td>
                                         <td class="corr-cell corr-high">1.00</td>
                                         <td class="corr-cell corr-med" id="corrEthSol">0.82</td>
                                     </tr>
                                     <tr>
-                                        <td>SOL</td>
+                                        <th scope="row">SOL</th>
                                         <td class="corr-cell corr-med" id="corrSolBtc">0.78</td>
                                         <td class="corr-cell corr-med" id="corrSolEth">0.82</td>
                                         <td class="corr-cell corr-high">1.00</td>
@@ -436,8 +490,8 @@
                                 </tbody>
                             </table>
                         </div>
-                        <div class="correlation-warning" id="correlationWarning" style="display: none;">
-                            <span class="warning-icon">!</span>
+                        <div class="correlation-warning" id="correlationWarning" style="display: none;" role="alert">
+                            <span class="warning-icon" aria-hidden="true">!</span>
                             <span class="warning-text">High correlation detected</span>
                         </div>
                     </div>
@@ -447,7 +501,7 @@
                 <div class="phase3-card">
                     <div class="card-header">
                         <h3>Alerting</h3>
-                        <span id="alertingStatus" class="badge badge-success">Active</span>
+                        <span id="alertingStatus" class="badge badge-success" role="status" aria-live="polite">Active</span>
                     </div>
                     <div class="alerting-display">
                         <div class="alert-channels">
@@ -467,7 +521,7 @@
                                 <span class="channel-status" id="emailStatus">-</span>
                             </div>
                         </div>
-                        <div class="recent-alerts" id="recentAlerts">
+                        <div class="recent-alerts" id="recentAlerts" aria-live="polite" aria-relevant="additions text">
                             <div class="alert-item">No recent alerts</div>
                         </div>
                     </div>
@@ -478,11 +532,11 @@
             <div class="phase3-card wide">
                 <div class="card-header">
                     <h3>Anomaly Detection</h3>
-                    <span id="anomalyScore" class="badge badge-success">Normal</span>
+                    <span id="anomalyScore" class="badge badge-success" role="status" aria-live="polite">Normal</span>
                 </div>
                 <div class="anomaly-display">
                     <div class="anomaly-meter">
-                        <div class="anomaly-bar">
+                        <div class="anomaly-bar" role="progressbar" aria-label="Anomaly risk score" aria-valuemin="0" aria-valuemax="100" aria-valuenow="15">
                             <div class="anomaly-fill" id="anomalyMeter" style="width: 15%;"></div>
                             <div class="anomaly-threshold"></div>
                         </div>
@@ -512,19 +566,19 @@
         </section>
 
         <!-- Phase 4: Cost Optimization Section -->
-        <section class="cost-section" id="costSection">
-            <h2>Cost Optimization</h2>
+        <section class="cost-section" id="costSection" aria-labelledby="costHeading" role="region">
+            <h2 id="costHeading">Cost Optimization</h2>
 
             <div class="cost-grid">
                 <!-- API Cost Savings -->
                 <div class="cost-card">
                     <div class="card-header">
                         <h3>API Cost Savings</h3>
-                        <span id="costSavingsPercent" class="badge badge-success">0%</span>
+                        <span id="costSavingsPercent" class="badge badge-success" role="status" aria-live="polite">0%</span>
                     </div>
                     <div class="cost-display">
                         <div class="cost-meter">
-                            <div class="cost-bar">
+                            <div class="cost-bar" role="progressbar" aria-label="Cost savings percentage" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
                                 <div class="cost-fill" id="costSavingsMeter" style="width: 0%;"></div>
                             </div>
                             <div class="cost-labels">
@@ -550,7 +604,7 @@
                 <div class="cost-card">
                     <div class="card-header">
                         <h3>Optimization Methods</h3>
-                        <span id="optimizationStatus" class="badge badge-info">Active</span>
+                        <span id="optimizationStatus" class="badge badge-info" role="status" aria-live="polite">Active</span>
                     </div>
                     <div class="optimization-methods">
                         <div class="method-item" id="batchMethod">
@@ -600,7 +654,7 @@
                 <div class="cost-card">
                     <div class="card-header">
                         <h3>API Call Statistics</h3>
-                        <span id="totalCallsBadge" class="badge">0 calls</span>
+                        <span id="totalCallsBadge" class="badge" role="status" aria-live="polite">0 calls</span>
                     </div>
                     <div class="call-stats">
                         <div class="call-stat">
@@ -626,11 +680,11 @@
                 <div class="cost-card">
                     <div class="card-header">
                         <h3>Hybrid Mode Breakdown</h3>
-                        <span id="hybridRatio" class="badge badge-info">-</span>
+                        <span id="hybridRatio" class="badge badge-info" role="status" aria-live="polite">-</span>
                     </div>
                     <div class="hybrid-breakdown">
                         <div class="hybrid-bar-container">
-                            <div class="hybrid-bar">
+                            <div class="hybrid-bar" role="group" aria-label="Hybrid decision split">
                                 <div class="hybrid-rules" id="hybridRulesBar" style="width: 0%;"></div>
                                 <div class="hybrid-claude" id="hybridClaudeBar" style="width: 100%;"></div>
                             </div>
@@ -657,7 +711,7 @@
             <div class="cost-card wide">
                 <div class="card-header">
                     <h3>Cost Comparison</h3>
-                    <span id="costComparisonBadge" class="badge badge-success">Optimized</span>
+                    <span id="costComparisonBadge" class="badge badge-success" role="status" aria-live="polite">Optimized</span>
                 </div>
                 <div class="cost-comparison">
                     <div class="comparison-item">
@@ -676,10 +730,8 @@
                 </div>
             </div>
         </section>
-    </div>
+    </main>
 
-    <script src="dashboard-config.js"></script>
     <script src="dashboard.js"></script>
-    <script src="dashboard-production-patch.js"></script>
 </body>
 </html>

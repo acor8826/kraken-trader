@@ -3,20 +3,18 @@ Sentinel Agent
 
 Risk management and safety guardian.
 Validates trading plans, enforces position limits, monitors stop-losses.
-Enhanced with volatility-aware stop-loss calculation.
 """
 
 from typing import Dict, List, Optional
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
-from core.interfaces import ISentinel, IMemory, IExchange
+from core.interfaces import ISentinel, IMemory
 from core.models import (
     TradingPlan, TradeSignal, Trade, Portfolio, Position,
-    TradeAction, TradeStatus
+    TradeAction, TradeStatus, OrderType
 )
 from core.config import Settings, get_settings
-from core.risk import VolatilityCalculator, VolatilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +30,12 @@ class BasicSentinel(ISentinel):
     - Confidence threshold
     """
 
-    def __init__(self, memory: IMemory = None, settings: Settings = None, exchange: IExchange = None):
+    # Cooldown period after a stop-loss exit before re-entering the same pair
+    STOP_LOSS_COOLDOWN_MINUTES = 180  # 3 hours (3 cycles at 60min)
+
+    def __init__(self, memory: IMemory = None, settings: Settings = None):
         self.memory = memory
         self.settings = settings or get_settings()
-        self.exchange = exchange
         self._paused = False
 
         # Use effective risk (supports aggressive profile)
@@ -43,6 +43,7 @@ class BasicSentinel(ISentinel):
         self.max_position_pct = effective_risk.max_position_pct
         self.max_exposure_pct = effective_risk.max_total_exposure_pct
         self.stop_loss_pct = effective_risk.stop_loss_pct
+        self.take_profit_multiplier = effective_risk.take_profit_multiplier
         self.min_confidence = effective_risk.min_confidence
 
         # Per-pair stop losses (from aggressive config if available)
@@ -50,41 +51,24 @@ class BasicSentinel(ISentinel):
         if self.settings.aggressive_risk:
             self._pair_stop_losses = self.settings.aggressive_risk.pair_stop_losses.copy()
 
-        # Initialize volatility-based risk management
-        volatility_config = self._load_volatility_config()
-        self.volatility_calculator = VolatilityCalculator(volatility_config)
-        self.volatility_enabled = self.settings.config.get("volatility_risk", {}).get("enabled", True)
+        # Exit management config (trailing stop + breakeven)
+        exit_cfg = self.settings.exit_management
+        self._trailing_enabled = exit_cfg.enable_trailing_stop
+        self._trailing_activation = exit_cfg.trailing_stop.activation_pct
+        self._trailing_distance = exit_cfg.trailing_stop.distance_pct
+        self._breakeven_enabled = exit_cfg.enable_breakeven_stop
+        self._breakeven_activation = exit_cfg.breakeven.activation_pct
+        self._breakeven_buffer = exit_cfg.breakeven.buffer_pct
 
         logger.info(f"Sentinel initialized: max_pos={self.max_position_pct:.0%}, "
-                   f"stop_loss={self.stop_loss_pct:.0%}, min_conf={self.min_confidence:.0%}")
+                   f"stop_loss={self.stop_loss_pct:.1%}, min_conf={self.min_confidence:.0%}")
+        if self._trailing_enabled:
+            logger.info(f"[SENTINEL] Trailing stop: activate at +{self._trailing_activation:.1%}, "
+                       f"trail {self._trailing_distance:.1%} below peak")
+        if self._breakeven_enabled:
+            logger.info(f"[SENTINEL] Breakeven stop: activate at +{self._breakeven_activation:.1%}")
         if self._pair_stop_losses:
             logger.info(f"[SENTINEL] Per-pair stop losses configured for {len(self._pair_stop_losses)} pairs")
-        if self.volatility_enabled and self.exchange:
-            logger.info("[SENTINEL] Volatility-aware risk management enabled")
-        else:
-            logger.info("[SENTINEL] Using fixed stop-loss percentages (volatility-aware disabled or no exchange)")
-
-    def _load_volatility_config(self) -> VolatilityConfig:
-        """Load volatility configuration from settings"""
-        vol_config = self.settings.config.get("volatility_risk", {})
-        
-        return VolatilityConfig(
-            atr_period=vol_config.get("atr_period", 14),
-            volatility_lookback=vol_config.get("volatility_lookback", 20),
-            base_stop_multiplier=vol_config.get("base_stop_multiplier", 2.0),
-            base_tp_multiplier=vol_config.get("base_tp_multiplier", 3.0),
-            low_volatility_threshold=vol_config.get("low_volatility_threshold", 0.02),
-            high_volatility_threshold=vol_config.get("high_volatility_threshold", 0.06),
-            low_vol_stop_multiplier=vol_config.get("low_vol_stop_multiplier", 1.5),
-            medium_vol_stop_multiplier=vol_config.get("medium_vol_stop_multiplier", 2.0),
-            high_vol_stop_multiplier=vol_config.get("high_vol_stop_multiplier", 2.5),
-            low_vol_tp_multiplier=vol_config.get("low_vol_tp_multiplier", 2.0),
-            medium_vol_tp_multiplier=vol_config.get("medium_vol_tp_multiplier", 3.0),
-            high_vol_tp_multiplier=vol_config.get("high_vol_tp_multiplier", 4.0),
-            fallback_stop_loss_pct=vol_config.get("fallback_stop_loss_pct", 0.05),
-            fallback_take_profit_pct=vol_config.get("fallback_take_profit_pct", 0.10),
-            min_candles_required=vol_config.get("min_candles_required", 14)
-        )
     
     async def validate_plan(self, plan: TradingPlan, portfolio: Portfolio) -> TradingPlan:
         """
@@ -105,30 +89,64 @@ class BasicSentinel(ISentinel):
             
             # Check confidence threshold
             if signal.confidence < self.min_confidence:
-                signal.reject(f"Confidence {signal.confidence:.0%} below threshold {self.min_confidence:.0%}")
+                signal.reject(f"Confidence {signal.confidence:.2f} below threshold {self.min_confidence:.2f}")
+                logger.info(f"[SENTINEL] {signal.pair}: REJECTED - confidence {signal.confidence:.3f} < "
+                           f"threshold {self.min_confidence:.3f}")
                 continue
             
             # Check position size
             if signal.action == TradeAction.BUY:
+                base_asset = signal.pair.split("/")[0]
+
+                # Check if we already hold this asset
+                existing_position = portfolio.get_position(base_asset)
+                if existing_position and existing_position.amount > 0:
+                    signal.reject(f"Already holding {base_asset} position "
+                                  f"({existing_position.amount:.6f})")
+                    logger.info(f"[SENTINEL] {signal.pair}: REJECTED - already holding position")
+                    continue
+
+                # Check stop-loss cooldown to prevent revenge trading
+                if self.memory and hasattr(self.memory, 'get_stop_loss_time'):
+                    last_sl = await self.memory.get_stop_loss_time(base_asset)
+                    if last_sl:
+                        cooldown_end = last_sl + timedelta(minutes=self.STOP_LOSS_COOLDOWN_MINUTES)
+                        if datetime.now(timezone.utc) < cooldown_end:
+                            remaining = (cooldown_end - datetime.now(timezone.utc)).total_seconds() / 60
+                            signal.reject(f"Stop-loss cooldown active ({remaining:.0f}min remaining)")
+                            logger.info(f"[SENTINEL] {signal.pair}: REJECTED - cooldown after stop-loss")
+                            continue
+
                 max_size = portfolio.available_quote * self.max_position_pct
                 requested_size = portfolio.available_quote * signal.size_pct
-                
+
                 if requested_size > max_size:
                     # Reduce to max allowed
                     signal.size_pct = self.max_position_pct
                     logger.warning(f"Reduced position size to {self.max_position_pct:.0%}")
-                
+
                 # Check total exposure after this trade
+                if portfolio.total_value <= 0:
+                    signal.reject("Portfolio value is zero - cannot calculate exposure")
+                    logger.info(f"[SENTINEL] {signal.pair}: REJECTED - portfolio total_value is $0")
+                    continue
                 new_exposure = (portfolio.positions_value + requested_size) / portfolio.total_value
                 if new_exposure > self.max_exposure_pct:
                     signal.reject(f"Would exceed max exposure ({new_exposure:.0%} > {self.max_exposure_pct:.0%})")
                     continue
-                
+
                 # Check minimum trade size
                 trade_value = portfolio.available_quote * signal.size_pct
                 if trade_value < 10:  # Minimum trade size
-                    signal.reject(f"Trade size too small (${trade_value:.2f})")
-                    continue
+                    if trade_value >= 5 and portfolio.available_quote >= 10:
+                        # Bump to minimum viable trade
+                        signal.size_pct = 10.0 / portfolio.available_quote
+                        trade_value = 10.0
+                        logger.info(f"[SENTINEL] {signal.pair}: Bumped trade size to minimum $10 "
+                                   f"(size_pct adjusted to {signal.size_pct:.3f})")
+                    else:
+                        signal.reject(f"Trade size too small (${trade_value:.2f})")
+                        continue
             
             # Check we have position to sell
             if signal.action == TradeAction.SELL:
@@ -151,10 +169,20 @@ class BasicSentinel(ISentinel):
         Check all positions for stop-loss triggers.
         Returns list of trades to execute for triggered stops.
 
-        Uses volatility-aware stop losses when enabled and exchange is available,
-        otherwise falls back to per-pair or default stop-loss percentages.
+        Uses per-pair stop losses if configured (for high-volatility pairs),
+        otherwise falls back to the default stop-loss percentage.
         """
-        stop_trades = []
+        return await self.check_exit_triggers(positions)
+
+    async def check_exit_triggers(self, positions: Dict[str, Position]) -> List[Trade]:
+        """
+        Check all positions for exits in priority order:
+        1. Trailing stop (if active and price dropped below trail)
+        2. Breakeven stop (if activated and price fell back to entry)
+        3. Take-profit (gain >= target)
+        4. Fixed stop-loss (loss >= threshold) -- last resort
+        """
+        exit_trades = []
 
         for symbol, position in positions.items():
             if position.amount <= 0:
@@ -163,72 +191,107 @@ class BasicSentinel(ISentinel):
             if position.entry_price is None or position.current_price is None:
                 continue
 
-            # Determine the appropriate pair format
-            pair = f"{symbol}/USDT"  # Most common quote currency
-            if hasattr(self.settings, 'trading') and hasattr(self.settings.trading, 'quote_currency'):
-                quote = self.settings.trading.quote_currency
-                pair = f"{symbol}/{quote}"
-
-            # Get stop loss for this position
-            stop_loss_pct = await self._get_dynamic_stop_loss(pair, position)
-
-            # Calculate loss percentage
+            pair = f"{symbol}/{self.settings.trading.quote_currency}"
+            stop_loss = self._get_stop_loss_for_pair(pair)
+            gain_pct = (position.current_price - position.entry_price) / position.entry_price
             loss_pct = (position.entry_price - position.current_price) / position.entry_price
 
-            if loss_pct >= stop_loss_pct:
-                logger.warning(f"STOP-LOSS triggered for {symbol}: "
-                             f"entry=${position.entry_price:,.2f}, "
-                             f"current=${position.current_price:,.2f}, "
-                             f"loss={loss_pct:.1%} (threshold: {stop_loss_pct:.1%})")
+            # --- 1. TRAILING STOP (if active) ---
+            if self._trailing_enabled and position.trailing_stop_active:
+                if position.trailing_stop_price and position.current_price <= position.trailing_stop_price:
+                    logger.warning(
+                        f"TRAILING-STOP triggered for {symbol}: "
+                        f"entry=${position.entry_price:,.2f}, peak=${position.peak_price:,.2f}, "
+                        f"current=${position.current_price:,.2f}, trail=${position.trailing_stop_price:,.2f}")
+                    trade = Trade(
+                        pair=pair,
+                        action=TradeAction.SELL,
+                        order_type=OrderType.TRAILING_STOP,
+                        requested_size_base=position.amount,
+                        entry_price=position.entry_price,
+                        reasoning=f"Trailing stop triggered: price ${position.current_price:,.2f} "
+                                  f"fell below trail ${position.trailing_stop_price:,.2f} "
+                                  f"(peak: ${position.peak_price:,.2f})"
+                    )
+                    exit_trades.append(trade)
+                    continue
 
-                # Create sell trade
+            # --- 2. TRAILING STOP ACTIVATION ---
+            if self._trailing_enabled and not position.trailing_stop_active:
+                if gain_pct >= self._trailing_activation:
+                    position.trailing_stop_active = True
+                    position.peak_price = position.current_price
+                    position.trailing_stop_price = round(
+                        position.current_price * (1 - self._trailing_distance), 2
+                    )
+                    logger.info(
+                        f"[SENTINEL] Trailing stop ACTIVATED for {symbol}: "
+                        f"gain={gain_pct:.1%}, trail=${position.trailing_stop_price:,.2f}")
+
+            # --- 3. BREAKEVEN STOP ---
+            # Triggers when: position previously reached activation threshold
+            # (peak_price shows it was profitable), but price has now dropped
+            # back to near entry. Uses peak_price to detect prior activation.
+            if (self._breakeven_enabled and not position.trailing_stop_active
+                    and position.peak_price is not None):
+                peak_gain = (position.peak_price - position.entry_price) / position.entry_price
+                if peak_gain >= self._breakeven_activation:
+                    breakeven_price = position.entry_price * (1 + self._breakeven_buffer)
+                    if position.current_price <= breakeven_price:
+                        logger.info(
+                            f"BREAKEVEN-STOP triggered for {symbol}: "
+                            f"entry=${position.entry_price:,.2f}, "
+                            f"peak=${position.peak_price:,.2f}, "
+                            f"current=${position.current_price:,.2f}")
+                        trade = Trade(
+                            pair=pair,
+                            action=TradeAction.SELL,
+                            order_type=OrderType.BREAKEVEN_STOP,
+                            requested_size_base=position.amount,
+                            entry_price=position.entry_price,
+                            reasoning=f"Breakeven stop triggered: peaked at "
+                                      f"${position.peak_price:,.2f} then reverted "
+                                      f"to entry (${position.current_price:,.2f})"
+                        )
+                        exit_trades.append(trade)
+                        continue
+
+            # --- 4. TAKE PROFIT ---
+            take_profit = stop_loss * self.take_profit_multiplier
+            if gain_pct >= take_profit:
+                logger.info(f"TAKE-PROFIT triggered for {symbol}: "
+                            f"entry=${position.entry_price:,.2f}, "
+                            f"current=${position.current_price:,.2f}, "
+                            f"gain={gain_pct:.1%} (target: {take_profit:.1%})")
                 trade = Trade(
                     pair=pair,
                     action=TradeAction.SELL,
+                    order_type=OrderType.TAKE_PROFIT,
                     requested_size_base=position.amount,
                     entry_price=position.entry_price,
-                    reasoning=f"Stop-loss triggered at {loss_pct:.1%} loss (threshold: {stop_loss_pct:.1%})"
+                    reasoning=f"Take-profit triggered at {gain_pct:.1%} gain (target: {take_profit:.1%})"
                 )
-                stop_trades.append(trade)
+                exit_trades.append(trade)
+                continue
 
-        return stop_trades
-
-    async def _get_dynamic_stop_loss(self, pair: str, position: Position) -> float:
-        """
-        Get dynamic stop-loss percentage for a position.
-        
-        Uses volatility-based calculation if enabled and possible,
-        otherwise falls back to configured or default values.
-        """
-        # Try volatility-based calculation first
-        if self.volatility_enabled and self.exchange:
-            try:
-                # Calculate volatility-aware stop loss based on entry price
-                levels = await self.volatility_calculator.calculate_position_levels(
+            # --- 5. FIXED STOP LOSS ---
+            if loss_pct >= stop_loss:
+                logger.warning(f"STOP-LOSS triggered for {symbol}: "
+                             f"entry=${position.entry_price:,.2f}, "
+                             f"current=${position.current_price:,.2f}, "
+                             f"loss={loss_pct:.1%} (threshold: {stop_loss:.1%})")
+                trade = Trade(
                     pair=pair,
+                    action=TradeAction.SELL,
+                    order_type=OrderType.STOP_LOSS,
+                    requested_size_base=position.amount,
                     entry_price=position.entry_price,
-                    exchange=self.exchange
+                    reasoning=f"Stop-loss triggered at {loss_pct:.1%} loss (threshold: {stop_loss:.1%})"
                 )
-                
-                stop_loss_pct = levels['stop_loss_pct']
-                
-                logger.debug(
-                    f"[SENTINEL] Volatility stop-loss for {pair}: {stop_loss_pct:.2%} "
-                    f"(ATR: {levels['atr_pct']:.2%}, Rank: {levels['volatility_rank']}, "
-                    f"Confidence: {levels['confidence']:.1%})"
-                )
-                
-                return stop_loss_pct
-                
-            except Exception as e:
-                logger.warning(f"[SENTINEL] Failed to calculate volatility stop-loss for {pair}: {e}")
-        
-        # Fallback to configured per-pair stop loss
-        if pair in self._pair_stop_losses:
-            return self._pair_stop_losses[pair]
-        
-        # Final fallback to default stop loss
-        return self.stop_loss_pct
+                exit_trades.append(trade)
+                continue
+
+        return exit_trades
 
     def _get_stop_loss_for_pair(self, pair: str) -> float:
         """
@@ -249,98 +312,6 @@ class BasicSentinel(ISentinel):
     def get_pair_stop_losses(self) -> Dict[str, float]:
         """Get all per-pair stop losses."""
         return self._pair_stop_losses.copy()
-
-    async def get_position_risk_levels(self, positions: Dict[str, Position]) -> Dict[str, Dict]:
-        """
-        Get calculated stop-loss and take-profit levels for all positions.
-        
-        Returns dictionary with position symbol as key and risk levels as values.
-        Used by the portfolio API to show current SL/TP prices.
-        """
-        risk_levels = {}
-        
-        for symbol, position in positions.items():
-            if position.amount <= 0 or not position.entry_price:
-                continue
-            
-            # Determine pair format
-            pair = f"{symbol}/USDT"
-            if hasattr(self.settings, 'trading') and hasattr(self.settings.trading, 'quote_currency'):
-                quote = self.settings.trading.quote_currency
-                pair = f"{symbol}/{quote}"
-            
-            try:
-                # Get dynamic stop-loss
-                stop_loss_pct = await self._get_dynamic_stop_loss(pair, position)
-                
-                # Get volatility-based take-profit if available
-                take_profit_pct = await self._get_dynamic_take_profit(pair, position)
-                
-                # Calculate actual prices
-                stop_loss_price = position.entry_price * (1 - stop_loss_pct)
-                take_profit_price = position.entry_price * (1 + take_profit_pct)
-                
-                risk_levels[symbol] = {
-                    'stop_loss_pct': stop_loss_pct,
-                    'take_profit_pct': take_profit_pct,
-                    'stop_loss_price': stop_loss_price,
-                    'take_profit_price': take_profit_price,
-                    'entry_price': position.entry_price,
-                    'current_price': position.current_price,
-                    'unrealized_pnl_pct': ((position.current_price - position.entry_price) / position.entry_price) if position.current_price else 0.0
-                }
-                
-                # Add volatility info if available
-                if self.volatility_enabled and self.exchange:
-                    try:
-                        profile = await self.volatility_calculator.get_volatility_profile(pair, self.exchange)
-                        risk_levels[symbol].update({
-                            'volatility_rank': profile.volatility_rank,
-                            'atr_pct': profile.atr_pct,
-                            'volatility_confidence': profile.confidence
-                        })
-                    except Exception:
-                        pass
-                        
-            except Exception as e:
-                logger.warning(f"[SENTINEL] Failed to calculate risk levels for {symbol}: {e}")
-                # Basic fallback
-                risk_levels[symbol] = {
-                    'stop_loss_pct': self.stop_loss_pct,
-                    'take_profit_pct': self.stop_loss_pct * 2,  # 2:1 ratio
-                    'stop_loss_price': position.entry_price * (1 - self.stop_loss_pct) if position.entry_price else 0,
-                    'take_profit_price': position.entry_price * (1 + self.stop_loss_pct * 2) if position.entry_price else 0,
-                    'entry_price': position.entry_price,
-                    'current_price': position.current_price,
-                    'unrealized_pnl_pct': ((position.current_price - position.entry_price) / position.entry_price) if position.current_price and position.entry_price else 0.0
-                }
-        
-        return risk_levels
-
-    async def _get_dynamic_take_profit(self, pair: str, position: Position) -> float:
-        """
-        Get dynamic take-profit percentage for a position.
-        
-        Uses volatility-based calculation if enabled and possible,
-        otherwise falls back to a simple multiple of stop-loss.
-        """
-        # Try volatility-based calculation first
-        if self.volatility_enabled and self.exchange:
-            try:
-                levels = await self.volatility_calculator.calculate_position_levels(
-                    pair=pair,
-                    entry_price=position.entry_price,
-                    exchange=self.exchange
-                )
-                
-                return levels['take_profit_pct']
-                
-            except Exception as e:
-                logger.debug(f"[SENTINEL] Failed to calculate volatility take-profit for {pair}: {e}")
-        
-        # Fallback: 2x the stop-loss percentage (2:1 risk-reward ratio)
-        stop_loss_pct = await self._get_dynamic_stop_loss(pair, position)
-        return stop_loss_pct * 2.0
     
     async def system_healthy(self) -> bool:
         """Check if system is healthy enough to trade"""
@@ -378,8 +349,8 @@ class EnhancedSentinel(BasicSentinel):
     - Trade frequency limits
     """
     
-    def __init__(self, memory: IMemory = None, settings: Settings = None, exchange: IExchange = None):
-        super().__init__(memory, settings, exchange)
+    def __init__(self, memory: IMemory = None, settings: Settings = None):
+        super().__init__(memory, settings)
         
         # Circuit breaker state
         self._daily_pnl = 0.0

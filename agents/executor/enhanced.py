@@ -525,9 +525,14 @@ class EnhancedExecutor(IExecutor):
                     trade.realized_pnl = (trade.exit_price - trade.entry_price) * trade.filled_size_base
 
                 logger.info(
-                    f"Stop-loss executed: {trade.pair} @ ${trade.average_price:,.2f} "
+                    f"{trade.order_type.value} executed: {trade.pair} @ ${trade.average_price:,.2f} "
                     f"(P&L: ${trade.realized_pnl:+,.2f})"
                 )
+
+                # Clear peak price tracking for closed position
+                if self.memory and trade.is_successful and hasattr(self.memory, 'clear_peak_price'):
+                    base_asset = trade.pair.split("/")[0]
+                    await self.memory.clear_peak_price(base_asset)
 
             except Exception as e:
                 trade.status = TradeStatus.FAILED

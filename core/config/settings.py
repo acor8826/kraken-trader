@@ -30,37 +30,15 @@ class TradingConfig:
     target_capital: float = 5000.0
     check_interval_minutes: int = 60
 
-    @classmethod
-    def from_env(cls) -> "TradingConfig":
-        """Load trading config from environment variables"""
-        # Parse trading pairs from semicolon-separated string
-        pairs_str = os.getenv("TRADING_PAIRS", "")
-        if pairs_str:
-            pairs = pairs_str.split(";")
-        else:
-            # Default pairs based on quote currency
-            quote = os.getenv("QUOTE_CURRENCY", "USDT")
-            if quote == "AUD":
-                pairs = ["BTC/AUD", "ETH/AUD", "SOL/AUD"]
-            else:
-                pairs = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
-        
-        return cls(
-            pairs=pairs,
-            quote_currency=os.getenv("QUOTE_CURRENCY", "USDT"),
-            initial_capital=float(os.getenv("INITIAL_CAPITAL", "1000")),
-            target_capital=float(os.getenv("TARGET_CAPITAL", "5000")),
-            check_interval_minutes=int(os.getenv("CHECK_INTERVAL_MINUTES", "60"))
-        )
-
 
 @dataclass
 class RiskConfig:
     """Risk management parameters"""
     max_position_pct: float = 0.20       # Max 20% per position
     max_total_exposure_pct: float = 0.80  # Max 80% total exposure
-    stop_loss_pct: float = 0.05          # 5% stop loss
-    min_confidence: float = 0.70         # Min confidence to trade
+    stop_loss_pct: float = 0.025         # 2.5% stop loss
+    take_profit_multiplier: float = 2.0  # Take profit at stop_loss * multiplier
+    min_confidence: float = 0.55         # Min confidence to trade
     max_daily_trades: int = 10
     max_daily_loss_pct: float = 0.10     # Pause if down 10% in a day
 
@@ -152,10 +130,17 @@ class ExchangeConfig:
                 api_secret=os.getenv("KRAKEN_API_SECRET", "")
             )
         else:
+            testnet = os.getenv("BINANCE_TESTNET", "").lower() in ("1", "true", "yes")
+            if testnet:
+                api_key = os.getenv("BINANCE_TESTNET_KEY") or os.getenv("BINANCE_API_KEY", "")
+                api_secret = os.getenv("BINANCE_TESTNET_SECRET") or os.getenv("BINANCE_API_SECRET", "")
+            else:
+                api_key = os.getenv("BINANCE_API_KEY", "")
+                api_secret = os.getenv("BINANCE_API_SECRET", "")
             return cls(
                 name="binance",
-                api_key=os.getenv("BINANCE_API_KEY", ""),
-                api_secret=os.getenv("BINANCE_API_SECRET", "")
+                api_key=api_key,
+                api_secret=api_secret
             )
 
 
@@ -178,9 +163,9 @@ class LLMConfig:
 @dataclass
 class HybridThresholds:
     """Thresholds for hybrid strategist (rules vs Claude)"""
-    direction_clear: float = 0.6       # |direction| > this = clear signal
-    confidence_clear: float = 0.75     # confidence > this = clear signal
-    disagreement_max: float = 0.2      # disagreement < this = clear signal
+    direction_clear: float = 0.4       # |direction| > this = clear signal
+    confidence_clear: float = 0.60     # confidence > this = clear signal
+    disagreement_max: float = 0.3      # disagreement < this = clear signal
 
 
 @dataclass
@@ -262,6 +247,29 @@ class AlertConfig:
 
 
 @dataclass
+class TrailingStopConfig:
+    """Trailing stop configuration"""
+    activation_pct: float = 0.01    # Activate when 1% in profit
+    distance_pct: float = 0.007     # Trail 0.7% below peak
+
+
+@dataclass
+class BreakevenConfig:
+    """Breakeven stop configuration"""
+    activation_pct: float = 0.005   # Move to BE at +0.5% gain
+    buffer_pct: float = 0.001       # 0.1% buffer above entry for fees
+
+
+@dataclass
+class ExitManagementConfig:
+    """Exit management settings for trailing stop, breakeven, etc."""
+    enable_trailing_stop: bool = True
+    enable_breakeven_stop: bool = True
+    trailing_stop: TrailingStopConfig = field(default_factory=TrailingStopConfig)
+    breakeven: BreakevenConfig = field(default_factory=BreakevenConfig)
+
+
+@dataclass
 class AggressiveRiskConfig:
     """
     Aggressive risk parameters for small portfolios seeking higher returns.
@@ -270,19 +278,20 @@ class AggressiveRiskConfig:
     """
     max_position_pct: float = 0.35       # 35% per position (vs 20% default)
     max_total_exposure_pct: float = 0.95  # 95% total exposure (vs 80%)
-    stop_loss_pct: float = 0.03          # 3% stop loss (vs 5%)
+    stop_loss_pct: float = 0.015         # 1.5% stop loss (vs 2.5% standard)
+    take_profit_multiplier: float = 2.0  # Keep 1:2 risk-reward by default
     min_confidence: float = 0.50         # 50% min confidence (vs 70%)
     max_daily_trades: int = 30           # 30 trades (vs 10)
     max_daily_loss_pct: float = 0.15     # 15% daily loss limit (vs 10%)
 
     # Per-pair stop losses (volatility-adjusted)
     pair_stop_losses: Dict[str, float] = field(default_factory=lambda: {
-        "BTC/USDT": 0.03,   # 3% - lower volatility
-        "ETH/USDT": 0.035,  # 3.5%
-        "SOL/USDT": 0.04,   # 4% - higher volatility
-        "DOGE/USDT": 0.05,  # 5% - very volatile
-        "AVAX/USDT": 0.04,  # 4%
-        "ARB/USDT": 0.045,  # 4.5%
+        "BTC/USDT": 0.015,  # 1.5% - lower volatility
+        "ETH/USDT": 0.02,   # 2%
+        "SOL/USDT": 0.025,  # 2.5% - higher volatility
+        "DOGE/USDT": 0.03,  # 3% - very volatile
+        "AVAX/USDT": 0.025, # 2.5%
+        "ARB/USDT": 0.03,   # 3%
     })
 
     def get_stop_loss_for_pair(self, pair: str) -> float:
@@ -309,6 +318,9 @@ class Settings:
     # Alert configuration
     alerts: AlertConfig = field(default_factory=AlertConfig)
 
+    # Exit management (trailing stop, breakeven stop)
+    exit_management: ExitManagementConfig = field(default_factory=ExitManagementConfig)
+
     # Aggressive risk profile (optional, overrides risk when enabled)
     aggressive_risk: Optional[AggressiveRiskConfig] = None
 
@@ -322,14 +334,6 @@ class Settings:
     # Logging
     log_level: str = "INFO"
 
-    # Raw config data for dynamic access
-    _raw_config: Dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def config(self) -> Dict[str, Any]:
-        """Access raw config data for dynamic lookups"""
-        return self._raw_config
-
     def get_effective_risk(self) -> RiskConfig:
         """Get the effective risk config based on profile."""
         if self.risk_profile == "aggressive" and self.aggressive_risk:
@@ -338,6 +342,7 @@ class Settings:
                 max_position_pct=self.aggressive_risk.max_position_pct,
                 max_total_exposure_pct=self.aggressive_risk.max_total_exposure_pct,
                 stop_loss_pct=self.aggressive_risk.stop_loss_pct,
+                take_profit_multiplier=self.aggressive_risk.take_profit_multiplier,
                 min_confidence=self.aggressive_risk.min_confidence,
                 max_daily_trades=self.aggressive_risk.max_daily_trades,
                 max_daily_loss_pct=self.aggressive_risk.max_daily_loss_pct
@@ -358,7 +363,7 @@ class Settings:
 
         return cls(
             stage=stage,
-            trading=TradingConfig.from_env(),
+            trading=TradingConfig(),
             risk=RiskConfig(),
             features=FeatureFlags.for_stage(stage),
             exchange=ExchangeConfig.from_env(),
@@ -404,13 +409,16 @@ class Settings:
         aggressive_risk = None
         if risk_profile == "aggressive":
             agg_data = data.get("aggressive_risk", {})
+            # Use AggressiveRiskConfig dataclass defaults as fallbacks
+            _agg_defaults = AggressiveRiskConfig()
             aggressive_risk = AggressiveRiskConfig(
-                max_position_pct=agg_data.get("max_position_pct", 0.35),
-                max_total_exposure_pct=agg_data.get("max_total_exposure_pct", 0.95),
-                stop_loss_pct=agg_data.get("stop_loss_pct", 0.03),
-                min_confidence=agg_data.get("min_confidence", 0.50),
-                max_daily_trades=agg_data.get("max_daily_trades", 30),
-                max_daily_loss_pct=agg_data.get("max_daily_loss_pct", 0.15),
+                max_position_pct=agg_data.get("max_position_pct", _agg_defaults.max_position_pct),
+                max_total_exposure_pct=agg_data.get("max_total_exposure_pct", _agg_defaults.max_total_exposure_pct),
+                stop_loss_pct=agg_data.get("stop_loss_pct", _agg_defaults.stop_loss_pct),
+                take_profit_multiplier=agg_data.get("take_profit_multiplier", _agg_defaults.take_profit_multiplier),
+                min_confidence=agg_data.get("min_confidence", _agg_defaults.min_confidence),
+                max_daily_trades=agg_data.get("max_daily_trades", _agg_defaults.max_daily_trades),
+                max_daily_loss_pct=agg_data.get("max_daily_loss_pct", _agg_defaults.max_daily_loss_pct),
             )
             logger.info("Loaded AGGRESSIVE risk profile from YAML")
 
@@ -428,6 +436,23 @@ class Settings:
             max_history=alerts_data.get("max_history", 1000),
         )
 
+        # Parse exit management config
+        exit_data = data.get("exit_management", {})
+        trailing_data = exit_data.get("trailing_stop", {})
+        breakeven_data = exit_data.get("breakeven", {})
+        exit_management = ExitManagementConfig(
+            enable_trailing_stop=exit_data.get("enable_trailing_stop", True),
+            enable_breakeven_stop=exit_data.get("enable_breakeven_stop", True),
+            trailing_stop=TrailingStopConfig(
+                activation_pct=trailing_data.get("activation_pct", 0.01),
+                distance_pct=trailing_data.get("distance_pct", 0.007),
+            ),
+            breakeven=BreakevenConfig(
+                activation_pct=breakeven_data.get("activation_pct", 0.005),
+                buffer_pct=breakeven_data.get("buffer_pct", 0.001),
+            ),
+        )
+
         # Parse adaptive risk config
         adaptive_data = data.get("adaptive_risk", {})
         enable_adaptive = adaptive_data.get("enabled", False) or os.getenv("ENABLE_ADAPTIVE_RISK", "false").lower() == "true"
@@ -441,12 +466,12 @@ class Settings:
             llm=LLMConfig.from_env(),
             cost_optimization=cost_optimization,
             alerts=alerts,
+            exit_management=exit_management,
             aggressive_risk=aggressive_risk,
             risk_profile=risk_profile,
             enable_adaptive_risk=enable_adaptive,
             adaptive_risk_config=adaptive_data if adaptive_data else None,
-            log_level=data.get("log_level", "INFO"),
-            _raw_config=data
+            log_level=data.get("log_level", "INFO")
         )
 
 
@@ -468,5 +493,17 @@ def init_settings(stage: Stage = None, config_path: str = None) -> Settings:
     if config_path:
         _settings = Settings.from_yaml(config_path)
     else:
-        _settings = Settings.load(stage)
+        # Auto-discover YAML config based on stage
+        stage = stage or Stage(os.getenv("STAGE", "stage1"))
+        yaml_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            "config",
+            f"{stage.value}.yaml"
+        )
+        if os.path.exists(yaml_path):
+            logger.info(f"Loading config from {yaml_path}")
+            _settings = Settings.from_yaml(yaml_path)
+        else:
+            logger.info(f"No YAML config found at {yaml_path}, using defaults")
+            _settings = Settings.load(stage)
     return _settings

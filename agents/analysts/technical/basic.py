@@ -195,11 +195,11 @@ class TechnicalAnalyst(IAnalyst):
         if sma_12 is not None and price > 0:
             if price > sma_12:
                 strength = min((price - sma_12) / sma_12 * 100, 3) / 3
-                signals.append(("price_sma", 0.3 + strength * 0.4, 0.2))
+                signals.append(("price_sma", 0.4 + strength * 0.5, 0.2))
                 reasons.append(f"Price above SMA12")
             else:
                 strength = min((sma_12 - price) / sma_12 * 100, 3) / 3
-                signals.append(("price_sma", -0.3 - strength * 0.4, 0.2))
+                signals.append(("price_sma", -0.4 - strength * 0.5, 0.2))
                 reasons.append(f"Price below SMA12")
         
         # 3. RSI
@@ -222,13 +222,13 @@ class TechnicalAnalyst(IAnalyst):
         # 4. Momentum
         if momentum is not None:
             if momentum > 3:
-                signals.append(("momentum", 0.5, 0.15))
+                signals.append(("momentum", 0.6, 0.15))
                 reasons.append(f"Strong upward momentum ({momentum:+.1f}%)")
             elif momentum < -3:
-                signals.append(("momentum", -0.5, 0.15))
+                signals.append(("momentum", -0.6, 0.15))
                 reasons.append(f"Strong downward momentum ({momentum:+.1f}%)")
             else:
-                signals.append(("momentum", momentum / 6, 0.1))  # Scale to [-0.5, 0.5]
+                signals.append(("momentum", momentum / 5, 0.1))  # Scale to [-0.6, 0.6]
         
         # 5. Volume confirmation
         if volume_trend is not None:
@@ -242,17 +242,30 @@ class TechnicalAnalyst(IAnalyst):
         # Aggregate signals
         if not signals:
             return 0.0, 0.3, "Insufficient data for analysis"
-        
+
         # Weighted average of directions
         total_weight = sum(s[2] for s in signals)
         direction = sum(s[1] * s[2] for s in signals) / total_weight if total_weight > 0 else 0
-        
-        # Confidence based on signal agreement
+
+        # Confidence based on signal agreement and strength
         signal_values = [s[1] for s in signals]
         avg_magnitude = sum(abs(v) for v in signal_values) / len(signal_values)
         agreement = 1 - (max(signal_values) - min(signal_values)) / 2 if len(signal_values) > 1 else 0.5
-        confidence = min(0.9, avg_magnitude * 0.5 + agreement * 0.5 + 0.2)
-        
+
+        # Require strong directional alignment for high confidence.
+        # Count how many signals agree with the overall direction.
+        agreeing = sum(1 for v in signal_values if (v > 0.1) == (direction > 0.1)) if abs(direction) > 0.1 else 0
+        alignment_ratio = agreeing / len(signal_values) if signal_values else 0
+
+        # Lower base confidence (was +0.25, now +0.10) to reduce spurious BUYs.
+        # Weak/mixed signals should fall below the 0.55-0.70 threshold.
+        confidence = min(0.9, avg_magnitude * 0.5 + agreement * 0.3 + alignment_ratio * 0.2 + 0.10)
+
+        # Penalize low-magnitude signals -- if no indicator is strongly directional,
+        # cap confidence to prevent weak signals from crossing the threshold.
+        if avg_magnitude < 0.3:
+            confidence = min(confidence, 0.50)
+
         reasoning = "; ".join(reasons)
-        
+
         return direction, confidence, reasoning
