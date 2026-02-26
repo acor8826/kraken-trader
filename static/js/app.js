@@ -321,8 +321,11 @@ async function initApp() {
     // Register pages
     await registerPages();
 
-    // Load initial data
-    await loadInitialData();
+    // Handle initial route immediately (don't block on data)
+    router.handleRoute();
+
+    // Load initial data in background (non-blocking)
+    loadInitialData().catch(e => console.warn('Background data load failed:', e));
 
     // Connect WebSocket
     wsManager.connect();
@@ -348,9 +351,6 @@ async function initApp() {
     wsManager.subscribe('disconnected', () => {
         showToast('Disconnected from live updates', 'warning', 3000);
     });
-
-    // Handle initial route
-    router.handleRoute();
 
     // Set up router callbacks
     router.onAfterNavigate((path) => {
