@@ -193,7 +193,8 @@ async function registerPages() {
         AgentDetailPage,
         MetricsPage,
         CostsPage,
-        SettingsPage
+        SettingsPage,
+        ImproverPage
     ] = await Promise.all([
         import('./pages/home.js').then(m => m.default).catch(() => createPlaceholderPage('Home')),
         import('./pages/pairs.js').then(m => m.default).catch(() => createPlaceholderPage('Trading Pairs')),
@@ -203,7 +204,8 @@ async function registerPages() {
         import('./pages/agent-detail.js').then(m => m.default).catch(() => createPlaceholderPage('Agent Detail')),
         import('./pages/metrics.js').then(m => m.default).catch(() => createPlaceholderPage('Metrics')),
         import('./pages/costs.js').then(m => m.default).catch(() => createPlaceholderPage('Cost Optimization')),
-        import('./pages/settings.js').then(m => m.default).catch(() => createPlaceholderPage('Settings'))
+        import('./pages/settings.js').then(m => m.default).catch(() => createPlaceholderPage('Settings')),
+        import('./pages/improver.js').then(m => m.default).catch(() => createPlaceholderPage('Improvement Cycles'))
     ]);
 
     // Register routes
@@ -216,6 +218,7 @@ async function registerPages() {
     router.register('/metrics', MetricsPage);
     router.register('/costs', CostsPage);
     router.register('/settings', SettingsPage);
+    router.register('/improver', ImproverPage);
 }
 
 /**

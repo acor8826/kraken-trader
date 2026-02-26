@@ -333,6 +333,18 @@ class ApiClient {
     }
 
     // ========================================
+    // Seed Improver Endpoints
+    // ========================================
+
+    async getSeedImproverRuns(limit = 20, offset = 0) {
+        return this.get('/internal/seed-improver/runs', { limit, offset });
+    }
+
+    async getSeedImproverRunDetail(runId) {
+        return this.get(`/internal/seed-improver/runs/${encodeURIComponent(runId)}`);
+    }
+
+    // ========================================
     // Batch Loading Helpers
     // ========================================
 

@@ -710,6 +710,102 @@ def _register_routes(app: FastAPI):
             "changes": [dict(c) for c in changes],
         }
 
+    @app.get("/internal/seed-improver/runs")
+    async def seed_improver_list_runs(limit: int = 20, offset: int = 0):
+        """List seed improver runs with summary metadata."""
+        if not seed_improver:
+            raise HTTPException(status_code=503, detail="Seed improver not initialized")
+        if not hasattr(seed_improver.memory, "_connection"):
+            raise HTTPException(status_code=503, detail="Database not available")
+
+        async with seed_improver.memory._connection() as conn:
+            rows = await conn.fetch(
+                """SELECT id, trigger_type, status, started_at, finished_at,
+                          summary, recommendations_count, pattern_updates_count, applied_count
+                   FROM seed_improver_runs
+                   ORDER BY started_at DESC
+                   LIMIT $1 OFFSET $2""",
+                limit, offset,
+            )
+            total = await conn.fetchval("SELECT COUNT(*) FROM seed_improver_runs")
+
+        runs = []
+        for r in rows:
+            runs.append({
+                "id": str(r["id"]),
+                "trigger_type": r["trigger_type"],
+                "status": r["status"],
+                "started_at": r["started_at"].isoformat() if r["started_at"] else None,
+                "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None,
+                "summary": r["summary"],
+                "recommendations_count": r["recommendations_count"] or 0,
+                "pattern_updates_count": r["pattern_updates_count"] or 0,
+                "applied_count": r["applied_count"] or 0,
+            })
+
+        return {"runs": runs, "total": total, "limit": limit, "offset": offset}
+
+    @app.get("/internal/seed-improver/runs/{run_id}")
+    async def seed_improver_run_detail(run_id: str):
+        """Get detailed info for a single seed improver run including changes."""
+        if not seed_improver:
+            raise HTTPException(status_code=503, detail="Seed improver not initialized")
+        if not hasattr(seed_improver.memory, "_connection"):
+            raise HTTPException(status_code=503, detail="Database not available")
+
+        async with seed_improver.memory._connection() as conn:
+            run_row = await conn.fetchrow(
+                """SELECT id, trigger_type, status, started_at, finished_at,
+                          summary, recommendations_count, pattern_updates_count, applied_count, error
+                   FROM seed_improver_runs WHERE id::text = $1""",
+                run_id,
+            )
+            if not run_row:
+                raise HTTPException(status_code=404, detail="Run not found")
+
+            changes = await conn.fetch(
+                """SELECT id, priority, hypothesis, change_summary, risk_assessment,
+                          status, verdict, verdict_reason, verdict_confidence, verdict_risk_score,
+                          judged_by_model, implementation_branch, implementation_commit_sha,
+                          implementation_check_result, implementation_error, created_at
+                   FROM seed_improver_changes WHERE run_id = $1::uuid ORDER BY created_at""",
+                run_id,
+            )
+
+        return {
+            "id": str(run_row["id"]),
+            "trigger_type": run_row["trigger_type"],
+            "status": run_row["status"],
+            "started_at": run_row["started_at"].isoformat() if run_row["started_at"] else None,
+            "finished_at": run_row["finished_at"].isoformat() if run_row["finished_at"] else None,
+            "summary": run_row["summary"],
+            "error": run_row["error"],
+            "recommendations_count": run_row["recommendations_count"] or 0,
+            "pattern_updates_count": run_row["pattern_updates_count"] or 0,
+            "applied_count": run_row["applied_count"] or 0,
+            "changes": [
+                {
+                    "id": str(c["id"]),
+                    "priority": c["priority"],
+                    "hypothesis": c["hypothesis"],
+                    "change_summary": c["change_summary"],
+                    "risk_assessment": c["risk_assessment"],
+                    "status": c["status"],
+                    "verdict": c["verdict"],
+                    "verdict_reason": c["verdict_reason"],
+                    "verdict_confidence": c["verdict_confidence"],
+                    "verdict_risk_score": c["verdict_risk_score"],
+                    "judged_by_model": c["judged_by_model"],
+                    "implementation_branch": c["implementation_branch"],
+                    "implementation_commit_sha": c["implementation_commit_sha"],
+                    "implementation_check_result": c["implementation_check_result"],
+                    "implementation_error": c["implementation_error"],
+                    "created_at": c["created_at"].isoformat() if c["created_at"] else None,
+                }
+                for c in changes
+            ],
+        }
+
     @app.post("/pause")
     async def pause_trading():
         """Pause trading"""
