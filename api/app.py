@@ -7,6 +7,7 @@ HTTP interface for the trading agent.
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
+import os
 import logging
 import time
 
@@ -206,15 +207,15 @@ async def _create_orchestrator(settings: Settings):
             from memory.postgres import PostgresStore
             from memory.redis_cache import RedisCache
 
-            # Initialize Redis cache
-            redis_url = settings.config.get("redis", {}).get("url", "redis://localhost:6379")
-            cache_ttl = settings.config.get("redis", {}).get("cache_ttl_seconds", 300)
+            # Initialize Redis cache (env-driven)
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+            cache_ttl = 300
             cache = RedisCache(redis_url, default_ttl=cache_ttl)
             await cache.connect()
             logger.info(f"Redis cache connected (TTL={cache_ttl}s)")
 
-            # Initialize PostgreSQL
-            db_url = settings.config.get("database", {}).get("url", "postgresql://trader:trader@localhost:5432/trader")
+            # Initialize PostgreSQL (env-driven)
+            db_url = os.getenv("DATABASE_URL", "postgresql://trader:trader@localhost:5432/trader")
             memory = PostgresStore(db_url)
             await memory.connect()
             logger.info("PostgreSQL storage connected")
