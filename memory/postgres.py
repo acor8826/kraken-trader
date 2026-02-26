@@ -365,6 +365,131 @@ class PostgresStore(IMemory):
             logger.error(f"Failed to get trade count: {e}")
             return 0
 
+    async def get_performance_summary(self) -> dict:
+        """Compute performance metrics from trade history"""
+        try:
+            async with self._connection() as conn:
+                rows = await conn.fetch("""
+                    SELECT realized_pnl, filled_size_quote, created_at
+                    FROM trades
+                    WHERE realized_pnl IS NOT NULL
+                    ORDER BY created_at ASC
+                """)
+
+                if not rows:
+                    return {
+                        "win_rate": 0.0,
+                        "total_trades": 0,
+                        "profit_factor": 0.0,
+                        "max_drawdown": 0.0,
+                        "total_exposure": 0.0,
+                        "sharpe_ratio": 0.0,
+                    }
+
+                pnls = [float(r["realized_pnl"]) for r in rows]
+                total_trades = len(pnls)
+                wins = [p for p in pnls if p > 0]
+                losses = [p for p in pnls if p <= 0]
+                win_rate = len(wins) / total_trades * 100 if total_trades else 0.0
+
+                gross_profit = sum(wins) if wins else 0.0
+                gross_loss = abs(sum(losses)) if losses else 0.0
+                profit_factor = gross_profit / gross_loss if gross_loss > 0 else (float('inf') if gross_profit > 0 else 0.0)
+
+                # Max drawdown from cumulative PnL
+                cumulative = 0.0
+                peak = 0.0
+                max_dd = 0.0
+                for p in pnls:
+                    cumulative += p
+                    if cumulative > peak:
+                        peak = cumulative
+                    dd = peak - cumulative
+                    if dd > max_dd:
+                        max_dd = dd
+
+                total_exposure = sum(
+                    float(r["filled_size_quote"]) for r in rows if r["filled_size_quote"]
+                )
+
+                # Sharpe ratio (simple: mean/std of per-trade returns)
+                import statistics
+                if len(pnls) >= 2:
+                    mean_pnl = statistics.mean(pnls)
+                    std_pnl = statistics.stdev(pnls)
+                    sharpe_ratio = mean_pnl / std_pnl if std_pnl > 0 else 0.0
+                else:
+                    sharpe_ratio = 0.0
+
+                return {
+                    "win_rate": round(win_rate, 2),
+                    "total_trades": total_trades,
+                    "profit_factor": round(profit_factor, 4) if profit_factor != float('inf') else 999.99,
+                    "max_drawdown": round(max_dd, 4),
+                    "total_exposure": round(total_exposure, 2),
+                    "sharpe_ratio": round(sharpe_ratio, 4),
+                }
+
+        except Exception as e:
+            logger.error(f"Failed to get performance summary: {e}")
+            return {
+                "win_rate": 0.0,
+                "total_trades": 0,
+                "profit_factor": 0.0,
+                "max_drawdown": 0.0,
+                "total_exposure": 0.0,
+                "sharpe_ratio": 0.0,
+            }
+
+    async def get_portfolio_history(self, range_str: str = "24H") -> list:
+        """Derive portfolio value time-series from trades.
+
+        Returns list of {timestamp, value} dicts.
+        """
+        interval_map = {
+            "1H": "1 hour",
+            "24H": "24 hours",
+            "7D": "7 days",
+            "30D": "30 days",
+        }
+        pg_interval = interval_map.get(range_str, "24 hours")
+
+        try:
+            async with self._connection() as conn:
+                # Get portfolio base value
+                portfolio = await self.get_portfolio()
+                base_value = float(portfolio.total_value_usd) if portfolio and portfolio.total_value_usd else 0.0
+
+                rows = await conn.fetch(f"""
+                    SELECT created_at, realized_pnl
+                    FROM trades
+                    WHERE created_at >= NOW() - INTERVAL '{pg_interval}'
+                      AND realized_pnl IS NOT NULL
+                    ORDER BY created_at ASC
+                """)
+
+                if not rows:
+                    now = datetime.now(timezone.utc)
+                    return [{"timestamp": now.isoformat(), "value": base_value}]
+
+                # Build cumulative series going backwards from current value
+                total_pnl = sum(float(r["realized_pnl"]) for r in rows)
+                running = base_value - total_pnl  # value before these trades
+
+                history = []
+                for r in rows:
+                    running += float(r["realized_pnl"])
+                    history.append({
+                        "timestamp": r["created_at"].isoformat(),
+                        "value": round(running, 2),
+                    })
+
+                return history
+
+        except Exception as e:
+            logger.error(f"Failed to get portfolio history: {e}")
+            return []
+
     async def update_analyst_performance(
         self,
         analyst_name: str,

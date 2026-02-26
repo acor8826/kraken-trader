@@ -624,6 +624,15 @@ def _register_routes(app: FastAPI):
         
         return await orchestrator.memory.get_performance_summary()
     
+    @app.get("/api/portfolio/history")
+    async def get_portfolio_history(range: str = "24H"):
+        """Get portfolio value time-series for charting"""
+        if not orchestrator:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+
+        history = await orchestrator.memory.get_portfolio_history(range)
+        return {"history": history}
+
     @app.post("/trigger")
     async def trigger_cycle():
         """Manually trigger a trading cycle"""
