@@ -309,6 +309,8 @@ async function loadInitialData() {
 // ========================================
 
 async function initApp() {
+    if (window._appInitRunning) return;
+    window._appInitRunning = true;
     console.log('Initializing Kraken Trading Dashboard...');
 
     // Initialize components
@@ -370,6 +372,24 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.AuthManager) {
         // Auth will call initApp when ready via callback
         window.initDashboard = initApp;
+
+        // Auto-init if auth check passes or after timeout
+        // This prevents the app from being stuck on INITIALIZING
+        (async () => {
+            try {
+                const isAuthed = await window.AuthManager.checkAuth();
+                if (isAuthed || !window._appInitialized) {
+                    window._appInitialized = true;
+                    initApp();
+                }
+            } catch (e) {
+                console.warn('[APP] Auth check failed, initializing anyway:', e);
+                if (!window._appInitialized) {
+                    window._appInitialized = true;
+                    initApp();
+                }
+            }
+        })();
     } else {
         // No auth, start immediately
         initApp();
