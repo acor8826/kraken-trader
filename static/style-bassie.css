@@ -357,12 +357,15 @@ body::after {
     gap: var(--space-3);
 }
 
-.brand-icon {
+.header-brand .brand-icon {
     width: 28px;
     height: 28px;
+    max-width: 28px;
+    max-height: 28px;
     color: var(--accent-cyan);
     filter: drop-shadow(0 0 8px rgba(0,229,255,0.5));
     animation: iconPulse 3s ease-in-out infinite;
+    overflow: hidden;
 }
 
 @keyframes iconPulse {
@@ -5773,8 +5776,10 @@ html {
     left: 0;
     right: 0;
     height: 72px;
+    max-height: 72px;
     z-index: var(--z-fixed);
     display: flex;
+    flex-direction: row;
     align-items: center;
     justify-content: space-between;
     padding: 0 var(--space-4);
@@ -5782,6 +5787,7 @@ html {
     border-bottom: 1px solid var(--border-subtle);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
+    overflow: hidden;
 }
 
 /* Scan line effect on header */
@@ -5820,8 +5826,12 @@ html {
 /* Header Segments */
 .header-segment {
     display: flex;
+    flex-direction: row;
     align-items: center;
     gap: var(--space-3);
+    flex-shrink: 0;
+    max-height: 72px;
+    overflow: hidden;
 }
 
 /* Brand Segment */
@@ -5885,13 +5895,22 @@ html {
 .brand-icon {
     width: 32px;
     height: 32px;
+    min-width: 32px;
+    min-height: 32px;
+    max-width: 32px;
+    max-height: 32px;
     color: var(--accent-cyan);
     filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.5));
+    flex-shrink: 0;
+    overflow: hidden;
 }
 
 .brand-icon svg {
-    width: 100%;
-    height: 100%;
+    width: 24px;
+    height: 24px;
+    max-width: 24px;
+    max-height: 24px;
+    display: block;
 }
 
 .brand-text {
@@ -5907,13 +5926,17 @@ html {
 
 /* Telemetry Strip */
 .header-telemetry {
-    flex: 1;
+    flex: 1 1 auto;
+    min-width: 0;
     display: flex;
+    flex-direction: row;
     align-items: center;
     justify-content: center;
     gap: var(--space-2);
     padding: 0 var(--space-4);
+    max-height: 72px;
     overflow-x: auto;
+    overflow-y: hidden;
     scrollbar-width: none;
     -ms-overflow-style: none;
 }
@@ -5925,15 +5948,18 @@ html {
 /* Telemetry Tile */
 .telemetry-tile {
     position: relative;
-    display: flex;
+    display: inline-flex;
     flex-direction: column;
     align-items: center;
     gap: 2px;
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-1) var(--space-3);
     background: rgba(0, 0, 0, 0.2);
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: var(--radius-sm);
-    min-width: 100px;
+    min-width: 80px;
+    max-height: 56px;
+    overflow: hidden;
+    flex-shrink: 0;
     transition: all 0.2s ease;
 }
 
@@ -6079,23 +6105,31 @@ html {
 
 .countdown-display {
     position: relative;
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
+    width: 44px;
+    height: 44px;
+    max-width: 44px;
+    max-height: 44px;
+    flex-shrink: 0;
 }
 
 .countdown-value {
-    font-size: var(--text-lg);
+    font-size: var(--text-sm);
     font-weight: 700;
     color: var(--accent-cyan);
     text-shadow: 0 0 12px rgba(0, 212, 255, 0.6);
     z-index: 1;
+    white-space: nowrap;
 }
 
 .countdown-ring {
     position: absolute;
     width: 44px;
     height: 44px;
+    max-width: 44px;
+    max-height: 44px;
     transform: rotate(-90deg);
 }
 
@@ -6128,7 +6162,12 @@ html {
 /* Header Actions */
 .header-actions {
     flex: 0 0 auto;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
     gap: var(--space-2);
+    max-height: 72px;
+    overflow: hidden;
 }
 
 .connection-indicator {
@@ -6499,6 +6538,8 @@ html {
     min-height: calc(100vh - 72px);
     padding: var(--space-4);
     background: var(--bg-abyss);
+    position: relative;
+    z-index: var(--z-base);
 }
 
 /* Page Loading State */
@@ -6685,6 +6726,7 @@ html {
 
     .app-main {
         margin-top: 64px;
+        min-height: calc(100vh - 64px);
         padding: var(--space-2);
     }
 }
