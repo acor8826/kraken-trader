@@ -648,6 +648,9 @@ def _register_routes(app: FastAPI):
             "run_id": result.run_id,
             "trigger_type": result.trigger_type,
             "summary": result.summary,
+            "recommendations_count": result.recommendations_count,
+            "top_recommendations": result.top_recommendations,
+            "pattern_updates_count": result.pattern_updates_count,
         }
 
     @app.post("/internal/seed-improver/loss")
@@ -664,6 +667,9 @@ def _register_routes(app: FastAPI):
             "run_id": result.run_id,
             "trigger_type": result.trigger_type,
             "summary": result.summary,
+            "recommendations_count": result.recommendations_count,
+            "top_recommendations": result.top_recommendations,
+            "pattern_updates_count": result.pattern_updates_count,
         }
     
     @app.post("/pause")

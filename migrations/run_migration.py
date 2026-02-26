@@ -9,6 +9,7 @@ MIGRATION_ORDER = [
     "002_auth_schema.sql",
     "002_phase3_schema.sql",
     "003_seed_improver_phase0.sql",
+    "004_seed_improver_phases.sql",
 ]
 
 
