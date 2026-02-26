@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -24,6 +25,15 @@ class Recommendation:
 
 
 @dataclass
+class VerdictResult:
+    verdict: str  # approve | reject | defer
+    reason: str
+    confidence: float  # 0-1
+    risk_score: str  # low | medium | high
+    judged_by_model: str
+
+
+@dataclass
 class SeedImproverResult:
     run_id: str
     trigger_type: str
@@ -32,6 +42,8 @@ class SeedImproverResult:
     recommendations_count: int = 0
     top_recommendations: List[str] = field(default_factory=list)
     pattern_updates_count: int = 0
+    verdicts_summary: Optional[Dict[str, int]] = None  # e.g. {"approve": 2, "reject": 1}
+    implementations_summary: Optional[Dict[str, int]] = None  # e.g. {"implemented": 1, "failed": 0}
 
 
 class SeedImproverService:
@@ -42,11 +54,15 @@ class SeedImproverService:
     Phase 2: Pattern learning
     Phase 3: Controlled actioning (feature-flagged)
     Phase 4: Evaluation loop
+    Phase 5: Autonomous judge (LLM verdict on recommendations)
+    Phase 6: Auto-implementation pipeline (code patch, branch, test, commit)
     """
 
     # Feature flags (env-configurable)
     ENABLE_AUTO_APPLY = "SEED_IMPROVER_AUTO_APPLY"  # env var name
     ENABLE_STRATEGY_AUTO_APPLY = "SEED_IMPROVER_STRATEGY_AUTO_APPLY"  # env var name
+    ENABLE_HIGH_RISK_AUTO = "SEED_IMPROVER_HIGH_RISK_AUTO"  # env var name
+    ENABLE_AUTO_IMPLEMENT = "SEED_IMPROVER_AUTO_IMPLEMENT"  # env var name
 
     def __init__(self, memory: Any, repo_root: Optional[Path] = None):
         self.memory = memory
@@ -61,6 +77,14 @@ class SeedImproverService:
             fallback.mkdir(parents=True, exist_ok=True)
             self.memory_dir = fallback
             logger.warning("SeedImprover using fallback writable dir: %s", self.memory_dir)
+
+    @property
+    def high_risk_auto_enabled(self) -> bool:
+        return os.environ.get(self.ENABLE_HIGH_RISK_AUTO, "").lower() in ("true", "1", "yes")
+
+    @property
+    def auto_implement_enabled(self) -> bool:
+        return os.environ.get(self.ENABLE_AUTO_IMPLEMENT, "").lower() in ("true", "1", "yes")
 
     @property
     def auto_apply_enabled(self) -> bool:
@@ -93,13 +117,21 @@ class SeedImproverService:
             # Phase 4: Evaluation loop
             eval_summary = await self._phase4_evaluation_loop(run_id)
 
+            # Phase 5: Autonomous judge
+            verdicts = await self._phase5_autonomous_judge(run_id, recommendations)
+            verdicts_summary = Counter(v.verdict for v in verdicts) if verdicts else {}
+
+            # Phase 6: Auto-implementation pipeline
+            impl_summary = await self._phase6_auto_implement(run_id, recommendations, verdicts)
+
             # Build summary
             top_recs = [r.change_summary[:100] for r in recommendations[:3]]
             summary = (
-                f"Phases 0-4 complete. trades_sampled={len(trades)}, "
+                f"Phases 0-6 complete. trades_sampled={len(trades)}, "
                 f"gaps={len(audit['gaps'])}, recommendations={len(recommendations)}, "
                 f"patterns_updated={patterns_updated}, applied={len(applied)}, "
-                f"eval={eval_summary}"
+                f"eval={eval_summary}, verdicts={dict(verdicts_summary)}, "
+                f"implementations={impl_summary}"
             )
 
             self._write_markdown_run_log(run_id, trigger_type, started_at, context, audit, recommendations)
@@ -113,6 +145,8 @@ class SeedImproverService:
                 recommendations_count=len(recommendations),
                 top_recommendations=top_recs,
                 pattern_updates_count=patterns_updated,
+                verdicts_summary=dict(verdicts_summary),
+                implementations_summary=impl_summary,
             )
         except Exception as e:
             err = f"Seed improver failed: {e}"
@@ -521,6 +555,338 @@ class SeedImproverService:
             )
 
             return eval_note
+
+    # =========================================================================
+    # Phase 5: Autonomous Judge
+    # =========================================================================
+
+    async def _phase5_autonomous_judge(
+        self, run_id: str, recommendations: List[Recommendation]
+    ) -> List[VerdictResult]:
+        """Call LLM to judge each recommendation. Returns list of VerdictResult."""
+        if not recommendations:
+            return []
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            logger.warning("ANTHROPIC_API_KEY not set — skipping Phase 5 autonomous judge")
+            return []
+
+        verdicts: List[VerdictResult] = []
+        for rec in recommendations:
+            try:
+                verdict = await self._judge_single_recommendation(api_key, rec)
+                # Auto-defer high-risk unless explicitly allowed
+                if verdict.risk_score == "high" and not self.high_risk_auto_enabled:
+                    verdict = VerdictResult(
+                        verdict="defer",
+                        reason=f"Auto-deferred high-risk: {verdict.reason}",
+                        confidence=verdict.confidence,
+                        risk_score="high",
+                        judged_by_model=verdict.judged_by_model,
+                    )
+                verdicts.append(verdict)
+                await self._persist_verdict(run_id, rec, verdict)
+            except Exception as e:
+                logger.error("Phase 5 judge error for '%s': %s", rec.change_summary, e)
+                fallback = VerdictResult(
+                    verdict="defer", reason=f"Judge error: {e}",
+                    confidence=0.0, risk_score="medium", judged_by_model="error",
+                )
+                verdicts.append(fallback)
+                await self._persist_verdict(run_id, rec, fallback)
+
+        return verdicts
+
+    async def _judge_single_recommendation(
+        self, api_key: str, rec: Recommendation
+    ) -> VerdictResult:
+        """Call Claude to judge a single recommendation."""
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
+
+        prompt = (
+            "You are an autonomous code improvement judge for a crypto trading bot. "
+            "Evaluate the following recommendation and return a JSON object with exactly these fields:\n"
+            '- "verdict": "approve" | "reject" | "defer"\n'
+            '- "reason": brief explanation\n'
+            '- "confidence": float 0-1\n'
+            '- "risk_score": "low" | "medium" | "high"\n\n'
+            f"Priority: {rec.priority}\n"
+            f"Hypothesis: {rec.hypothesis}\n"
+            f"Change: {rec.change_summary}\n"
+            f"Expected impact: {json.dumps(rec.expected_impact)}\n"
+            f"Risk: {rec.risk}\n"
+            f"Compatibility: {rec.compatibility_notes}\n"
+            f"Auto-applicable: {rec.auto_applicable}\n\n"
+            "Return ONLY valid JSON, no markdown."
+        )
+
+        model_name = "claude-sonnet-4-20250514"
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        text = response.content[0].text.strip()
+        # Parse JSON from response
+        data = json.loads(text)
+
+        return VerdictResult(
+            verdict=data.get("verdict", "defer"),
+            reason=data.get("reason", "No reason provided"),
+            confidence=float(data.get("confidence", 0.5)),
+            risk_score=data.get("risk_score", rec.risk),
+            judged_by_model=model_name,
+        )
+
+    async def _persist_verdict(
+        self, run_id: str, rec: Recommendation, verdict: VerdictResult
+    ) -> None:
+        """Update seed_improver_changes row with verdict fields."""
+        if not hasattr(self.memory, "_connection"):
+            return
+        async with self.memory._connection() as conn:
+            await conn.execute(
+                """
+                UPDATE seed_improver_changes
+                SET verdict = $3, verdict_reason = $4, verdict_confidence = $5,
+                    verdict_risk_score = $6, judged_by_model = $7
+                WHERE run_id = $1::uuid AND change_summary = $2
+                """,
+                run_id, rec.change_summary, verdict.verdict, verdict.reason,
+                verdict.confidence, verdict.risk_score, verdict.judged_by_model,
+            )
+
+    # =========================================================================
+    # Phase 6: Auto-Implementation Pipeline
+    # =========================================================================
+
+    async def _phase6_auto_implement(
+        self, run_id: str, recommendations: List[Recommendation],
+        verdicts: List[VerdictResult],
+    ) -> Dict[str, int]:
+        """For approved recommendations, generate patch, branch, test, commit."""
+        summary = {"implemented": 0, "failed": 0, "skipped": 0}
+
+        if not self.auto_implement_enabled:
+            logger.info("Auto-implement disabled (set SEED_IMPROVER_AUTO_IMPLEMENT=true)")
+            summary["skipped"] = len(recommendations)
+            return summary
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            summary["skipped"] = len(recommendations)
+            return summary
+
+        approved = [
+            (rec, v) for rec, v in zip(recommendations, verdicts)
+            if v.verdict == "approve"
+        ]
+
+        if not approved:
+            summary["skipped"] = len(recommendations)
+            return summary
+
+        run_id_short = run_id[:8] if len(run_id) >= 8 else run_id
+        branch_name = f"seed-improver/auto-{run_id_short}"
+
+        # Create branch
+        try:
+            self._git_run(["checkout", "-b", branch_name])
+        except Exception as e:
+            logger.error("Failed to create branch %s: %s", branch_name, e)
+            summary["failed"] = len(approved)
+            return summary
+
+        any_success = False
+        for rec, verdict in approved:
+            try:
+                patch = await self._generate_code_patch(api_key, rec)
+                if not patch:
+                    await self._record_implementation(run_id, rec, branch_name, None, "failed", "Empty patch generated")
+                    summary["failed"] += 1
+                    continue
+
+                applied = self._apply_patch(patch)
+                if not applied:
+                    await self._record_implementation(run_id, rec, branch_name, None, "failed", "Patch apply failed")
+                    summary["failed"] += 1
+                    continue
+
+                # Commit
+                self._git_run(["add", "-A"])
+                self._git_run(["commit", "-m", f"seed-improver: {rec.change_summary[:72]}"])
+                commit_sha = self._git_run(["rev-parse", "HEAD"]).strip()
+
+                # Run tests
+                test_result = self._run_tests()
+                if test_result["passed"]:
+                    await self._record_implementation(run_id, rec, branch_name, commit_sha, "implemented", None)
+                    await self._update_change_status(run_id, rec, "implemented")
+                    summary["implemented"] += 1
+                    any_success = True
+                else:
+                    # Revert the commit
+                    self._git_run(["revert", "--no-edit", "HEAD"])
+                    await self._record_implementation(
+                        run_id, rec, branch_name, commit_sha, "failed",
+                        test_result.get("error", "Tests failed")[:500],
+                    )
+                    await self._update_change_status(run_id, rec, "failed")
+                    summary["failed"] += 1
+
+            except Exception as e:
+                logger.error("Phase 6 implementation error for '%s': %s", rec.change_summary, e)
+                await self._record_implementation(run_id, rec, branch_name, None, "failed", str(e)[:500])
+                summary["failed"] += 1
+
+        # Return to main branch
+        try:
+            if not any_success:
+                self._git_run(["checkout", "main"])
+                self._git_run(["branch", "-D", branch_name])
+            else:
+                self._git_run(["checkout", "main"])
+        except Exception as e:
+            logger.warning("Failed to return to main branch: %s", e)
+
+        return summary
+
+    async def _generate_code_patch(self, api_key: str, rec: Recommendation) -> Optional[str]:
+        """Use Claude to generate a unified diff patch for the recommendation."""
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
+
+        # Read relevant source files for context
+        source_context = self._read_source_context()
+
+        prompt = (
+            "You are a code generation assistant for a Python crypto trading bot.\n"
+            "Generate a unified diff patch to implement the following change.\n\n"
+            f"Change: {rec.change_summary}\n"
+            f"Hypothesis: {rec.hypothesis}\n"
+            f"Expected impact: {json.dumps(rec.expected_impact)}\n"
+            f"Risk: {rec.risk}\n\n"
+            "Source context (key files):\n"
+            f"{source_context}\n\n"
+            "Return ONLY a valid unified diff (starting with --- and +++ lines). "
+            "Keep changes minimal and surgical. No explanations."
+        )
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        return response.content[0].text.strip()
+
+    def _read_source_context(self) -> str:
+        """Read key source files for patch generation context."""
+        context_files = [
+            "agents/seed_improver/service.py",
+            "config/settings.py",
+        ]
+        parts = []
+        for rel_path in context_files:
+            full_path = self.repo_root / rel_path
+            if full_path.exists():
+                content = full_path.read_text(encoding="utf-8")
+                # Truncate to avoid token limits
+                if len(content) > 3000:
+                    content = content[:3000] + "\n... (truncated)"
+                parts.append(f"=== {rel_path} ===\n{content}")
+        return "\n\n".join(parts) if parts else "(no source files found)"
+
+    def _apply_patch(self, patch_text: str) -> bool:
+        """Apply a unified diff patch to the repo. Returns True on success."""
+        patch_file = self.repo_root / ".seed_improver_patch.tmp"
+        try:
+            patch_file.write_text(patch_text, encoding="utf-8")
+            result = subprocess.run(
+                ["git", "apply", "--check", str(patch_file)],
+                cwd=str(self.repo_root),
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                logger.warning("Patch check failed: %s", result.stderr)
+                return False
+            result = subprocess.run(
+                ["git", "apply", str(patch_file)],
+                cwd=str(self.repo_root),
+                capture_output=True, text=True, timeout=30,
+            )
+            return result.returncode == 0
+        except Exception as e:
+            logger.error("Patch apply error: %s", e)
+            return False
+        finally:
+            patch_file.unlink(missing_ok=True)
+
+    def _git_run(self, args: List[str]) -> str:
+        """Run a git command in the repo root. Returns stdout."""
+        result = subprocess.run(
+            ["git"] + args,
+            cwd=str(self.repo_root),
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)} failed: {result.stderr}")
+        return result.stdout
+
+    def _run_tests(self) -> Dict[str, Any]:
+        """Run pytest and return result dict."""
+        try:
+            result = subprocess.run(
+                ["python", "-m", "pytest", "tests/", "-x", "--tb=short", "-q"],
+                cwd=str(self.repo_root),
+                capture_output=True, text=True, timeout=300,
+            )
+            return {
+                "passed": result.returncode == 0,
+                "output": result.stdout[-500:] if result.stdout else "",
+                "error": result.stderr[-500:] if result.stderr else "",
+            }
+        except subprocess.TimeoutExpired:
+            return {"passed": False, "error": "Test timeout (300s)"}
+        except Exception as e:
+            return {"passed": False, "error": str(e)}
+
+    async def _record_implementation(
+        self, run_id: str, rec: Recommendation,
+        branch: str, commit_sha: Optional[str],
+        check_result: str, error: Optional[str],
+    ) -> None:
+        """Update seed_improver_changes row with implementation fields."""
+        if not hasattr(self.memory, "_connection"):
+            return
+        async with self.memory._connection() as conn:
+            await conn.execute(
+                """
+                UPDATE seed_improver_changes
+                SET implementation_branch = $3, implementation_commit_sha = $4,
+                    implementation_check_result = $5, implementation_error = $6
+                WHERE run_id = $1::uuid AND change_summary = $2
+                """,
+                run_id, rec.change_summary, branch, commit_sha, check_result, error,
+            )
+
+    async def _update_change_status(self, run_id: str, rec: Recommendation, status: str) -> None:
+        """Update the status column on seed_improver_changes."""
+        if not hasattr(self.memory, "_connection"):
+            return
+        async with self.memory._connection() as conn:
+            await conn.execute(
+                """
+                UPDATE seed_improver_changes SET status = $3
+                WHERE run_id = $1::uuid AND change_summary = $2
+                """,
+                run_id, rec.change_summary, status,
+            )
 
     # =========================================================================
     # Persistence helpers

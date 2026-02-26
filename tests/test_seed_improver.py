@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from agents.seed_improver.service import SeedImproverService, Recommendation
+from agents.seed_improver.service import SeedImproverService, Recommendation, VerdictResult
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +222,165 @@ class TestFullRun:
         result = asyncio.get_event_loop().run_until_complete(svc.run("losing_trade", ctx))
         assert result.status == "completed"
         assert any("ETH/AUD" in r for r in result.top_recommendations) or result.recommendations_count > 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 tests (Autonomous Judge)
+# ---------------------------------------------------------------------------
+
+class TestPhase5:
+    def _make_rec(self, risk="low", priority="quality"):
+        return Recommendation(
+            priority=priority, hypothesis="test hyp", change_summary="test change",
+            expected_impact={"test": True}, risk=risk, compatibility_notes="ok",
+            auto_applicable=True,
+        )
+
+    def test_judge_skips_without_api_key(self):
+        svc = _make_service([])
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            result = asyncio.get_event_loop().run_until_complete(
+                svc._phase5_autonomous_judge("fake-run", [self._make_rec()])
+            )
+            assert result == []
+
+    def test_judge_calls_anthropic_and_parses(self):
+        svc = _make_service([])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps({
+            "verdict": "approve", "reason": "Looks good",
+            "confidence": 0.9, "risk_score": "low",
+        }))]
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            with patch("anthropic.Anthropic") as MockClient:
+                MockClient.return_value.messages.create.return_value = mock_response
+                verdicts = asyncio.get_event_loop().run_until_complete(
+                    svc._phase5_autonomous_judge("fake-run", [self._make_rec()])
+                )
+                assert len(verdicts) == 1
+                assert verdicts[0].verdict == "approve"
+                assert verdicts[0].confidence == 0.9
+
+    def test_high_risk_auto_deferred(self):
+        svc = _make_service([])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps({
+            "verdict": "approve", "reason": "Risky but good",
+            "confidence": 0.8, "risk_score": "high",
+        }))]
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=False):
+            os.environ.pop("SEED_IMPROVER_HIGH_RISK_AUTO", None)
+            with patch("anthropic.Anthropic") as MockClient:
+                MockClient.return_value.messages.create.return_value = mock_response
+                verdicts = asyncio.get_event_loop().run_until_complete(
+                    svc._phase5_autonomous_judge("fake-run", [self._make_rec(risk="high")])
+                )
+                assert verdicts[0].verdict == "defer"
+                assert "Auto-deferred" in verdicts[0].reason
+
+    def test_high_risk_approved_with_flag(self):
+        svc = _make_service([])
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps({
+            "verdict": "approve", "reason": "OK",
+            "confidence": 0.8, "risk_score": "high",
+        }))]
+
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key", "SEED_IMPROVER_HIGH_RISK_AUTO": "true"}):
+            with patch("anthropic.Anthropic") as MockClient:
+                MockClient.return_value.messages.create.return_value = mock_response
+                verdicts = asyncio.get_event_loop().run_until_complete(
+                    svc._phase5_autonomous_judge("fake-run", [self._make_rec(risk="high")])
+                )
+                assert verdicts[0].verdict == "approve"
+
+    def test_judge_error_defers(self):
+        svc = _make_service([])
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+            with patch("anthropic.Anthropic") as MockClient:
+                MockClient.return_value.messages.create.side_effect = Exception("API error")
+                verdicts = asyncio.get_event_loop().run_until_complete(
+                    svc._phase5_autonomous_judge("fake-run", [self._make_rec()])
+                )
+                assert verdicts[0].verdict == "defer"
+                assert "error" in verdicts[0].reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 tests (Auto-Implementation Pipeline)
+# ---------------------------------------------------------------------------
+
+class TestPhase6:
+    def _make_rec(self):
+        return Recommendation(
+            priority="quality", hypothesis="test", change_summary="fix latency",
+            expected_impact={}, risk="low", compatibility_notes="ok", auto_applicable=True,
+        )
+
+    def test_auto_implement_disabled_by_default(self):
+        svc = _make_service([])
+        assert svc.auto_implement_enabled is False
+
+    def test_auto_implement_skips_when_disabled(self):
+        svc = _make_service([])
+        rec = self._make_rec()
+        verdict = VerdictResult(verdict="approve", reason="ok", confidence=0.9, risk_score="low", judged_by_model="test")
+        result = asyncio.get_event_loop().run_until_complete(
+            svc._phase6_auto_implement("fake-run", [rec], [verdict])
+        )
+        assert result["skipped"] == 1
+        assert result["implemented"] == 0
+
+    def test_auto_implement_skips_non_approved(self):
+        svc = _make_service([])
+        rec = self._make_rec()
+        verdict = VerdictResult(verdict="reject", reason="no", confidence=0.9, risk_score="low", judged_by_model="test")
+        with patch.dict(os.environ, {"SEED_IMPROVER_AUTO_IMPLEMENT": "true", "ANTHROPIC_API_KEY": "key"}):
+            result = asyncio.get_event_loop().run_until_complete(
+                svc._phase6_auto_implement("fake-run", [rec], [verdict])
+            )
+            assert result["skipped"] == 1
+
+    def test_git_run_helper(self):
+        svc = _make_service([])
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc123\n", stderr="")
+            output = svc._git_run(["rev-parse", "HEAD"])
+            assert output == "abc123\n"
+
+    def test_run_tests_helper(self):
+        svc = _make_service([])
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="all passed", stderr="")
+            result = svc._run_tests()
+            assert result["passed"] is True
+
+    def test_run_tests_failure(self):
+        svc = _make_service([])
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stdout="FAILED", stderr="1 failed")
+            result = svc._run_tests()
+            assert result["passed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Integration with Phase 5/6 (no DB, no API key)
+# ---------------------------------------------------------------------------
+
+class TestFullRunWithPhases56:
+    def test_full_run_graceful_without_api_key(self):
+        """Phase 5/6 should gracefully skip when no API key is set."""
+        trades = [FakeTrade(realized_pnl=-2.0) for _ in range(4)]
+        svc = _make_service(trades)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+            result = asyncio.get_event_loop().run_until_complete(svc.run("manual", {}))
+        assert result.status == "completed"
+        assert result.verdicts_summary == {}
+        assert result.implementations_summary["skipped"] >= 0
 
 
 if __name__ == "__main__":

@@ -651,6 +651,8 @@ def _register_routes(app: FastAPI):
             "recommendations_count": result.recommendations_count,
             "top_recommendations": result.top_recommendations,
             "pattern_updates_count": result.pattern_updates_count,
+            "verdicts_summary": result.verdicts_summary,
+            "implementations_summary": result.implementations_summary,
         }
 
     @app.post("/internal/seed-improver/loss")
@@ -670,8 +672,44 @@ def _register_routes(app: FastAPI):
             "recommendations_count": result.recommendations_count,
             "top_recommendations": result.top_recommendations,
             "pattern_updates_count": result.pattern_updates_count,
+            "verdicts_summary": result.verdicts_summary,
+            "implementations_summary": result.implementations_summary,
         }
-    
+
+    @app.get("/internal/seed-improver/status/{run_id}")
+    async def seed_improver_status(run_id: str):
+        """Check implementation status for a seed improver run."""
+        if not seed_improver:
+            raise HTTPException(status_code=503, detail="Seed improver not initialized")
+        if not hasattr(seed_improver.memory, "_connection"):
+            raise HTTPException(status_code=503, detail="Database not available")
+
+        async with seed_improver.memory._connection() as conn:
+            run_row = await conn.fetchrow(
+                "SELECT id, trigger_type, status, summary, started_at, finished_at FROM seed_improver_runs WHERE id::text = $1",
+                run_id,
+            )
+            if not run_row:
+                raise HTTPException(status_code=404, detail="Run not found")
+
+            changes = await conn.fetch(
+                """SELECT change_summary, priority, risk_assessment, status,
+                          verdict, verdict_reason, verdict_confidence, verdict_risk_score, judged_by_model,
+                          implementation_branch, implementation_commit_sha, implementation_check_result, implementation_error
+                   FROM seed_improver_changes WHERE run_id = $1::uuid ORDER BY created_at""",
+                run_id,
+            )
+
+        return {
+            "run_id": str(run_row["id"]),
+            "trigger_type": run_row["trigger_type"],
+            "status": run_row["status"],
+            "summary": run_row["summary"],
+            "started_at": str(run_row["started_at"]) if run_row["started_at"] else None,
+            "finished_at": str(run_row["finished_at"]) if run_row["finished_at"] else None,
+            "changes": [dict(c) for c in changes],
+        }
+
     @app.post("/pause")
     async def pause_trading():
         """Pause trading"""
