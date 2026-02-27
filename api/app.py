@@ -607,6 +607,34 @@ def _register_routes(app: FastAPI):
             raise HTTPException(status_code=500, detail="Portfolio data unavailable")
         return result
     
+    @app.get("/api/portfolio/history")
+    async def get_portfolio_history(range: str = "7D"):
+        """Get portfolio value history for charting"""
+        if not orchestrator:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+
+        range_map = {"1D": 1, "7D": 7, "30D": 30, "90D": 90, "ALL": 365}
+        days = range_map.get(range, 7)
+
+        try:
+            db = orchestrator.memory
+            async with db._connection() as conn:
+                rows = await conn.fetch("""
+                    SELECT total_value, created_at
+                    FROM portfolio_snapshots
+                    WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+                    ORDER BY created_at ASC
+                """, str(days))
+
+            snapshots = [
+                {"timestamp": row["created_at"].isoformat(), "total_value": float(row["total_value"])}
+                for row in rows
+            ]
+            return {"snapshots": snapshots, "range": range, "count": len(snapshots)}
+        except Exception as e:
+            logger.error(f"Portfolio history error: {e}")
+            return {"snapshots": [], "range": range, "count": 0}
+
     @app.get("/status")
     async def get_status():
         """Get detailed agent status"""
