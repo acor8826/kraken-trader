@@ -192,6 +192,7 @@ async function registerPages() {
         AgentsPage,
         AgentDetailPage,
         MetricsPage,
+        ImproverPage,
         CostsPage,
         SettingsPage
     ] = await Promise.all([
@@ -202,6 +203,7 @@ async function registerPages() {
         import('./pages/agents.js').then(m => m.default).catch(() => createPlaceholderPage('Agents')),
         import('./pages/agent-detail.js').then(m => m.default).catch(() => createPlaceholderPage('Agent Detail')),
         import('./pages/metrics.js').then(m => m.default).catch(() => createPlaceholderPage('Metrics')),
+        import('./pages/improver.js').then(m => m.default).catch(() => createPlaceholderPage('Improvement Cycles')),
         import('./pages/costs.js').then(m => m.default).catch(() => createPlaceholderPage('Cost Optimization')),
         import('./pages/settings.js').then(m => m.default).catch(() => createPlaceholderPage('Settings'))
     ]);
@@ -214,6 +216,7 @@ async function registerPages() {
     router.register('/agents', AgentsPage);
     router.register('/agents/:name', AgentDetailPage);
     router.register('/metrics', MetricsPage);
+    router.register('/improver', ImproverPage);
     router.register('/costs', CostsPage);
     router.register('/settings', SettingsPage);
 }

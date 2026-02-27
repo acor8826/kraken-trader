@@ -556,7 +556,7 @@ def _register_routes(app: FastAPI):
     @app.get("/")
     async def root():
         """Redirect to dashboard"""
-        return RedirectResponse(url="/dashboard/index.html")
+        return RedirectResponse(url="/dashboard/index-bassie.html")
 
     @app.get("/api/status")
     async def api_status():
