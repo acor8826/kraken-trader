@@ -9782,3 +9782,313 @@ html {
 .neutral {
     color: var(--text-muted);
 }
+
+/* ========================================
+   Improvement Cycles Page
+   ======================================== */
+
+.improver-page {
+    padding: 0;
+}
+
+.improver-loading,
+.improver-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 64px 24px;
+    color: var(--text-secondary);
+    text-align: center;
+}
+
+.improver-empty i,
+.improver-empty [data-lucide] {
+    width: 48px;
+    height: 48px;
+    opacity: 0.4;
+}
+
+.improver-empty h3 {
+    font-size: 18px;
+    color: var(--text-primary);
+    margin: 0;
+}
+
+.improver-empty p {
+    max-width: 400px;
+    line-height: 1.5;
+}
+
+.improver-error {
+    color: var(--danger);
+}
+
+.improver-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+}
+
+.improver-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+
+.improver-table thead th {
+    padding: 12px 16px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.improver-table tbody tr.improver-row {
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.improver-table tbody tr.improver-row:hover {
+    background: var(--bg-tertiary);
+}
+
+.improver-table tbody tr.improver-row.expanded {
+    background: var(--bg-tertiary);
+}
+
+.improver-table td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border-color);
+    vertical-align: middle;
+}
+
+.improver-table td.num {
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+}
+
+.improver-table td.summary-cell {
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.improver-table td.expand-cell {
+    width: 32px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+
+.improver-table td.expand-cell i,
+.improver-table td.expand-cell [data-lucide] {
+    width: 16px;
+    height: 16px;
+}
+
+.time-relative {
+    cursor: help;
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.trigger-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.trigger-scheduled { background: rgba(124, 58, 237, 0.15); color: var(--accent-purple); }
+.trigger-manual { background: rgba(0, 212, 255, 0.15); color: var(--accent-cyan); }
+.trigger-losing_trade { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+
+/* Detail row */
+.detail-row td {
+    padding: 0 !important;
+    border-bottom: 2px solid var(--accent-cyan);
+}
+
+.run-detail {
+    padding: 20px 24px;
+    background: var(--bg-primary);
+}
+
+.run-detail .pulse-loader {
+    margin: 24px auto;
+}
+
+.detail-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.detail-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+.detail-stat {
+    flex: 1;
+    min-width: 140px;
+    padding: 12px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.detail-stat-label {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+
+.detail-stat-value {
+    display: block;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.detail-error-banner {
+    padding: 10px 16px;
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    border-radius: 8px;
+    color: var(--danger);
+    font-size: 13px;
+}
+
+.detail-changes-header {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.detail-changes {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.change-card {
+    padding: 14px 16px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+}
+
+.change-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+
+.change-priority {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.change-risk {
+    color: var(--text-secondary);
+}
+
+.change-verdict {
+    margin-left: auto;
+}
+
+.change-verdict.pending {
+    color: var(--text-secondary);
+    opacity: 0.6;
+}
+
+.change-summary {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-primary);
+}
+
+.change-reason,
+.change-impl {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.change-impl code {
+    background: var(--bg-tertiary);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+}
+
+.change-impl-error {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--danger);
+}
+
+.no-changes {
+    padding: 24px;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.detail-error {
+    padding: 16px;
+    text-align: center;
+    color: var(--danger);
+    font-size: 13px;
+}
+
+/* Pagination */
+.improver-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.pagination-info {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+@media (max-width: 768px) {
+    .improver-table td.summary-cell {
+        max-width: 160px;
+    }
+
+    .detail-stats {
+        flex-direction: column;
+    }
+}
