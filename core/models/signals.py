@@ -125,16 +125,16 @@ class MarketIntel:
     def is_actionable(self) -> bool:
         """Is the intel strong enough to act on?"""
         return (
-            self.fused_confidence >= 0.6 and
-            self.disagreement < 0.5 and
-            abs(self.fused_direction) > 0.2
+            self.fused_confidence >= 0.45 and
+            self.disagreement < 0.6 and
+            abs(self.fused_direction) > 0.15
         )
-    
+
     @property
     def suggested_action(self) -> str:
-        if self.fused_direction > 0.3 and self.fused_confidence > 0.6:
+        if self.fused_direction > 0.25 and self.fused_confidence > 0.50:
             return "BUY"
-        elif self.fused_direction < -0.3 and self.fused_confidence > 0.6:
+        elif self.fused_direction < -0.25 and self.fused_confidence > 0.45:
             return "SELL"
         return "HOLD"
     

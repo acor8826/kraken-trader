@@ -163,9 +163,9 @@ class LLMConfig:
 @dataclass
 class HybridThresholds:
     """Thresholds for hybrid strategist (rules vs Claude)"""
-    direction_clear: float = 0.4       # |direction| > this = clear signal
-    confidence_clear: float = 0.60     # confidence > this = clear signal
-    disagreement_max: float = 0.3      # disagreement < this = clear signal
+    direction_clear: float = 0.30      # |direction| > this = clear signal
+    confidence_clear: float = 0.50     # confidence > this = clear signal
+    disagreement_max: float = 0.40     # disagreement < this = clear signal
 
 
 @dataclass

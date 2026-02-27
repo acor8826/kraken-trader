@@ -105,4 +105,24 @@ limit_orders:
   spread_buffer_pct: 0.001  # 0.1% inside spread
   fallback_to_market: true
 
+# Aggressive risk overrides (active when RISK_PROFILE=aggressive)
+aggressive_risk:
+  max_position_pct: 0.35
+  max_total_exposure_pct: 0.95
+  stop_loss_pct: 0.015
+  take_profit_multiplier: 2.0
+  min_confidence: 0.45
+  max_daily_trades: 30
+  max_daily_loss_pct: 0.15
+
+# Cost optimization with lowered hybrid thresholds
+cost_optimization:
+  enable_batch_analysis: true
+  enable_hybrid_mode: true
+  enable_decision_cache: false
+  hybrid:
+    direction_threshold: 0.30
+    confidence_threshold: 0.50
+    disagreement_threshold: 0.40
+
 log_level: INFO

@@ -22,9 +22,10 @@ logger = logging.getLogger(__name__)
 STRATEGIST_SYSTEM_PROMPT = """Crypto trading strategist. Convert analyst signals to trades.
 
 Rules:
-- BUY only when direction > +0.4 AND confidence > 0.65 AND no existing position in this pair.
-- SELL when direction < -0.3 AND confidence > 0.55.
-- Otherwise HOLD. Be selective -- only trade when signals are strong and aligned.
+- BUY when direction > +0.25 AND confidence > 0.50 AND no existing position in this pair.
+- SELL when direction < -0.25 AND confidence > 0.45.
+- In extreme fear conditions (high disagreement but positive direction), be willing to accumulate.
+- Otherwise HOLD.
 - Never recommend BUY for a pair we already hold. Prefer HOLD.
 Match confidence to signal strength. Risk management handled separately.
 Respond with JSON only."""
@@ -39,7 +40,7 @@ Current positions: {positions_summary}
 Risk: max_position={max_position_pct:.0%}, stop_loss={stop_loss_pct:.0%}, min_confidence={min_confidence:.0%}
 Strategies: TREND_FOLLOW, MEAN_REVERT, RISK_OFF
 
-IMPORTANT: Do NOT recommend BUY if we already hold a position in {pair}. Only BUY when signals are strong (direction > +0.4, confidence > 0.65).
+IMPORTANT: Do NOT recommend BUY if we already hold a position in {pair}. BUY when direction > +0.25 and confidence > 0.50.
 
 JSON response:
 {{"action":"BUY|SELL|HOLD","confidence":0.0-1.0,"size_pct":0.0-{max_position_pct},"strategy":"...","reasoning":"brief","key_factors":["..."],"risks":["..."]}}"""
@@ -198,16 +199,32 @@ class RuleBasedStrategist(IStrategist):
             and portfolio.positions[base_asset].amount > 0
         )
 
-        if intel.fused_direction > 0.4 and intel.fused_confidence > 0.65 and not already_holding:
+        # FEAR_BUY: Contrarian accumulation when analysts agree on direction
+        # but disagree on magnitude (e.g. extreme fear)
+        is_fear_buy = (
+            intel.fused_direction > 0.15
+            and intel.fused_confidence > 0.40
+            and intel.disagreement > 0.3
+            and not already_holding
+        )
+
+        if is_fear_buy:
+            action = TradeAction.BUY
+            confidence = intel.fused_confidence * 0.85  # Discount for uncertainty
+            size_pct = risk["max_position_pct"] * 0.6 * min(1.0, abs(intel.fused_direction))
+            reasoning += (f"FEAR_BUY: Contrarian accumulation "
+                         f"(direction: {intel.fused_direction:+.2f}, "
+                         f"disagreement: {intel.disagreement:.2f})")
+        elif intel.fused_direction > 0.25 and intel.fused_confidence > 0.50 and not already_holding:
             action = TradeAction.BUY
             confidence = intel.fused_confidence
             size_pct = risk["max_position_pct"] * min(1.0, abs(intel.fused_direction))
-            reasoning += f"Strong bullish signal ({intel.fused_direction:+.2f}) with high confidence"
-        elif intel.fused_direction < -0.3 and intel.fused_confidence > 0.55:
+            reasoning += f"Bullish signal ({intel.fused_direction:+.2f}) with confidence {intel.fused_confidence:.0%}"
+        elif intel.fused_direction < -0.25 and intel.fused_confidence > 0.45:
             action = TradeAction.SELL
             confidence = intel.fused_confidence
             size_pct = 1.0  # Sell full position
-            reasoning += f"Bearish signal ({intel.fused_direction:+.2f}) with good confidence"
+            reasoning += f"Bearish signal ({intel.fused_direction:+.2f}) with confidence {intel.fused_confidence:.0%}"
         elif already_holding:
             confidence = intel.fused_confidence * 0.5
             reasoning += f"Already holding {base_asset}, waiting for exit signal"

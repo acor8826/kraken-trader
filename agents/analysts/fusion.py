@@ -224,8 +224,15 @@ class IntelligenceFusion:
         disagreement = min(1.0, variance ** 0.5)  # Std dev, clamped to [0,1]
 
         # Confidence: average of confidences, penalized by disagreement
+        # Use lighter penalty when analysts agree on direction (same sign)
         avg_confidence = sum(s.confidence for s in signals) / len(signals)
-        fused_confidence = avg_confidence * (1 - disagreement * 0.5)
+        all_same_sign = all(d >= 0 for d in directions) or all(d <= 0 for d in directions)
+        if all_same_sign:
+            # Magnitude disagreement only — less concerning
+            fused_confidence = avg_confidence * (1 - disagreement * 0.15)
+        else:
+            # Genuine directional conflict — moderate penalty
+            fused_confidence = avg_confidence * (1 - disagreement * 0.35)
 
         return {
             "direction": max(-1, min(1, fused_direction)),

@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 # System prompt for batch analysis
 BATCH_SYSTEM_PROMPT = """Crypto trading strategist. Analyze MULTIPLE pairs, return JSON array of decisions.
 
-Rules per pair: direction>+0.3 & confidence>0.55→BUY, direction<-0.3 & confidence>0.55→SELL, else HOLD.
+Rules per pair: direction>+0.25 & confidence>0.50→BUY, direction<-0.25 & confidence>0.45→SELL, else HOLD.
+In extreme fear conditions, be willing to accumulate at lower thresholds.
 Match confidence to signal strength. Consider portfolio-wide exposure for sizing. Respond with JSON only."""
 
 
