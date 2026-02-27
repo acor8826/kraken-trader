@@ -95,6 +95,7 @@ scripts/ralph/
 .DS_Store
 Thumbs.db
 
-# Problematic files (colon in filename breaks Linux tar)
+# Problematic files (colon in filename breaks Linux tar, nul is Windows reserved)
 C:*
+nul
 *.log
