@@ -1,3 +1,3 @@
-from .service import SeedImproverService, SeedImproverResult, Recommendation
+from .service import SeedImproverService, SeedImproverResult
 
-__all__ = ["SeedImproverService", "SeedImproverResult", "Recommendation"]
+__all__ = ["SeedImproverService", "SeedImproverResult"]
