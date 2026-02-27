@@ -203,29 +203,28 @@ async def _create_orchestrator(settings: Settings):
     # Memory - Phase 2: PostgreSQL or Phase 1: In-Memory
     cache = None
     if settings.stage.value == "stage2" and settings.features.enable_postgres:
+        # Initialize Redis cache (optional — failure must NOT block Postgres)
+        redis_url = os.getenv("REDIS_URL", "")
+        cache_ttl = 300
+        if redis_url:
+            try:
+                from memory.redis_cache import RedisCache
+                cache = RedisCache(redis_url, default_ttl=cache_ttl)
+                await cache.connect()
+                logger.info(f"Redis cache connected (TTL={cache_ttl}s)")
+            except Exception as redis_err:
+                cache = None
+                logger.warning(f"Redis unavailable, continuing without cache: {redis_err}")
+
+        # Initialize PostgreSQL (required for Phase 2 persistence)
         try:
             from memory.postgres import PostgresStore
-            from memory.redis_cache import RedisCache
-
-            # Initialize Redis cache (optional)
-            redis_url = os.getenv("REDIS_URL", "")
-            cache_ttl = 300
-            if redis_url:
-                try:
-                    cache = RedisCache(redis_url, default_ttl=cache_ttl)
-                    await cache.connect()
-                    logger.info(f"Redis cache connected (TTL={cache_ttl}s)")
-                except Exception as redis_err:
-                    cache = None
-                    logger.warning(f"Redis unavailable, continuing without cache: {redis_err}")
-
-            # Initialize PostgreSQL (required for Phase 2 persistence)
             db_url = os.getenv("DATABASE_URL", "postgresql://trader:trader@localhost:5432/trader")
             memory = PostgresStore(db_url)
             await memory.connect()
             logger.info("PostgreSQL storage connected")
         except Exception as e:
-            logger.warning(f"Failed to initialize Phase 2 storage: {e}")
+            logger.warning(f"Failed to initialize PostgreSQL storage: {e}")
             logger.info("Falling back to in-memory storage")
             memory = InMemoryStore(initial_capital=settings.trading.initial_capital)
     else:
