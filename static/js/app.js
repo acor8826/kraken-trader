@@ -365,11 +365,23 @@ async function initApp() {
 // ========================================
 
 // Wait for DOM and auth
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     // Check if AuthManager exists and wait for auth
     if (window.AuthManager) {
-        // Auth will call initApp when ready via callback
+        // Make initDashboard available for post-login callback
         window.initDashboard = initApp;
+
+        // Check if already authenticated, if so init immediately
+        const isAuthed = await window.AuthManager.checkAuth();
+        if (isAuthed) {
+            initApp();
+        } else if (document.getElementById('authOverlay')) {
+            // Auth modal exists in the HTML, show it and wait for login
+            showAuthModal('signin');
+        } else {
+            // No auth modal in this HTML, proceed without auth
+            initApp();
+        }
     } else {
         // No auth, start immediately
         initApp();
