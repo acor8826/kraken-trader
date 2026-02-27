@@ -106,15 +106,20 @@ class Orchestrator:
             # Check portfolio milestones (every 10%)
             await self._check_milestones(portfolio)
             
-            # 3. Check stop-losses
-            stop_trades = await self.sentinel.check_stop_losses(portfolio.positions)
-            if stop_trades:
-                logger.warning(f"Executing {len(stop_trades)} stop-loss trades")
-                # Alert for each stop-loss
-                for trade in stop_trades:
-                    await self._send_stop_loss_alert(trade)
-                await self.executor.execute_stop_loss(stop_trades)
-                # Refresh portfolio after stops
+            # 3. Check exits (stop-loss + take-profit)
+            if hasattr(self.sentinel, "check_exit_triggers"):
+                exit_trades = await self.sentinel.check_exit_triggers(portfolio.positions)
+            else:
+                exit_trades = await self.sentinel.check_stop_losses(portfolio.positions)
+
+            if exit_trades:
+                logger.warning(f"Executing {len(exit_trades)} exit trades")
+                # Send stop-loss alerts only for actual stop-loss exits
+                for trade in exit_trades:
+                    if trade.order_type.value == "stop_loss":
+                        await self._send_stop_loss_alert(trade)
+                await self.executor.execute_stop_loss(exit_trades)
+                # Refresh portfolio after exits
                 portfolio = await self._get_portfolio_state()
             
             # 4. Analyze trading pairs (batch or sequential)

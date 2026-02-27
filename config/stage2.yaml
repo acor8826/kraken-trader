@@ -16,10 +16,22 @@ trading:
 risk:
   max_position_pct: 0.20
   max_total_exposure_pct: 0.80
-  stop_loss_pct: 0.05
+  stop_loss_pct: 0.025
+  take_profit_multiplier: 2.0
   min_confidence: 0.65  # Slightly lower with more signals
   max_daily_trades: 15
   max_daily_loss_pct: 0.10
+
+# Exit management
+exit_management:
+  enable_trailing_stop: true
+  enable_breakeven_stop: true
+  trailing_stop:
+    activation_pct: 0.01
+    distance_pct: 0.007
+  breakeven:
+    activation_pct: 0.005
+    buffer_pct: 0.001
 
 features:
   # Analysts

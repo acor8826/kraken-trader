@@ -21,7 +21,11 @@ logger = logging.getLogger(__name__)
 # System prompt for Claude
 STRATEGIST_SYSTEM_PROMPT = """Crypto trading strategist. Convert analyst signals to trades.
 
-Rules: direction>+0.3 & confidence>0.55→BUY, direction<-0.3 & confidence>0.55→SELL, else HOLD.
+Rules:
+- BUY only when direction > +0.4 AND confidence > 0.65 AND no existing position in this pair.
+- SELL when direction < -0.3 AND confidence > 0.55.
+- Otherwise HOLD. Be selective -- only trade when signals are strong and aligned.
+- Never recommend BUY for a pair we already hold. Prefer HOLD.
 Match confidence to signal strength. Risk management handled separately.
 Respond with JSON only."""
 
@@ -30,9 +34,12 @@ Respond with JSON only."""
 ANALYSIS_PROMPT = """Portfolio: {portfolio_summary}
 
 {pair} Intel: {intel_summary}
+Current positions: {positions_summary}
 
 Risk: max_position={max_position_pct:.0%}, stop_loss={stop_loss_pct:.0%}, min_confidence={min_confidence:.0%}
-Strategies: TREND_FOLLOW, MEAN_REVERT, ACCUMULATE, RISK_OFF
+Strategies: TREND_FOLLOW, MEAN_REVERT, RISK_OFF
+
+IMPORTANT: Do NOT recommend BUY if we already hold a position in {pair}. Only BUY when signals are strong (direction > +0.4, confidence > 0.65).
 
 JSON response:
 {{"action":"BUY|SELL|HOLD","confidence":0.0-1.0,"size_pct":0.0-{max_position_pct},"strategy":"...","reasoning":"brief","key_factors":["..."],"risks":["..."]}}"""
@@ -74,11 +81,20 @@ class SimpleStrategist(IStrategist):
             logger.debug(f"[ANALYST] {intel.pair}: direction={intel.fused_direction:+.2f}, "
                         f"confidence={intel.fused_confidence:.0%}")
 
+            # Build positions summary for context
+            base_asset = intel.pair.split("/")[0]
+            if portfolio.positions:
+                held = [f"{s}: {p.amount:.6f}" for s, p in portfolio.positions.items() if p.amount > 0]
+                positions_summary = ", ".join(held) if held else "None"
+            else:
+                positions_summary = "None"
+
             # Build prompt
             prompt = ANALYSIS_PROMPT.format(
                 portfolio_summary=portfolio.to_summary(),
                 pair=intel.pair,
                 intel_summary=intel.to_summary(),
+                positions_summary=positions_summary,
                 max_position_pct=risk["max_position_pct"],
                 stop_loss_pct=risk["stop_loss_pct"],
                 min_confidence=risk["min_confidence"]
@@ -169,21 +185,34 @@ class RuleBasedStrategist(IStrategist):
             "min_confidence": self.settings.risk.min_confidence
         }
         
-        # Simple rule-based decision
+        # Rule-based decision with tighter thresholds to reduce over-trading
         action = TradeAction.HOLD
-        confidence = abs(intel.fused_direction) * intel.fused_confidence
         size_pct = 0.0
         reasoning = "Rule-based analysis: "
-        
-        if intel.fused_direction > 0.3 and intel.fused_confidence > 0.6:
+
+        # Check if we already hold this pair
+        base_asset = intel.pair.split("/")[0]
+        already_holding = (
+            portfolio.positions
+            and base_asset in portfolio.positions
+            and portfolio.positions[base_asset].amount > 0
+        )
+
+        if intel.fused_direction > 0.4 and intel.fused_confidence > 0.65 and not already_holding:
             action = TradeAction.BUY
-            size_pct = risk["max_position_pct"] * confidence
-            reasoning += f"Bullish signal ({intel.fused_direction:+.2f}) with good confidence"
-        elif intel.fused_direction < -0.3 and intel.fused_confidence > 0.6:
+            confidence = intel.fused_confidence
+            size_pct = risk["max_position_pct"] * min(1.0, abs(intel.fused_direction))
+            reasoning += f"Strong bullish signal ({intel.fused_direction:+.2f}) with high confidence"
+        elif intel.fused_direction < -0.3 and intel.fused_confidence > 0.55:
             action = TradeAction.SELL
+            confidence = intel.fused_confidence
             size_pct = 1.0  # Sell full position
             reasoning += f"Bearish signal ({intel.fused_direction:+.2f}) with good confidence"
+        elif already_holding:
+            confidence = intel.fused_confidence * 0.5
+            reasoning += f"Already holding {base_asset}, waiting for exit signal"
         else:
+            confidence = intel.fused_confidence * 0.5
             reasoning += f"No clear signal (direction: {intel.fused_direction:+.2f})"
         
         signal = TradeSignal(

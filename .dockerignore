@@ -9,6 +9,9 @@
 # Claude Code
 .claude/
 
+# GCloud local state (credentials, tokens, logs)
+.gcloud-local/
+
 # Python
 __pycache__
 *.py[cod]

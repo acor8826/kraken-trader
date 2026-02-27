@@ -28,6 +28,18 @@ let state = {
     websocket: null,
     wsConnected: false,
     wsReconnectAttempts: 0,
+    wsPingInterval: null,
+    isLoading: false,
+    lastSuccessfulLoad: null,
+    lastWsMessageAt: null,
+    ui: {
+        tradesSearch: '',
+        tradesStatusFilter: 'all',
+        tradesActionFilter: 'all',
+        tradesSortKey: 'time',
+        tradesSortDir: 'desc',
+        holdingsSearch: ''
+    },
     // Phase 2 state
     phase2: {
         enabled: false,
@@ -54,6 +66,237 @@ let state = {
     }
 };
 
+const formatters = {
+    currency: null,
+    number2: null,
+    number6: null,
+    number8: null
+};
+
+function getEl(id) {
+    return document.getElementById(id);
+}
+
+function isEditableTarget(target) {
+    if (!target) return false;
+    const tag = target.tagName;
+    return target.isContentEditable || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
+function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function safeText(value, fallback = '--') {
+    if (value === null || value === undefined || value === '') return fallback;
+    return escapeHtml(value);
+}
+
+function ensureLiveRegion() {
+    if (getEl('dashboardLiveRegion')) return;
+    const region = document.createElement('div');
+    region.id = 'dashboardLiveRegion';
+    region.setAttribute('aria-live', 'polite');
+    region.setAttribute('aria-atomic', 'true');
+    region.style.position = 'absolute';
+    region.style.left = '-9999px';
+    region.style.width = '1px';
+    region.style.height = '1px';
+    region.style.overflow = 'hidden';
+    document.body.appendChild(region);
+}
+
+function announceStatus(message) {
+    const region = getEl('dashboardLiveRegion');
+    if (region) {
+        region.textContent = message;
+    }
+}
+
+function setButtonBusy(buttonId, isBusy, busyLabel, idleLabel) {
+    const btn = getEl(buttonId);
+    if (!btn) return;
+
+    if (!btn.dataset.originalLabel) {
+        btn.dataset.originalLabel = btn.textContent || idleLabel || '';
+    }
+
+    btn.disabled = isBusy;
+    btn.setAttribute('aria-busy', isBusy ? 'true' : 'false');
+    btn.textContent = isBusy ? (busyLabel || btn.dataset.originalLabel) : (idleLabel || btn.dataset.originalLabel);
+}
+
+function renderSkeletonRows(tbody, colCount, rowCount) {
+    if (!tbody) return;
+    const rows = [];
+    for (let i = 0; i < rowCount; i++) {
+        rows.push(`<tr class="loading-row" aria-hidden="true"><td colspan="${colCount}">Loading${'.'.repeat((i % 3) + 1)}</td></tr>`);
+    }
+    tbody.innerHTML = rows.join('');
+}
+
+function renderTableMessage(tbody, colCount, message, className) {
+    if (!tbody) return;
+    const cls = className ? ` class="${className}"` : '';
+    tbody.innerHTML = `<tr${cls}><td colspan="${colCount}">${escapeHtml(message)}</td></tr>`;
+}
+
+function setDashboardLoading(isLoading) {
+    state.isLoading = isLoading;
+    const container = document.querySelector('.container');
+    if (container) container.setAttribute('aria-busy', isLoading ? 'true' : 'false');
+
+    setButtonBusy('refreshBtn', isLoading, 'Refreshing...', 'Refresh');
+
+    if (isLoading && !state.lastSuccessfulLoad) {
+        renderSkeletonRows(getEl('holdingsBody'), 9, 3);
+        renderSkeletonRows(getEl('tradesBody'), 7, 4);
+    }
+}
+
+function initDashboardControls() {
+    initTradesControls();
+    initHoldingsControls();
+    initKeyboardHint();
+}
+
+function initKeyboardHint() {
+    if (getEl('dashboardShortcutHint')) return;
+    const actions = document.querySelector('.header-actions');
+    if (!actions) return;
+    const hint = document.createElement('div');
+    hint.id = 'dashboardShortcutHint';
+    hint.style.cssText = 'width:100%;font-size:11px;opacity:.75;text-align:right;margin-top:6px;';
+    hint.textContent = 'Shortcuts: R refresh, P pause/resume, Shift+T trigger';
+    actions.appendChild(hint);
+}
+
+function initTradesControls() {
+    if (getEl('tradesSearchInput')) return;
+
+    const tradesSection = document.querySelector('.trades-section');
+    const tableContainer = tradesSection ? tradesSection.querySelector('.table-container') : null;
+    if (!tradesSection || !tableContainer) return;
+
+    const controls = document.createElement('div');
+    controls.id = 'tradesControls';
+    controls.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px 0;';
+    controls.innerHTML = `
+        <input id="tradesSearchInput" type="search" placeholder="Filter pair or status" aria-label="Filter trades" style="padding:6px 10px;border:1px solid var(--border-color, #374151);border-radius:6px;background:transparent;color:inherit;min-width:180px;">
+        <select id="tradesStatusFilter" aria-label="Filter trades by status" style="padding:6px 10px;border:1px solid var(--border-color, #374151);border-radius:6px;background:transparent;color:inherit;">
+            <option value="all">All statuses</option>
+            <option value="filled">Filled</option>
+            <option value="pending">Pending</option>
+            <option value="failed">Failed</option>
+        </select>
+        <select id="tradesActionFilter" aria-label="Filter trades by action" style="padding:6px 10px;border:1px solid var(--border-color, #374151);border-radius:6px;background:transparent;color:inherit;">
+            <option value="all">All actions</option>
+            <option value="BUY">Buy</option>
+            <option value="SELL">Sell</option>
+            <option value="HOLD">Hold</option>
+        </select>
+        <select id="tradesSort" aria-label="Sort trades" style="padding:6px 10px;border:1px solid var(--border-color, #374151);border-radius:6px;background:transparent;color:inherit;">
+            <option value="time_desc">Newest first</option>
+            <option value="time_asc">Oldest first</option>
+            <option value="pnl_desc">P&L high to low</option>
+            <option value="pnl_asc">P&L low to high</option>
+            <option value="price_desc">Price high to low</option>
+            <option value="price_asc">Price low to high</option>
+        </select>
+    `;
+
+    tradesSection.insertBefore(controls, tableContainer);
+
+    const searchInput = getEl('tradesSearchInput');
+    const statusFilter = getEl('tradesStatusFilter');
+    const actionFilter = getEl('tradesActionFilter');
+    const sortSelect = getEl('tradesSort');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            state.ui.tradesSearch = (e.target.value || '').trim().toLowerCase();
+            updateTradesTable();
+        });
+    }
+
+    if (statusFilter) {
+        statusFilter.addEventListener('change', (e) => {
+            state.ui.tradesStatusFilter = e.target.value;
+            updateTradesTable();
+        });
+    }
+
+    if (actionFilter) {
+        actionFilter.addEventListener('change', (e) => {
+            state.ui.tradesActionFilter = e.target.value;
+            updateTradesTable();
+        });
+    }
+
+    if (sortSelect) {
+        sortSelect.addEventListener('change', (e) => {
+            const [key, dir] = String(e.target.value || 'time_desc').split('_');
+            state.ui.tradesSortKey = key;
+            state.ui.tradesSortDir = dir;
+            updateTradesTable();
+        });
+    }
+}
+
+function initHoldingsControls() {
+    if (getEl('holdingsSearchInput')) return;
+
+    const holdingsSection = document.querySelector('.holdings-section');
+    const tableContainer = holdingsSection ? holdingsSection.querySelector('.table-container') : null;
+    if (!holdingsSection || !tableContainer) return;
+
+    const controls = document.createElement('div');
+    controls.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px 0;';
+    controls.innerHTML = '<input id="holdingsSearchInput" type="search" placeholder="Filter assets" aria-label="Filter holdings" style="padding:6px 10px;border:1px solid var(--border-color, #374151);border-radius:6px;background:transparent;color:inherit;min-width:180px;">';
+    holdingsSection.insertBefore(controls, tableContainer);
+
+    const holdingsSearch = getEl('holdingsSearchInput');
+    if (holdingsSearch) {
+        holdingsSearch.addEventListener('input', (e) => {
+            state.ui.holdingsSearch = (e.target.value || '').trim().toLowerCase();
+            updateHoldingsTable();
+        });
+    }
+}
+
+function setupKeyboardShortcuts() {
+    document.addEventListener('keydown', (event) => {
+        if (event.defaultPrevented || isEditableTarget(event.target)) return;
+
+        if (event.key === 'r' || event.key === 'R') {
+            event.preventDefault();
+            loadDashboard();
+            showToast('Refreshing dashboard...');
+            return;
+        }
+
+        if (event.key === 'p' || event.key === 'P') {
+            event.preventDefault();
+            if (state.paused) {
+                resumeTrading();
+            } else {
+                pauseTrading();
+            }
+            return;
+        }
+
+        if ((event.key === 't' || event.key === 'T') && event.shiftKey) {
+            event.preventDefault();
+            triggerTradingCycle();
+        }
+    });
+}
+
 // Check if Chart.js is loaded
 window.addEventListener('load', () => {
     console.log('Dashboard initializing...');
@@ -68,7 +311,10 @@ window.addEventListener('load', () => {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM Content Loaded - Starting dashboard setup');
+    ensureLiveRegion();
+    initDashboardControls();
     setupEventListeners();
+    setupKeyboardShortcuts();
     loadDashboard();
     setInterval(loadDashboard, CONFIG.REFRESH_INTERVAL);
 
@@ -78,15 +324,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Event Listeners
 function setupEventListeners() {
-    document.getElementById('refreshBtn').addEventListener('click', loadDashboard);
-    document.getElementById('triggerBtn').addEventListener('click', triggerTradingCycle);
-    document.getElementById('pauseBtn').addEventListener('click', pauseTrading);
-    document.getElementById('resumeBtn').addEventListener('click', resumeTrading);
+    const refreshBtn = getEl('refreshBtn');
+    const triggerBtn = getEl('triggerBtn');
+    const pauseBtn = getEl('pauseBtn');
+    const resumeBtn = getEl('resumeBtn');
+
+    if (refreshBtn) refreshBtn.addEventListener('click', loadDashboard);
+    if (triggerBtn) triggerBtn.addEventListener('click', triggerTradingCycle);
+    if (pauseBtn) pauseBtn.addEventListener('click', pauseTrading);
+    if (resumeBtn) resumeBtn.addEventListener('click', resumeTrading);
 }
 
 // WebSocket Connection Management
 function connectWebSocket() {
     console.log('[WebSocket] Attempting to connect to', CONFIG.WS_URL);
+    updateWebSocketStatus(false, 'Connecting...');
 
     try {
         state.websocket = new WebSocket(CONFIG.WS_URL);
@@ -95,34 +347,41 @@ function connectWebSocket() {
             console.log('[WebSocket] Connected successfully');
             state.wsConnected = true;
             state.wsReconnectAttempts = 0;
-            updateWebSocketStatus(true);
+            updateWebSocketStatus(true, 'Live updates connected');
+            announceStatus('Live updates connected');
         };
 
         state.websocket.onmessage = (event) => {
             try {
+                if (event.data === 'pong') {
+                    // Keep-alive response from server; not a JSON payload.
+                    return;
+                }
+
                 const data = JSON.parse(event.data);
+                state.lastWsMessageAt = Date.now();
                 console.log('[WebSocket] Message received:', data);
                 handleWebSocketMessage(data);
             } catch (error) {
-                console.error('[WebSocket] Failed to parse message:', error);
+                console.error('[WebSocket] Failed to handle message:', error);
             }
         };
 
         state.websocket.onerror = (error) => {
             console.error('[WebSocket] Error:', error);
             state.wsConnected = false;
-            updateWebSocketStatus(false);
+            updateWebSocketStatus(false, 'Live updates error');
         };
 
         state.websocket.onclose = () => {
             console.log('[WebSocket] Connection closed');
             state.wsConnected = false;
-            updateWebSocketStatus(false);
 
             // Attempt to reconnect
             state.wsReconnectAttempts++;
             const delay = Math.min(CONFIG.WS_RECONNECT_INTERVAL * state.wsReconnectAttempts, 30000);
             console.log(`[WebSocket] Reconnecting in ${delay / 1000}s (attempt ${state.wsReconnectAttempts})`);
+            updateWebSocketStatus(false, `Reconnecting in ${Math.round(delay / 1000)}s (attempt ${state.wsReconnectAttempts})`);
 
             setTimeout(() => {
                 if (!state.wsConnected) {
@@ -132,7 +391,10 @@ function connectWebSocket() {
         };
 
         // Keep connection alive with ping/pong
-        setInterval(() => {
+        if (state.wsPingInterval) {
+            clearInterval(state.wsPingInterval);
+        }
+        state.wsPingInterval = setInterval(() => {
             if (state.websocket && state.websocket.readyState === WebSocket.OPEN) {
                 state.websocket.send('ping');
             }
@@ -141,7 +403,7 @@ function connectWebSocket() {
     } catch (error) {
         console.error('[WebSocket] Connection failed:', error);
         state.wsConnected = false;
-        updateWebSocketStatus(false);
+        updateWebSocketStatus(false, 'WebSocket unavailable');
     }
 }
 
@@ -225,110 +487,136 @@ function updateLiveChartData(portfolioValue, timestamp) {
 
 function updatePortfolioMetricsFromWebSocket(data) {
     // Update total value
-    const totalValue = data.total_value || 0;
-    document.getElementById('portfolioValue').textContent = formatCurrency(totalValue);
+    const totalValue = asFiniteNumber(data.total_value) || 0;
+    const portfolioEl = getEl('portfolioValue');
+    if (portfolioEl) portfolioEl.textContent = formatCurrency(totalValue);
 
     // Update holdings from WebSocket data if available
-    const holdings = data.holdings || {};
-    const cash = data.available_quote || (state.portfolio ? state.portfolio.available_quote : 0) || 0;
+    const cash = asFiniteNumber(data.available_quote) || (state.portfolio ? (asFiniteNumber(state.portfolio.available_quote) || 0) : 0);
     const positionsValue = totalValue - cash;
 
-    document.getElementById('cashValue').textContent = formatCurrency(cash);
-    document.getElementById('holdingsValue').textContent = formatCurrency(positionsValue);
+    const cashEl = getEl('cashValue');
+    if (cashEl) cashEl.textContent = formatCurrency(cash);
+    const holdingsEl = getEl('holdingsValue');
+    if (holdingsEl) holdingsEl.textContent = formatCurrency(positionsValue);
 
     const cashPct = totalValue > 0 ? ((cash / totalValue) * 100).toFixed(1) : '0.0';
-    document.getElementById('portfolioPercent').textContent = `${cashPct}% cash`;
+    const pctEl = getEl('portfolioPercent');
+    if (pctEl) pctEl.textContent = `${cashPct}% cash`;
 }
 
-function updateWebSocketStatus(connected) {
+function updateWebSocketStatus(connected, message) {
     // Only update the chart live/polling indicator — NOT the main connection status.
     // The main status is driven by HTTP polling success in updateConnectionStatus().
-    const chartStatus = document.getElementById('chartStatus');
+    const chartStatus = getEl('chartStatus');
+    if (!chartStatus) return;
 
-    if (connected) {
-        if (chartStatus) {
-            chartStatus.className = 'chart-status';
-            chartStatus.innerHTML = `
-                <span class="live-indicator"></span>
-                Live Updates
-            `;
-        }
-    } else {
-        if (chartStatus) {
-            chartStatus.className = 'chart-status offline';
-            chartStatus.innerHTML = `
-                <span class="live-indicator"></span>
-                Polling Mode
-            `;
+    let label = message;
+    if (!label) {
+        if (connected) {
+            label = 'Live Updates';
+        } else if (state.wsReconnectAttempts > 0) {
+            label = `Polling Mode (reconnect ${state.wsReconnectAttempts})`;
+        } else {
+            label = 'Polling Mode';
         }
     }
+
+    if (connected) {
+        chartStatus.className = 'chart-status';
+        chartStatus.innerHTML = `
+            <span class="live-indicator"></span>
+            ${safeText(label)}
+        `;
+    } else {
+        chartStatus.className = 'chart-status offline';
+        chartStatus.innerHTML = `
+            <span class="live-indicator"></span>
+            ${safeText(label)}
+        `;
+    }
+
+    const wsAgeSec = state.lastWsMessageAt ? Math.max(0, Math.round((Date.now() - state.lastWsMessageAt) / 1000)) : null;
+    chartStatus.title = wsAgeSec === null ? label : `${label} | Last message ${wsAgeSec}s ago`;
 }
 
 // Main Dashboard Load
 async function loadDashboard() {
     console.log('[Dashboard] Starting load cycle...');
+    if (state.isLoading) return;
+    setDashboardLoading(true);
+    announceStatus('Loading dashboard data');
 
-    // Use allSettled so one failing endpoint doesn't block the entire dashboard
-    const results = await Promise.allSettled([
-        fetchPortfolio(),
-        fetchTradeHistory(),
-        fetchPerformance(),
-        fetchStatus(),
-        fetchPhase2Info()
-    ]);
+    try {
+        // Use allSettled so one failing endpoint doesn't block the entire dashboard
+        const results = await Promise.allSettled([
+            fetchPortfolio(),
+            fetchTradeHistory(),
+            fetchPerformance(),
+            fetchStatus(),
+            fetchPhase2Info()
+        ]);
 
-    const portfolio = results[0].status === 'fulfilled' ? results[0].value : null;
-    const history   = results[1].status === 'fulfilled' ? results[1].value : null;
-    const performance = results[2].status === 'fulfilled' ? results[2].value : null;
-    const status    = results[3].status === 'fulfilled' ? results[3].value : null;
-    const phase2Info = results[4].status === 'fulfilled' ? results[4].value : null;
+        const portfolio = results[0].status === 'fulfilled' ? results[0].value : null;
+        const history   = results[1].status === 'fulfilled' ? results[1].value : null;
+        const performance = results[2].status === 'fulfilled' ? results[2].value : null;
+        const status    = results[3].status === 'fulfilled' ? results[3].value : null;
+        const phase2Info = results[4].status === 'fulfilled' ? results[4].value : null;
 
-    // Log any individual failures without blocking the dashboard
-    results.forEach((r, i) => {
-        if (r.status === 'rejected') {
-            const names = ['portfolio', 'history', 'performance', 'status', 'phase2Info'];
-            console.warn(`[Dashboard] ${names[i]} fetch failed:`, r.reason?.message || r.reason);
+        // Log any individual failures without blocking the dashboard
+        results.forEach((r, i) => {
+            if (r.status === 'rejected') {
+                const names = ['portfolio', 'history', 'performance', 'status', 'phase2Info'];
+                console.warn(`[Dashboard] ${names[i]} fetch failed:`, r.reason?.message || r.reason);
+            }
+        });
+
+        // Only show connection error if BOTH critical endpoints failed
+        if (!portfolio && !status) {
+            const error = results[0].reason || results[3].reason || new Error('All endpoints failed');
+            console.error('[Dashboard] Critical endpoints failed:', error);
+            state.lastError = error;
+            updateConnectionStatus(error);
+            renderTableMessage(getEl('holdingsBody'), 9, 'Unable to load holdings right now. Retry in a moment.', 'empty-state');
+            renderTableMessage(getEl('tradesBody'), 7, 'Unable to load trades right now. Retry in a moment.', 'empty-state');
+            showError(`Connection Error: ${error.message || error}`);
+            announceStatus('Dashboard load failed');
+            return;
         }
-    });
 
-    // Only show connection error if BOTH critical endpoints failed
-    if (!portfolio && !status) {
-        const error = results[0].reason || results[3].reason || new Error('All endpoints failed');
-        console.error('[Dashboard] Critical endpoints failed:', error);
-        state.lastError = error;
-        updateConnectionStatus(error);
-        showError(`Connection Error: ${error.message || error}`);
-        return;
+        // Update state with whatever data we have
+        if (portfolio) state.portfolio = portfolio;
+        if (history) state.trades = history.trades || [];
+        if (performance) state.performance = performance;
+        if (status) state.status = status;
+        state.phase2.info = phase2Info;
+        state.phase2.enabled = phase2Info && phase2Info.is_phase2;
+        state.lastError = null;
+        state.lastSuccessfulLoad = Date.now();
+
+        console.log('[Dashboard] Data loaded, updating UI...');
+
+        // Update UI — wrap each in try/catch so one failure doesn't kill the dashboard
+        try { updateMetrics(); } catch (e) { console.error('[Dashboard] updateMetrics error:', e); }
+        try { updateTradesTable(); } catch (e) { console.error('[Dashboard] updateTradesTable error:', e); }
+        try { updateStatusPanel(); } catch (e) { console.error('[Dashboard] updateStatusPanel error:', e); }
+        try { updateChart(); } catch (e) { console.error('[Dashboard] updateChart error:', e); }
+        updateConnectionStatus();
+
+        // Update Phase 2 UI if enabled
+        try { await updatePhase2Section(); } catch (e) { console.error('[Dashboard] updatePhase2Section error:', e); }
+
+        // Update Phase 3 UI if enabled
+        try { await updatePhase3Section(); } catch (e) { console.error('[Dashboard] updatePhase3Section error:', e); }
+
+        // Update Cost Optimization section
+        try { await updateCostSection(); } catch (e) { console.error('[Dashboard] updateCostSection error:', e); }
+
+        console.log('[Dashboard] Load cycle completed successfully');
+        announceStatus('Dashboard updated');
+    } finally {
+        setDashboardLoading(false);
     }
-
-    // Update state with whatever data we have
-    if (portfolio) state.portfolio = portfolio;
-    if (history) state.trades = history.trades || [];
-    if (performance) state.performance = performance;
-    if (status) state.status = status;
-    state.phase2.info = phase2Info;
-    state.phase2.enabled = phase2Info && phase2Info.is_phase2;
-    state.lastError = null;
-
-    console.log('[Dashboard] Data loaded, updating UI...');
-
-    // Update UI
-    updateMetrics();
-    updateTradesTable();
-    updateStatusPanel();
-    updateChart();
-    updateConnectionStatus();
-
-    // Update Phase 2 UI if enabled
-    await updatePhase2Section();
-
-    // Update Phase 3 UI if enabled
-    await updatePhase3Section();
-
-    // Update Cost Optimization section
-    await updateCostSection();
-
-    console.log('[Dashboard] Load cycle completed successfully');
 }
 
 // API Calls with Detailed Logging
@@ -420,50 +708,66 @@ function updateMetrics() {
     const positionsValue = portfolio.positions_value || (totalValue - cash);
 
     // Cash (USDT)
-    document.getElementById('cashValue').textContent = formatCurrency(cash);
+    const cashEl = document.getElementById('cashValue');
+    if (cashEl) cashEl.textContent = formatCurrency(cash);
 
     // Holdings Value
-    document.getElementById('holdingsValue').textContent = formatCurrency(positionsValue);
+    const holdingsEl = document.getElementById('holdingsValue');
+    if (holdingsEl) holdingsEl.textContent = formatCurrency(positionsValue);
 
     // Active Positions count
     const positionsObj = portfolio.positions || {};
     const positionsArray = Object.values(positionsObj);
     const activePositions = positionsArray.filter(p => p.amount > 0).length;
-    document.getElementById('activePositions').textContent = `${activePositions} active position${activePositions !== 1 ? 's' : ''}`;
+    const activePositionsEl = document.getElementById('activePositions');
+    if (activePositionsEl) activePositionsEl.textContent = `${activePositions} active position${activePositions !== 1 ? 's' : ''}`;
 
     // Total Value
-    document.getElementById('portfolioValue').textContent = formatCurrency(totalValue);
+    const portfolioValueEl = document.getElementById('portfolioValue');
+    if (portfolioValueEl) portfolioValueEl.textContent = formatCurrency(totalValue);
     const cashPct = totalValue > 0 ? ((cash / totalValue) * 100).toFixed(1) : '0.0';
-    document.getElementById('portfolioPercent').textContent = `${cashPct}% cash`;
+    const portfolioPercentEl = document.getElementById('portfolioPercent');
+    if (portfolioPercentEl) portfolioPercentEl.textContent = `${cashPct}% cash`;
 
     // Bot P&L — only show if the bot has actually traded (entry_price exists on any position)
-    const pnlElement = document.getElementById('totalPnL');
-    const pnlPercentElement = document.getElementById('totalPnLPercent');
+    const pnlElement = getEl('totalPnL');
+    const pnlPercentElement = getEl('totalPnLPercent');
     const hasAnyEntry = positionsArray.some(p => p.entry_price != null);
     const totalTrades = perf.total_trades || 0;
 
     if (totalTrades > 0 || hasAnyEntry) {
         const botPnl = portfolio.total_pnl || 0;
         const botPnlPct = portfolio.total_pnl_pct || 0;
-        pnlElement.textContent = formatCurrency(botPnl);
-        pnlElement.className = botPnl >= 0 ? 'metric-value positive' : 'metric-value negative';
-        pnlPercentElement.textContent = `${botPnlPct >= 0 ? '+' : ''}${botPnlPct.toFixed(2)}%`;
-        pnlPercentElement.className = `metric-change ${botPnlPct >= 0 ? 'positive' : 'negative'}`;
+        if (pnlElement) {
+            pnlElement.textContent = formatCurrency(botPnl);
+            pnlElement.className = botPnl >= 0 ? 'metric-value positive' : 'metric-value negative';
+        }
+        if (pnlPercentElement) {
+            pnlPercentElement.textContent = `${botPnlPct >= 0 ? '+' : ''}${formatNumber(botPnlPct, 2)}%`;
+            pnlPercentElement.className = `metric-change ${botPnlPct >= 0 ? 'positive' : 'negative'}`;
+        }
     } else {
-        pnlElement.textContent = '--';
-        pnlElement.className = 'metric-value';
-        pnlPercentElement.textContent = 'No trades yet';
-        pnlPercentElement.className = 'metric-change';
+        if (pnlElement) {
+            pnlElement.textContent = '--';
+            pnlElement.className = 'metric-value';
+        }
+        if (pnlPercentElement) {
+            pnlPercentElement.textContent = 'No trades yet';
+            pnlPercentElement.className = 'metric-change';
+        }
     }
 
     // Total Trades
-    document.getElementById('totalTrades').textContent = totalTrades;
+    const totalTradesEl = document.getElementById('totalTrades');
+    if (totalTradesEl) totalTradesEl.textContent = totalTrades;
     const winningTrades = perf.winning_trades || 0;
-    document.getElementById('winCount').textContent = `${winningTrades} / ${totalTrades} trades won`;
+    const winCountEl = document.getElementById('winCount');
+    if (winCountEl) winCountEl.textContent = `${winningTrades} / ${totalTrades} trades won`;
 
     // Current Exposure
     const exposure = totalValue > 0 ? (positionsValue / totalValue) * 100 : 0;
-    document.getElementById('exposure').textContent = `${exposure.toFixed(1)}%`;
+    const exposureEl = document.getElementById('exposure');
+    if (exposureEl) exposureEl.textContent = `${exposure.toFixed(1)}%`;
 
     // Update holdings table
     updateHoldingsTable();
@@ -474,22 +778,29 @@ function updateMetrics() {
 
 // Holdings Table
 function updateHoldingsTable() {
-    const tbody = document.getElementById('holdingsBody');
+    const tbody = getEl('holdingsBody');
     if (!tbody || !state.portfolio) return;
 
     const positions = state.portfolio.positions || {};
-    const entries = Object.entries(positions).filter(([, p]) => p.amount > 0);
+    const search = state.ui.holdingsSearch;
+    const entries = Object.entries(positions).filter(([symbol, p]) => {
+        const amount = asFiniteNumber(p && p.amount) || 0;
+        if (amount <= 0) return false;
+        if (!search) return true;
+        return String(symbol).toLowerCase().includes(search);
+    });
 
     if (entries.length === 0) {
-        tbody.innerHTML = '<tr class="empty-state"><td colspan="9">No holdings</td></tr>';
+        const emptyMsg = state.ui.holdingsSearch ? 'No holdings match your filter' : 'No holdings';
+        renderTableMessage(tbody, 9, emptyMsg, 'empty-state');
         return;
     }
 
     const html = entries.map(([symbol, pos]) => {
-        const amount = pos.amount || 0;
-        const price = pos.current_price || 0;
+        const amount = asFiniteNumber(pos.amount) || 0;
+        const price = asFiniteNumber(pos.current_price) || 0;
         const value = amount * price;
-        const entryPrice = pos.entry_price;
+        const entryPrice = asFiniteNumber(pos.entry_price);
 
         // Stop loss
         const slPrice = pos.stop_loss_price;
@@ -519,13 +830,13 @@ function updateHoldingsTable() {
             const pnlPct = ((price - entryPrice) / entryPrice) * 100;
             const pnlClass = pnl >= 0 ? 'pnl-positive' : 'pnl-negative';
             const sign = pnl >= 0 ? '+' : '';
-            pnlHtml = `<span class="${pnlClass}">${sign}${formatCurrency(pnl)} (${sign}${pnlPct.toFixed(2)}%)</span>`;
+            pnlHtml = `<span class="${pnlClass}">${sign}${formatCurrency(pnl)} (${sign}${formatNumber(pnlPct, 2)}%)</span>`;
         }
 
         return `
             <tr>
-                <td><strong>${symbol}</strong></td>
-                <td>${amount.toFixed(6)}</td>
+                <td><strong>${safeText(symbol)}</strong></td>
+                <td>${formatNumber(amount, 6)}</td>
                 <td>${formatCurrency(price)}</td>
                 <td>${formatCurrency(value)}</td>
                 <td>${entryPrice != null ? formatCurrency(entryPrice) : '<span style="color: var(--text-secondary);">--</span>'}</td>
@@ -708,39 +1019,90 @@ function updateChart() {
 
 // Trades Table Update
 function updateTradesTable() {
-    const tbody = document.getElementById('tradesBody');
+    const tbody = getEl('tradesBody');
+    if (!tbody) return;
 
     if (!state.trades || state.trades.length === 0) {
-        tbody.innerHTML = '<tr class="empty-state"><td colspan="7">No trades yet</td></tr>';
+        renderTableMessage(tbody, 7, 'No trades yet', 'empty-state');
         return;
     }
 
-    // Sort trades by timestamp descending (most recent first)
-    const sortedTrades = [...state.trades].reverse();
+    const search = state.ui.tradesSearch;
+    const statusFilter = state.ui.tradesStatusFilter;
+    const actionFilter = state.ui.tradesActionFilter;
+    const sortKey = state.ui.tradesSortKey;
+    const sortDir = state.ui.tradesSortDir;
+
+    const filteredTrades = [...state.trades].filter((trade) => {
+        const pair = String(trade.pair || '').toLowerCase();
+        const status = String(trade.status || '').toLowerCase();
+        const action = String(trade.action || '').toUpperCase();
+        const matchesSearch = !search || pair.includes(search) || status.includes(search) || action.toLowerCase().includes(search);
+        const matchesStatus = statusFilter === 'all' || status === statusFilter;
+        const matchesAction = actionFilter === 'all' || action === actionFilter;
+        return matchesSearch && matchesStatus && matchesAction;
+    });
+
+    if (filteredTrades.length === 0) {
+        renderTableMessage(tbody, 7, 'No trades match current filters', 'empty-state');
+        return;
+    }
+
+    const sortedTrades = filteredTrades.sort((a, b) => {
+        let aVal = 0;
+        let bVal = 0;
+
+        if (sortKey === 'time') {
+            aVal = new Date(a.timestamp || 0).getTime();
+            bVal = new Date(b.timestamp || 0).getTime();
+        } else if (sortKey === 'pnl') {
+            aVal = calculateTradePnL(a).value || 0;
+            bVal = calculateTradePnL(b).value || 0;
+        } else if (sortKey === 'price') {
+            aVal = asFiniteNumber(a.average_price) || 0;
+            bVal = asFiniteNumber(b.average_price) || 0;
+        }
+
+        return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+    });
 
     const html = sortedTrades.map(trade => {
-        const timestamp = new Date(trade.timestamp);
-        const timeStr = timestamp.toLocaleString();
+        const timeStr = formatTimestamp(trade.timestamp);
+        const actionValue = String(trade.action || '').toUpperCase();
+        const statusValue = String(trade.status || '').toLowerCase();
 
-        const actionClass = trade.action === 'BUY' ? 'action-buy' :
-                          trade.action === 'SELL' ? 'action-sell' : 'action-hold';
+        const actionClass = actionValue === 'BUY' ? 'action-buy' :
+                          actionValue === 'SELL' ? 'action-sell' : 'action-hold';
 
-        const pnl = trade.realized_pnl || 0;
-        const pnlClass = pnl > 0 ? 'pnl-positive' : pnl < 0 ? 'pnl-negative' : '';
-        const pnlSign = pnl > 0 ? '+' : '';
+        const pnlInfo = calculateTradePnL(trade);
+        const pnlClass = pnlInfo.value > 0 ? 'pnl-positive' : pnlInfo.value < 0 ? 'pnl-negative' : '';
+        const pnlSign = pnlInfo.value > 0 ? '+' : '';
+        let pnlText = '--';
 
-        const statusClass = trade.status === 'filled' ? 'status-filled' :
-                          trade.status === 'pending' ? 'status-pending' : 'status-failed';
+        if (pnlInfo.value !== null) {
+            const outcomeLabel = pnlInfo.value > 0 ? 'Profit' : pnlInfo.value < 0 ? 'Loss' : 'Breakeven';
+            const sourceLabel = pnlInfo.kind === 'unrealized' ? ' (open)' : '';
+            pnlText = `${outcomeLabel}: ${pnlSign}${formatCurrency(pnlInfo.value)}${sourceLabel}`;
+        }
+
+        const statusClass = statusValue === 'filled' ? 'status-filled' :
+                          statusValue === 'pending' ? 'status-pending' : 'status-failed';
+
+        const filledSizeBase = asFiniteNumber(trade.filled_size_base) || 0;
+        const averagePrice = asFiniteNumber(trade.average_price) || 0;
+        const pairText = safeText(trade.pair, '-');
+        const actionText = safeText(actionValue || '-', '-');
+        const statusText = safeText(statusValue || 'unknown', 'unknown');
 
         return `
             <tr>
-                <td class="time">${timeStr}</td>
-                <td class="pair">${trade.pair}</td>
-                <td class="${actionClass}">${trade.action}</td>
-                <td>${formatCurrency(trade.average_price)}</td>
-                <td>${trade.filled_size_base.toFixed(8)}</td>
-                <td class="${statusClass}">${trade.status}</td>
-                <td class="${pnlClass}">${pnlSign}${formatCurrency(pnl)}</td>
+                <td class="time">${safeText(timeStr, '-')}</td>
+                <td class="pair">${pairText}</td>
+                <td class="${actionClass}">${actionText}</td>
+                <td>${formatCurrency(averagePrice)}</td>
+                <td>${formatNumber(filledSizeBase, 8)}</td>
+                <td class="${statusClass}">${statusText}</td>
+                <td class="${pnlClass}">${pnlText}</td>
             </tr>
         `;
     }).join('');
@@ -748,56 +1110,119 @@ function updateTradesTable() {
     tbody.innerHTML = html;
 }
 
+function calculateTradePnL(trade) {
+    const realizedPnl = asFiniteNumber(trade.realized_pnl);
+    if (realizedPnl !== null) {
+        return { value: realizedPnl, kind: 'realized' };
+    }
+
+    const action = (trade.action || '').toUpperCase();
+    const amount = asFiniteNumber(trade.filled_size_base);
+    const entryPrice = asFiniteNumber(trade.entry_price);
+    const averagePrice = asFiniteNumber(trade.average_price);
+
+    if (amount !== null && amount > 0) {
+        if (action === 'SELL' && entryPrice !== null && averagePrice !== null && entryPrice > 0) {
+            return { value: (averagePrice - entryPrice) * amount, kind: 'realized_estimated' };
+        }
+
+        if (action === 'BUY') {
+            const baseAsset = getBaseAssetFromPair(trade.pair);
+            const position = baseAsset && state.portfolio && state.portfolio.positions
+                ? state.portfolio.positions[baseAsset]
+                : null;
+            const positionEntry = asFiniteNumber(position && position.entry_price);
+            const currentPrice = asFiniteNumber(position && position.current_price);
+            const effectiveEntry = entryPrice !== null ? entryPrice : (positionEntry !== null ? positionEntry : averagePrice);
+
+            if (effectiveEntry !== null && currentPrice !== null && effectiveEntry > 0) {
+                return { value: (currentPrice - effectiveEntry) * amount, kind: 'unrealized' };
+            }
+        }
+    }
+
+    return { value: null, kind: 'unknown' };
+}
+
+function asFiniteNumber(value) {
+    if (value === null || value === undefined) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+
+function getBaseAssetFromPair(pair) {
+    if (!pair || typeof pair !== 'string') return null;
+    if (pair.includes('/')) return pair.split('/')[0];
+    if (pair.endsWith('USDT')) return pair.slice(0, -4);
+    if (pair.endsWith('USD')) return pair.slice(0, -3);
+    return pair;
+}
+
 // Status Panel Update
 async function updateStatusPanel() {
     if (!state.status) return;
 
-    document.getElementById('stage').textContent = 'Stage 1';
-    document.getElementById('mode').textContent = (state.portfolio && state.portfolio.simulation_mode) ? 'Simulation' : 'Live';
+    const stageEl = getEl('stage');
+    const modeEl = getEl('mode');
+    const nextCycleEl = getEl('nextCycle');
+    const cycleCountEl = getEl('cycleCount');
+    const tradingStatusEl = getEl('tradingStatus');
+
+    if (stageEl) stageEl.textContent = 'Stage 1';
+    if (modeEl) modeEl.textContent = (state.portfolio && state.portfolio.simulation_mode) ? 'Simulation' : 'Live';
 
     const nextCycleTime = state.status.next_cycle ?
         new Date(state.status.next_cycle).toLocaleTimeString() : 'N/A';
-    document.getElementById('nextCycle').textContent = nextCycleTime;
+    if (nextCycleEl) nextCycleEl.textContent = nextCycleTime;
 
-    document.getElementById('cycleCount').textContent = state.status.cycle_count || 0;
+    if (cycleCountEl) cycleCountEl.textContent = state.status.cycle_count || 0;
 
     const tradingActive = !state.status.sentinel_paused;
-    document.getElementById('tradingStatus').textContent = tradingActive ? 'Active' : 'Paused';
-    document.getElementById('tradingStatus').style.color = tradingActive ? '#10b981' : '#f59e0b';
+    if (tradingStatusEl) {
+        tradingStatusEl.textContent = tradingActive ? 'Active' : 'Paused';
+        tradingStatusEl.style.color = tradingActive ? '#10b981' : '#f59e0b';
+    }
 
     // Update button states
-    const pauseBtn = document.getElementById('pauseBtn');
-    const resumeBtn = document.getElementById('resumeBtn');
+    const pauseBtn = getEl('pauseBtn');
+    const resumeBtn = getEl('resumeBtn');
 
     state.paused = state.status.sentinel_paused;
-    pauseBtn.style.display = state.paused ? 'none' : 'block';
-    resumeBtn.style.display = state.paused ? 'block' : 'none';
+    if (pauseBtn) pauseBtn.style.display = state.paused ? 'none' : 'block';
+    if (resumeBtn) resumeBtn.style.display = state.paused ? 'block' : 'none';
 }
 
 // Connection Status Indicator
 function updateConnectionStatus(error) {
-    const statusDot = document.getElementById('statusIndicator');
-    const statusText = document.getElementById('statusText');
+    const statusDot = getEl('statusIndicator');
+    const statusText = getEl('statusText');
+    if (!statusDot || !statusText) return;
+
+    const ageMs = state.lastSuccessfulLoad ? (Date.now() - state.lastSuccessfulLoad) : null;
+    const isStale = ageMs !== null && ageMs > (CONFIG.REFRESH_INTERVAL * 2);
 
     if (error) {
         statusDot.className = 'status-dot error';
-        statusText.textContent = 'Connection Error';
+        statusText.textContent = `Connection Error${state.lastSuccessfulLoad ? ` (last ok ${new Date(state.lastSuccessfulLoad).toLocaleTimeString()})` : ''}`;
+    } else if (isStale) {
+        statusDot.className = 'status-dot error';
+        statusText.textContent = `Connected (stale ${Math.round(ageMs / 60000)}m)`;
     } else {
         statusDot.className = 'status-dot active';
-        statusText.textContent = 'Connected';
+        statusText.textContent = `Connected${state.lastSuccessfulLoad ? ` • Updated ${new Date(state.lastSuccessfulLoad).toLocaleTimeString()}` : ''}`;
     }
 }
 
 // Action Handlers
 async function triggerTradingCycle() {
     try {
-        const btn = document.getElementById('triggerBtn');
-        btn.disabled = true;
+        setButtonBusy('triggerBtn', true, 'Triggering...', 'Trigger Cycle');
 
         const response = await fetch(`${CONFIG.API_BASE}/trigger`, { method: 'POST' });
         if (!response.ok) throw new Error(`Trigger failed: ${response.status}`);
 
         showToast('Trading cycle triggered');
+        announceStatus('Trading cycle triggered');
 
         // Reload dashboard after a short delay
         setTimeout(loadDashboard, 1000);
@@ -805,52 +1230,90 @@ async function triggerTradingCycle() {
         console.error('Trigger error:', error);
         showError('Failed to trigger trading cycle');
     } finally {
-        document.getElementById('triggerBtn').disabled = false;
+        setButtonBusy('triggerBtn', false, 'Triggering...', 'Trigger Cycle');
     }
 }
 
 async function pauseTrading() {
     try {
+        setButtonBusy('pauseBtn', true, 'Pausing...', 'Pause');
         const response = await fetch(`${CONFIG.API_BASE}/pause`, { method: 'POST' });
         if (!response.ok) throw new Error(`Pause failed: ${response.status}`);
 
         state.paused = true;
-        document.getElementById('pauseBtn').style.display = 'none';
-        document.getElementById('resumeBtn').style.display = 'block';
+        const pauseBtn = getEl('pauseBtn');
+        const resumeBtn = getEl('resumeBtn');
+        if (pauseBtn) pauseBtn.style.display = 'none';
+        if (resumeBtn) resumeBtn.style.display = 'block';
 
         showToast('Trading paused');
+        announceStatus('Trading paused');
         updateStatusPanel();
     } catch (error) {
         console.error('Pause error:', error);
         showError('Failed to pause trading');
+    } finally {
+        setButtonBusy('pauseBtn', false, 'Pausing...', 'Pause');
     }
 }
 
 async function resumeTrading() {
     try {
+        setButtonBusy('resumeBtn', true, 'Resuming...', 'Resume');
         const response = await fetch(`${CONFIG.API_BASE}/resume`, { method: 'POST' });
         if (!response.ok) throw new Error(`Resume failed: ${response.status}`);
 
         state.paused = false;
-        document.getElementById('pauseBtn').style.display = 'block';
-        document.getElementById('resumeBtn').style.display = 'none';
+        const pauseBtn = getEl('pauseBtn');
+        const resumeBtn = getEl('resumeBtn');
+        if (pauseBtn) pauseBtn.style.display = 'block';
+        if (resumeBtn) resumeBtn.style.display = 'none';
 
         showToast('Trading resumed');
+        announceStatus('Trading resumed');
         updateStatusPanel();
     } catch (error) {
         console.error('Resume error:', error);
         showError('Failed to resume trading');
+    } finally {
+        setButtonBusy('resumeBtn', false, 'Resuming...', 'Resume');
     }
 }
 
 // Utility Functions
 function formatCurrency(value) {
-    return new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-    }).format(value);
+    const numeric = asFiniteNumber(value);
+    if (numeric === null) return '--';
+    try {
+        if (!formatters.currency) {
+            formatters.currency = new Intl.NumberFormat('en-US', {
+                style: 'currency',
+                currency: 'USD',
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+        }
+        return formatters.currency.format(numeric);
+    } catch {
+        return `$${numeric.toFixed(2)}`;
+    }
+}
+
+function formatNumber(value, digits) {
+    const numeric = asFiniteNumber(value);
+    if (numeric === null) return '--';
+    try {
+        const key = `number${digits}`;
+        if (!formatters[key]) {
+            formatters[key] = new Intl.NumberFormat('en-US', {
+                minimumFractionDigits: digits,
+                maximumFractionDigits: digits
+            });
+        }
+        return formatters[key].format(numeric);
+    } catch {
+        return numeric.toFixed(digits);
+    }
 }
 
 function showError(message) {
@@ -880,7 +1343,7 @@ function showError(message) {
     const text = document.createElement('div');
     text.innerHTML = `
         <div><strong>Connection Error</strong></div>
-        <div style="font-size: 12px; margin-top: 4px;">${message}</div>
+        <div style="font-size: 12px; margin-top: 4px;">${safeText(message)}</div>
         <div style="font-size: 11px; margin-top: 8px; opacity: 0.9;">Open browser console (F12) for debugging details</div>
     `;
 
@@ -920,10 +1383,12 @@ function showToast(message) {
 // Format timestamp to readable format
 function formatTimestamp(isoString) {
     try {
+        if (!isoString) return '-';
         const date = new Date(isoString);
+        if (Number.isNaN(date.getTime())) return String(isoString);
         return date.toLocaleString();
     } catch {
-        return isoString;
+        return String(isoString || '-');
     }
 }
 
@@ -1193,9 +1658,12 @@ function updateFusionUI(data) {
         }
 
         // Set default neutral values
-        document.getElementById('fusedDirection').textContent = '0.00';
-        document.getElementById('fusedConfidence').textContent = '0%';
-        document.getElementById('fusionDisagreement').textContent = '0%';
+        const fd = document.getElementById('fusedDirection');
+        if (fd) fd.textContent = '0.00';
+        const fc = document.getElementById('fusedConfidence');
+        if (fc) fc.textContent = '0%';
+        const fdis = document.getElementById('fusionDisagreement');
+        if (fdis) fdis.textContent = '0%';
 
         const meter = document.getElementById('fusionMeter');
         if (meter) meter.style.left = '50%';

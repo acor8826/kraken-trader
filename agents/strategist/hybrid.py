@@ -107,7 +107,11 @@ class HybridStrategist(IStrategist):
         if hasattr(intel, 'disagreement') and intel.disagreement is not None:
             disagreement_ok = intel.disagreement <= self.thresholds.disagreement_max
 
-        return direction_clear and confidence_clear and disagreement_ok
+        is_clear = direction_clear and confidence_clear and disagreement_ok
+        logger.debug(f"[HYBRID] {intel.pair}: |dir|={abs(intel.fused_direction):.3f} vs {self.thresholds.direction_clear}, "
+                    f"conf={intel.fused_confidence:.3f} vs {self.thresholds.confidence_clear}, "
+                    f"clear={is_clear}")
+        return is_clear
 
     def get_signal_clarity_reason(self, intel: MarketIntel) -> str:
         """Get human-readable reason for signal clarity assessment."""

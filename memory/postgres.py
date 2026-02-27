@@ -164,10 +164,14 @@ class PostgresStore(IMemory):
                             average_price, status, exchange_order_id,
                             signal_confidence, reasoning,
                             entry_price, exit_price, realized_pnl,
+                            fees_quote, realized_pnl_after_fees,
+                            decision_timestamp, submitted_timestamp, filled_timestamp,
+                            latency_decision_to_submit_ms, latency_submit_to_fill_ms, latency_decision_to_fill_ms,
                             created_at, updated_at
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                            $11, $12, $13, $14, $15, $16, $17
+                            $11, $12, $13, $14, $15, $16, $17, $18,
+                            $19, $20, $21, $22, $23, $24
                         ) RETURNING id
                     """,
                         trade.pair,
@@ -185,6 +189,14 @@ class PostgresStore(IMemory):
                         trade.entry_price,
                         trade.exit_price,
                         trade.realized_pnl,
+                        trade.fees_quote,
+                        trade.realized_pnl_after_fees,
+                        trade.decision_timestamp,
+                        trade.submitted_timestamp,
+                        trade.filled_timestamp,
+                        trade.latency_decision_to_submit_ms,
+                        trade.latency_submit_to_fill_ms,
+                        trade.latency_decision_to_fill_ms,
                         trade.timestamp or datetime.now(timezone.utc),
                         datetime.now(timezone.utc)
                     )
@@ -243,6 +255,14 @@ class PostgresStore(IMemory):
                         entry_price=float(row["entry_price"]) if row["entry_price"] else None,
                         exit_price=float(row["exit_price"]) if row["exit_price"] else None,
                         realized_pnl=float(row["realized_pnl"]) if row["realized_pnl"] else None,
+                        fees_quote=float(row["fees_quote"]) if "fees_quote" in row and row["fees_quote"] is not None else None,
+                        realized_pnl_after_fees=float(row["realized_pnl_after_fees"]) if "realized_pnl_after_fees" in row and row["realized_pnl_after_fees"] is not None else None,
+                        decision_timestamp=row["decision_timestamp"] if "decision_timestamp" in row else None,
+                        submitted_timestamp=row["submitted_timestamp"] if "submitted_timestamp" in row else None,
+                        filled_timestamp=row["filled_timestamp"] if "filled_timestamp" in row else None,
+                        latency_decision_to_submit_ms=float(row["latency_decision_to_submit_ms"]) if "latency_decision_to_submit_ms" in row and row["latency_decision_to_submit_ms"] is not None else None,
+                        latency_submit_to_fill_ms=float(row["latency_submit_to_fill_ms"]) if "latency_submit_to_fill_ms" in row and row["latency_submit_to_fill_ms"] is not None else None,
+                        latency_decision_to_fill_ms=float(row["latency_decision_to_fill_ms"]) if "latency_decision_to_fill_ms" in row and row["latency_decision_to_fill_ms"] is not None else None,
                         timestamp=row["created_at"]
                     )
                     trades.append(trade)

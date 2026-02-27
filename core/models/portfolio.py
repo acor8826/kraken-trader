@@ -21,6 +21,9 @@ class Position:
     stop_loss_price: Optional[float] = None
     take_profit_price: Optional[float] = None
     estimated_sell_date: Optional[str] = None  # ISO format string
+    peak_price: Optional[float] = None
+    trailing_stop_active: bool = False
+    trailing_stop_price: Optional[float] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     @property
@@ -53,6 +56,9 @@ class Position:
             "stop_loss_price": self.stop_loss_price,
             "take_profit_price": self.take_profit_price,
             "estimated_sell_date": self.estimated_sell_date,
+            "peak_price": self.peak_price,
+            "trailing_stop_active": self.trailing_stop_active,
+            "trailing_stop_price": self.trailing_stop_price,
             "value_quote": self.value_quote,
             "unrealized_pnl": self.unrealized_pnl,
             "unrealized_pnl_pct": self.unrealized_pnl_pct

@@ -4,6 +4,8 @@
 .env.example
 .venv
 venv
+.gcloud-local/
+.claude/
 __pycache__
 *.pyc
 *.pyo

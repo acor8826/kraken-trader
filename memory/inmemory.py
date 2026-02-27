@@ -30,8 +30,11 @@ class InMemoryStore(IMemory):
         )
         self._trades: List[Trade] = []
         self._entry_prices: Dict[str, float] = {}
+        self._position_costs: Dict[str, tuple] = {}  # symbol -> (total_cost, total_amount)
+        self._peak_prices: Dict[str, float] = {}
         self._intel_history: List[MarketIntel] = []
-        
+        self._stop_loss_cooldowns: Dict[str, datetime] = {}  # symbol -> last stop-loss time
+
         logger.info(f"In-memory store initialized with ${initial_capital} capital")
     
     async def get_portfolio(self) -> Portfolio:
@@ -59,16 +62,51 @@ class InMemoryStore(IMemory):
         """Get entry price for a position"""
         return self._entry_prices.get(symbol)
     
-    async def set_entry_price(self, symbol: str, price: float) -> None:
-        """Record entry price for a position"""
-        self._entry_prices[symbol] = price
-        logger.debug(f"Set entry price for {symbol}: ${price:,.2f}")
-    
+    async def set_entry_price(self, symbol: str, price: float, amount: float = 0) -> None:
+        """Record entry price for a position using weighted average cost basis."""
+        if amount > 0 and symbol in self._position_costs:
+            # Weighted average with existing position
+            old_cost, old_amount = self._position_costs[symbol]
+            new_cost = old_cost + (price * amount)
+            new_amount = old_amount + amount
+            avg_price = new_cost / new_amount
+            self._position_costs[symbol] = (new_cost, new_amount)
+            self._entry_prices[symbol] = avg_price
+            logger.debug(f"Updated avg entry for {symbol}: ${avg_price:,.2f} "
+                        f"(added {amount} @ ${price:,.2f}, total {new_amount})")
+        else:
+            # First entry or no amount provided -- use raw price
+            self._entry_prices[symbol] = price
+            if amount > 0:
+                self._position_costs[symbol] = (price * amount, amount)
+            logger.debug(f"Set entry price for {symbol}: ${price:,.2f}")
+
     async def clear_entry_price(self, symbol: str) -> None:
-        """Clear entry price (position closed)"""
-        if symbol in self._entry_prices:
-            del self._entry_prices[symbol]
+        """Clear entry price and cost tracking (position closed)"""
+        self._entry_prices.pop(symbol, None)
+        self._position_costs.pop(symbol, None)
+
+    async def record_stop_loss_exit(self, symbol: str) -> None:
+        """Record that a stop-loss exit occurred for cooldown tracking"""
+        self._stop_loss_cooldowns[symbol] = datetime.now(timezone.utc)
+        logger.debug(f"Recorded stop-loss cooldown for {symbol}")
+
+    async def get_stop_loss_time(self, symbol: str) -> Optional[datetime]:
+        """Get the last stop-loss exit time for a symbol"""
+        return self._stop_loss_cooldowns.get(symbol)
     
+    async def get_peak_price(self, symbol: str) -> Optional[float]:
+        """Get peak price for a position (for trailing stop)"""
+        return self._peak_prices.get(symbol)
+
+    async def set_peak_price(self, symbol: str, price: float) -> None:
+        """Record peak price for a position"""
+        self._peak_prices[symbol] = price
+
+    async def clear_peak_price(self, symbol: str) -> None:
+        """Clear peak price (position closed)"""
+        self._peak_prices.pop(symbol, None)
+
     async def get_performance_summary(self) -> Dict:
         """Get trading performance summary"""
         if not self._trades:

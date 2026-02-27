@@ -42,6 +42,7 @@ class RiskConfig:
     max_position_pct: float = 0.20       # Max 20% per position
     max_total_exposure_pct: float = 0.80  # Max 80% total exposure
     stop_loss_pct: float = 0.05          # 5% stop loss
+    take_profit_multiplier: float = 2.0  # Take profit at stop_loss * multiplier
     min_confidence: float = 0.70         # Min confidence to trade
     max_daily_trades: int = 10
     max_daily_loss_pct: float = 0.10     # Pause if down 10% in a day
@@ -243,6 +244,7 @@ class AggressiveRiskConfig:
     max_position_pct: float = 0.35       # 35% per position (vs 20% default)
     max_total_exposure_pct: float = 0.95  # 95% total exposure (vs 80%)
     stop_loss_pct: float = 0.03          # 3% stop loss (vs 5%)
+    take_profit_multiplier: float = 2.0  # Keep 1:2 risk-reward by default
     min_confidence: float = 0.50         # 50% min confidence (vs 70%)
     max_daily_trades: int = 30           # 30 trades (vs 10)
     max_daily_loss_pct: float = 0.15     # 15% daily loss limit (vs 10%)
@@ -302,6 +304,7 @@ class Settings:
                 max_position_pct=self.aggressive_risk.max_position_pct,
                 max_total_exposure_pct=self.aggressive_risk.max_total_exposure_pct,
                 stop_loss_pct=self.aggressive_risk.stop_loss_pct,
+                take_profit_multiplier=self.aggressive_risk.take_profit_multiplier,
                 min_confidence=self.aggressive_risk.min_confidence,
                 max_daily_trades=self.aggressive_risk.max_daily_trades,
                 max_daily_loss_pct=self.aggressive_risk.max_daily_loss_pct
@@ -377,6 +380,7 @@ class Settings:
                 max_position_pct=agg_data.get("max_position_pct", 0.35),
                 max_total_exposure_pct=agg_data.get("max_total_exposure_pct", 0.95),
                 stop_loss_pct=agg_data.get("stop_loss_pct", 0.03),
+                take_profit_multiplier=agg_data.get("take_profit_multiplier", 2.0),
                 min_confidence=agg_data.get("min_confidence", 0.50),
                 max_daily_trades=agg_data.get("max_daily_trades", 30),
                 max_daily_loss_pct=agg_data.get("max_daily_loss_pct", 0.15),

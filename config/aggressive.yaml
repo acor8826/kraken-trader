@@ -34,7 +34,8 @@ trading:
 risk:
   max_position_pct: 0.20
   max_total_exposure_pct: 0.80
-  stop_loss_pct: 0.05
+  stop_loss_pct: 0.025
+  take_profit_multiplier: 2.0
   min_confidence: 0.70
   max_daily_trades: 10
   max_daily_loss_pct: 0.10
@@ -43,10 +44,22 @@ risk:
 aggressive_risk:
   max_position_pct: 0.35       # 35% per position (vs 20%)
   max_total_exposure_pct: 0.95 # 95% exposure (vs 80%)
-  stop_loss_pct: 0.03          # 3% stop (vs 5%)
+  stop_loss_pct: 0.015         # 1.5% stop (vs 2.5% standard)
+  take_profit_multiplier: 2.0  # TP at 2x stop distance
   min_confidence: 0.50         # 50% confidence (vs 70%)
   max_daily_trades: 30         # 30 trades (vs 10)
   max_daily_loss_pct: 0.15     # 15% daily loss limit (vs 10%)
+
+# Exit management
+exit_management:
+  enable_trailing_stop: true
+  enable_breakeven_stop: true
+  trailing_stop:
+    activation_pct: 0.01
+    distance_pct: 0.007
+  breakeven:
+    activation_pct: 0.005
+    buffer_pct: 0.001
 
 # Cost optimization - maximize savings for small portfolios
 cost_optimization:
