@@ -323,7 +323,7 @@ async def _create_orchestrator(settings: Settings):
     # Alert Manager
     # =========================================================================
     global alert_manager
-    from core.alerts import AlertManager, ConsoleChannel, FileChannel, WebhookChannel
+    from core.alerts import AlertManager, ConsoleChannel, FileChannel, WebhookChannel, TelegramChannel
 
     alert_channels = []
 
@@ -349,6 +349,15 @@ async def _create_orchestrator(settings: Settings):
             enabled=True
         ))
         logger.info(f"✅ Alert channel: Webhook ({settings.alerts.webhook_platform})")
+
+    # Telegram channel
+    if settings.alerts.telegram_enabled and settings.alerts.telegram_bot_token:
+        alert_channels.append(TelegramChannel(
+            bot_token=settings.alerts.telegram_bot_token,
+            chat_id=settings.alerts.telegram_chat_id,
+            enabled=True
+        ))
+        logger.info("✅ Alert channel: Telegram")
 
     alert_manager = AlertManager(
         channels=alert_channels,
@@ -466,12 +475,20 @@ async def _create_orchestrator(settings: Settings):
     else:
         logger.info("Meme trading module disabled (set ENABLE_MEME_TRADING=true to enable)")
 
-    # Seed improver service (Phase 0)
+    # Seed improver service (Phase 0 + Phase 1)
     global seed_improver
     try:
         from agents.seed_improver import SeedImproverService
-        seed_improver = SeedImproverService(memory=memory)
-        logger.info("✅ SeedImprover initialized (Phase 0)")
+        seed_improver = SeedImproverService(
+            memory=memory,
+            llm=llm,
+            alert_manager=alert_manager,
+        )
+        phase = "Phase 0 + 1" if llm else "Phase 0 only (no LLM)"
+        logger.info(f"✅ SeedImprover initialized ({phase})")
+
+        from api.routes.seed_improver import set_seed_improver
+        set_seed_improver(seed_improver, memory)
     except Exception as e:
         logger.warning(f"Failed to initialize SeedImprover: {e}")
 
@@ -531,6 +548,10 @@ def _register_routes(app: FastAPI):
     # Register meme trading router
     from api.routes.meme import router as meme_router
     app.include_router(meme_router)
+
+    # Register seed improver router
+    from api.routes.seed_improver import router as seed_improver_router
+    app.include_router(seed_improver_router)
 
     @app.get("/")
     async def root():
@@ -627,39 +648,6 @@ def _register_routes(app: FastAPI):
         result = await orchestrator.run_cycle()
         return {"status": "completed", "result": result}
 
-    @app.post("/internal/seed-improver/run")
-    async def seed_improver_run(payload: Optional[dict] = None):
-        """Trigger seed improver cycle (scheduled/manual)."""
-        if not seed_improver:
-            raise HTTPException(status_code=503, detail="Seed improver not initialized")
-
-        body = payload or {}
-        trigger_type = body.get("trigger_type", "manual")
-        context = body.get("context", {})
-        result = await seed_improver.run(trigger_type, context)
-        return {
-            "status": result.status,
-            "run_id": result.run_id,
-            "trigger_type": result.trigger_type,
-            "summary": result.summary,
-        }
-
-    @app.post("/internal/seed-improver/loss")
-    async def seed_improver_loss(payload: Optional[dict] = None):
-        """Event-driven trigger for losing trade analysis."""
-        if not seed_improver:
-            raise HTTPException(status_code=503, detail="Seed improver not initialized")
-
-        body = payload or {}
-        trade = body.get("trade", body)
-        result = await seed_improver.run("losing_trade", {"trade": trade})
-        return {
-            "status": result.status,
-            "run_id": result.run_id,
-            "trigger_type": result.trigger_type,
-            "summary": result.summary,
-        }
-    
     @app.post("/pause")
     async def pause_trading():
         """Pause trading"""

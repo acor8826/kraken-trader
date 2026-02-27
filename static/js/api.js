@@ -376,6 +376,25 @@ class ApiClient {
         };
     }
 
+    // ------------------------------------------------------------------
+    // Seed Improver
+    // ------------------------------------------------------------------
+
+    async getSeedImproverRuns(limit = 20, offset = 0) {
+        return this.request(`/internal/seed-improver/runs?limit=${limit}&offset=${offset}`);
+    }
+
+    async getSeedImproverRunDetail(runId) {
+        return this.request(`/internal/seed-improver/runs/${runId}`);
+    }
+
+    async triggerSeedImproverRun(triggerType = 'manual') {
+        return this.request('/internal/seed-improver/run', {
+            method: 'POST',
+            body: JSON.stringify({ trigger_type: triggerType }),
+        });
+    }
+
     /**
      * Load P&L page data
      */

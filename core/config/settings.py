@@ -229,6 +229,11 @@ class AlertConfig:
     webhook_url: str = ""
     webhook_platform: str = "discord"  # "discord" or "slack"
 
+    # Telegram configuration
+    telegram_enabled: bool = False
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
     # Alert retention
     max_history: int = 1000
 
@@ -243,6 +248,9 @@ class AlertConfig:
             webhook_enabled=os.getenv("ALERTS_WEBHOOK_ENABLED", "false").lower() == "true",
             webhook_url=os.getenv("ALERTS_WEBHOOK_URL", ""),
             webhook_platform=os.getenv("ALERTS_WEBHOOK_PLATFORM", "discord"),
+            telegram_enabled=os.getenv("TELEGRAM_ENABLED", "false").lower() == "true",
+            telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
+            telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
         )
 
 
