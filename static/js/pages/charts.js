@@ -235,16 +235,19 @@ const ChartsPage = {
                 scaleMargins: { top: 0.85, bottom: 0 },
             });
 
+            // Helper: normalize timestamp to seconds (handles both s and ms)
+            const toSec = (ts) => ts > 1e12 ? Math.floor(ts / 1000) : Math.floor(ts);
+
             // Transform candles
             const candles = ohlcv.candles.map(c => {
                 if (Array.isArray(c)) {
                     return {
-                        time: Math.floor(c[0] / 1000),
+                        time: toSec(c[0]),
                         open: c[1], high: c[2], low: c[3], close: c[4],
                     };
                 }
                 return {
-                    time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000),
+                    time: toSec(new Date(c.timestamp || c.time).getTime()),
                     open: c.open, high: c.high, low: c.low, close: c.close,
                 };
             }).sort((a, b) => a.time - b.time);
@@ -252,13 +255,13 @@ const ChartsPage = {
             const volumes = ohlcv.candles.map(c => {
                 if (Array.isArray(c)) {
                     return {
-                        time: Math.floor(c[0] / 1000),
+                        time: toSec(c[0]),
                         value: c[5] || 0,
                         color: c[4] >= c[1] ? 'rgba(0,255,136,0.2)' : 'rgba(255,71,87,0.2)',
                     };
                 }
                 return {
-                    time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000),
+                    time: toSec(new Date(c.timestamp || c.time).getTime()),
                     value: c.volume || 0,
                     color: c.close >= c.open ? 'rgba(0,255,136,0.2)' : 'rgba(255,71,87,0.2)',
                 };

@@ -268,13 +268,15 @@ const PairsPage = {
             });
 
             // Transform data — candles are arrays [timestamp, o, h, l, c, v]
+            // Timestamps may be in seconds or milliseconds
+            const toSec = (ts) => ts > 1e12 ? Math.floor(ts / 1000) : Math.floor(ts);
             const data = ohlcv.candles.map(c => {
                 if (Array.isArray(c)) {
-                    return { time: Math.floor(c[0] / 1000), value: c[4] };
+                    return { time: toSec(c[0]), value: c[4] };
                 }
                 // Fallback for object format
                 return {
-                    time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000),
+                    time: toSec(new Date(c.timestamp || c.time).getTime()),
                     value: c.close
                 };
             }).sort((a, b) => a.time - b.time);
