@@ -113,3 +113,57 @@ class AnalysisResult:
                 PatternMatch.from_dict(p) for p in data.get("patterns_detected", [])
             ],
         )
+
+
+@dataclass
+class ConfigPatch:
+    """A single YAML config change proposed by the LLM."""
+    yaml_path: str          # Dot-notation path e.g. "risk.stop_loss_pct"
+    old_value: Any          # Expected current value (for verification)
+    new_value: Any          # Proposed new value
+    reasoning: str          # Why this change helps
+    recommendation_idx: int = 0  # Index into the recommendation list
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "yaml_path": self.yaml_path,
+            "old_value": self.old_value,
+            "new_value": self.new_value,
+            "reasoning": self.reasoning,
+            "recommendation_idx": self.recommendation_idx,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ConfigPatch":
+        return cls(
+            yaml_path=data.get("yaml_path", ""),
+            old_value=data.get("old_value"),
+            new_value=data.get("new_value"),
+            reasoning=data.get("reasoning", ""),
+            recommendation_idx=data.get("recommendation_idx", 0),
+        )
+
+
+@dataclass
+class AutoApplyResult:
+    """Result of the Phase 2 auto-apply pipeline."""
+    patches_proposed: List[ConfigPatch] = field(default_factory=list)
+    patches_applied: List[ConfigPatch] = field(default_factory=list)
+    patches_rejected: List[Dict[str, Any]] = field(default_factory=list)  # {patch, reason}
+    deploy_status: str = "skipped"  # skipped | deployed | rolled_back | failed
+    revision_id: str = ""
+    health_check_passed: bool = False
+    rolled_back: bool = False
+    error: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "patches_proposed": [p.to_dict() for p in self.patches_proposed],
+            "patches_applied": [p.to_dict() for p in self.patches_applied],
+            "patches_rejected": self.patches_rejected,
+            "deploy_status": self.deploy_status,
+            "revision_id": self.revision_id,
+            "health_check_passed": self.health_check_passed,
+            "rolled_back": self.rolled_back,
+            "error": self.error,
+        }

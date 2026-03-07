@@ -7,6 +7,7 @@ strategist decision-making, sentinel risk management, and trade execution.
 """
 
 import logging
+from collections import deque
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
 
@@ -60,6 +61,10 @@ class MemeOrchestrator:
         self._positions: Dict[str, MemePosition] = {}
         self._last_errors: List[str] = []
 
+        # Evidence trail: per-coin analysis snapshots
+        self._analysis_history: deque = deque(maxlen=200)
+        self._latest_cycle_analyses: List[Dict] = []
+
     async def run_cycle(self) -> Dict:
         """
         Execute the full meme trading cycle.
@@ -68,6 +73,7 @@ class MemeOrchestrator:
         trades_executed, twitter_budget, and any errors encountered.
         """
         self._last_errors = []
+        self._latest_cycle_analyses = []
         trades_executed: List[Dict] = []
         coins_analyzed: List[str] = []
         now = datetime.now(timezone.utc)
@@ -92,8 +98,8 @@ class MemeOrchestrator:
         self._cycle_count += 1
         logger.info("[MEME] === Cycle %d starting ===", self._cycle_count)
 
-        # 3. Periodic listing detection
-        if self._cycle_count % self.config.listing_check_every_n_cycles == 0:
+        # 3. Periodic listing detection (also run if no pairs known yet)
+        if self._cycle_count % self.config.listing_check_every_n_cycles == 0 or not self.listing_detector.active_pairs:
             try:
                 await self.listing_detector.detect_meme_pairs()
                 logger.info("[MEME] Listing detection complete: %d pairs", len(self.listing_detector.active_pairs))
@@ -119,10 +125,11 @@ class MemeOrchestrator:
                 "errors": self._last_errors,
             }
 
-        # Assign default tiers for new coins
+        # Assign default tiers for new coins — start WARM so they get
+        # polled within the first few cycles instead of waiting 10 cycles
         for symbol in all_symbols:
             if symbol not in self._coin_tiers:
-                self._coin_tiers[symbol] = MemeTier.COLD
+                self._coin_tiers[symbol] = MemeTier.WARM
 
         # 5. Filter symbols by tier for this cycle
         polled_symbols: List[str] = []
@@ -184,7 +191,7 @@ class MemeOrchestrator:
                 ticker = market_data.get("ticker", {})
 
                 # Track current price
-                last_price = float(ticker.get("last", 0) or 0)
+                last_price = float(ticker.get("last", 0) or ticker.get("price", 0) or 0)
                 if last_price > 0:
                     current_prices[symbol] = last_price
 
@@ -227,19 +234,37 @@ class MemeOrchestrator:
                 # 8d. Strategy decision
                 plan = await self.strategist.create_plan(intel, portfolio)
 
+                # Capture pre-sentinel size for evidence trail
+                original_size = plan.signals[0].size_pct if plan.signals else 0
+
                 # 8e. Risk validation
                 plan = await self.sentinel.validate_plan(plan, portfolio)
 
-                # 8f. Execute approved actionable trades
+                # 8f. Build analysis snapshot (evidence trail)
+                snapshot = self._build_analysis_snapshot(
+                    symbol, pair, twitter_signal, volume_signal,
+                    intel, plan, original_size, now,
+                )
+
+                # 8g. Execute approved actionable trades
                 for signal in plan.actionable_signals:
                     try:
                         trade_result = await self._execute_signal(signal, symbol, pair, portfolio, last_price)
                         if trade_result:
                             trades_executed.append(trade_result)
+                            snapshot["execution"] = {
+                                "executed": True,
+                                "fill_price": trade_result.get("price", 0),
+                                "fill_amount": trade_result.get("amount", 0),
+                                "fill_value": trade_result.get("value", 0),
+                            }
                     except Exception as e:
                         err = f"Execution error for {symbol}: {e}"
                         logger.error("[MEME] %s", err)
                         self._last_errors.append(err)
+
+                self._latest_cycle_analyses.append(snapshot)
+                self._analysis_history.append(snapshot)
 
             except Exception as e:
                 err = f"Error processing {symbol}: {e}"
@@ -279,6 +304,97 @@ class MemeOrchestrator:
         )
 
         return result
+
+    def _build_analysis_snapshot(
+        self, symbol: str, pair: str, twitter_signal, volume_signal,
+        intel: MarketIntel, plan, original_size: float, now: datetime,
+    ) -> Dict:
+        """Build a per-coin analysis snapshot capturing all evidence."""
+        signal = plan.signals[0] if plan.signals else None
+        reasoning = plan.reasoning or ""
+
+        # Detect decision method
+        if reasoning.startswith("Haiku:"):
+            method = "haiku"
+        elif "(no LLM)" in reasoning:
+            method = "rule_fallback"
+        else:
+            method = "rule"
+
+        # Detect thresholds mode
+        twitter_available = twitter_signal.confidence > 0.01
+        if twitter_available:
+            thresholds = {
+                "entry_cms": self.config.entry_cms_threshold,
+                "ambiguous_lower": self.config.ambiguous_cms_lower,
+                "min_vol_z": self.config.min_volume_z_score,
+                "mode": "twitter_and_volume",
+            }
+        else:
+            thresholds = {
+                "entry_cms": 0.25,
+                "ambiguous_lower": 0.15,
+                "min_vol_z": 1.0,
+                "mode": "volume_only",
+            }
+
+        # Sentinel result
+        final_size = signal.size_pct if signal else 0
+        size_modified = abs(final_size - original_size) > 0.0001
+
+        return {
+            "symbol": symbol,
+            "pair": pair,
+            "cycle": self._cycle_count,
+            "timestamp": now.isoformat(),
+            "tier": self._coin_tiers.get(symbol, MemeTier.COLD).value,
+            "twitter": {
+                "searched": True,
+                "mention_count": twitter_signal.metadata.get("mention_count", 0),
+                "sentiment_score": twitter_signal.metadata.get("sentiment_score", 0),
+                "bullish_ratio": twitter_signal.metadata.get("bullish_ratio", 0),
+                "influencer_mentions": twitter_signal.metadata.get("influencer_mentions", 0),
+                "engagement_rate": twitter_signal.metadata.get("engagement_rate", 0),
+                "mention_velocity": twitter_signal.metadata.get("mention_velocity", 0),
+                "signal_direction": round(twitter_signal.direction, 4),
+                "signal_confidence": round(twitter_signal.confidence, 4),
+            },
+            "volume": {
+                "volume_z_score": volume_signal.metadata.get("volume_z_score", 0),
+                "price_momentum_5m": volume_signal.metadata.get("price_momentum_5m", 0),
+                "price_momentum_15m": volume_signal.metadata.get("price_momentum_15m", 0),
+                "buy_sell_ratio": volume_signal.metadata.get("buy_sell_ratio", 0),
+                "spread_pct": volume_signal.metadata.get("spread_pct", 0),
+                "signal_direction": round(volume_signal.direction, 4),
+                "signal_confidence": round(volume_signal.confidence, 4),
+            },
+            "fusion": {
+                "cms": round(intel.fused_direction, 4),
+                "fused_confidence": round(intel.fused_confidence, 4),
+                "twitter_weight": self.config.twitter_weight,
+                "volume_weight": self.config.volume_weight,
+            },
+            "decision": {
+                "action": signal.action.value if signal else "HOLD",
+                "method": method,
+                "confidence": round(signal.confidence, 4) if signal else 0,
+                "size_pct": round(final_size, 6) if signal else 0,
+                "reasoning": reasoning,
+                "thresholds_used": thresholds,
+            },
+            "sentinel": {
+                "approved": signal.status.value == "approved" if signal else False,
+                "rejection_reason": signal.rejection_reason if signal else None,
+                "size_modified": size_modified,
+                "original_size_pct": round(original_size, 6) if size_modified else None,
+            },
+            "execution": {
+                "executed": False,
+                "fill_price": None,
+                "fill_amount": None,
+                "fill_value": None,
+            },
+        }
 
     async def _execute_signal(
         self,
@@ -344,15 +460,31 @@ class MemeOrchestrator:
             # Record with sentinel
             self.sentinel.record_meme_trade_result(pnl)
 
-            # Clean up position
-            self.strategist.update_position(symbol, None)
-            self._positions.pop(symbol, None)
-            self._coin_tiers[symbol] = MemeTier.WARM
+            # Check if this is a partial sell (remaining position > min trade size)
+            remaining_amount = 0.0
+            if position:
+                remaining_amount = position.amount - trade.filled_size_base
 
-            logger.info(
-                "[MEME] SELL %s: %.6f @ $%.6f (PnL: $%.2f)",
-                symbol, trade.filled_size_base, trade.average_price, pnl,
-            )
+            if remaining_amount > 0 and remaining_amount * trade.average_price >= self.config.min_trade_size_quote:
+                # Partial sell: update position amount, keep tracking
+                position.amount = remaining_amount
+                self.strategist.update_position(symbol, position)
+                logger.info(
+                    "[MEME] PARTIAL SELL %s: %.6f @ $%.6f (PnL: $%.2f, remaining: %.6f)",
+                    symbol, trade.filled_size_base, trade.average_price, pnl, remaining_amount,
+                )
+            else:
+                # Full exit: clean up position
+                self.strategist.update_position(symbol, None)
+                # Clear TP targets tracking
+                if hasattr(self.strategist, '_tp_targets_hit'):
+                    self.strategist._tp_targets_hit.pop(symbol, None)
+                self._positions.pop(symbol, None)
+                self._coin_tiers[symbol] = MemeTier.WARM
+                logger.info(
+                    "[MEME] SELL %s: %.6f @ $%.6f (PnL: $%.2f)",
+                    symbol, trade.filled_size_base, trade.average_price, pnl,
+                )
 
             return {
                 "action": "SELL",
@@ -403,23 +535,25 @@ class MemeOrchestrator:
         """Build a Portfolio object from exchange balance."""
         try:
             balance = await self.exchange.get_balance()
-            available_aud = float(balance.get("AUD", balance.get("ZAUD", 0)))
+            qc = getattr(self.exchange, '_quote', 'USDT')
+            available = float(balance.get(qc, 0))
             portfolio = Portfolio(
-                available_quote=available_aud,
-                quote_currency="AUD",
+                available_quote=available,
+                quote_currency=qc,
             )
             return portfolio
         except Exception as e:
             logger.warning("[MEME] Failed to get balance: %s", e)
-            return Portfolio(available_quote=0.0, quote_currency="AUD")
+            return Portfolio(available_quote=0.0, quote_currency="USDT")
 
     async def _update_sentinel_context(self) -> None:
         """Update sentinel with current portfolio context."""
         try:
             balance = await self.exchange.get_balance()
-            total_aud = float(balance.get("AUD", balance.get("ZAUD", 0)))
+            qc = getattr(self.exchange, '_quote', 'USDT')
+            total_quote = float(balance.get(qc, 0))
         except Exception:
-            total_aud = 0.0
+            total_quote = 0.0
 
         # Compute meme exposure from tracked positions
         meme_exposure = 0.0
@@ -430,7 +564,7 @@ class MemeOrchestrator:
                 # Fallback to entry price
                 meme_exposure += position.entry_price * position.amount
 
-        total_portfolio_value = total_aud + meme_exposure
+        total_portfolio_value = total_quote + meme_exposure
 
         self.sentinel.update_portfolio_context(
             total_portfolio_value=total_portfolio_value,
@@ -459,7 +593,15 @@ class MemeOrchestrator:
             "twitter_budget": self.twitter_analyst.budget.to_dict(),
             "strategist_stats": self.strategist.get_stats(),
             "last_errors": self._last_errors,
+            "latest_analyses": list(self._latest_cycle_analyses),
         }
+
+    def get_analysis_history(self, symbol: str = None, limit: int = 50) -> List[Dict]:
+        """Get recent analysis snapshots, optionally filtered by symbol."""
+        history = list(self._analysis_history)
+        if symbol:
+            history = [a for a in history if a["symbol"] == symbol]
+        return list(reversed(history))[:limit]
 
     async def get_portfolio_context(self) -> Dict:
         """

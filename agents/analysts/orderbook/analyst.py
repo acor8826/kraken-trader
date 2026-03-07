@@ -40,6 +40,7 @@ class OrderBookAnalyst(IAnalyst):
         """
         self.exchange = exchange
         self.depth_analyzer = DepthAnalyzer(exchange=exchange)
+        self._weight = 0.10  # 10% weight - short-term signal
         logger.info("OrderBookAnalyst initialized")
 
     @property
@@ -50,7 +51,11 @@ class OrderBookAnalyst(IAnalyst):
     @property
     def weight(self) -> float:
         """Default weight in intelligence fusion"""
-        return 0.10  # 10% weight - short-term signal
+        return self._weight
+
+    @weight.setter
+    def weight(self, value: float):
+        self._weight = value
 
     async def analyze(self, pair: str, market_data: Dict) -> AnalystSignal:
         """
@@ -64,7 +69,7 @@ class OrderBookAnalyst(IAnalyst):
             AnalystSignal with direction, confidence, and reasoning
         """
         # Try to get order book from market_data or fetch from exchange
-        order_book = market_data.get("order_book")
+        order_book = market_data.get("order_book") if isinstance(market_data, dict) else getattr(market_data, "order_book", None)
 
         if order_book is None and self.exchange is not None:
             try:

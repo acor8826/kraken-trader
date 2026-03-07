@@ -73,6 +73,10 @@ class SentimentAnalyst(IAnalyst):
     def weight(self) -> float:
         return self._weight
 
+    @weight.setter
+    def weight(self, value: float):
+        self._weight = value
+
     async def analyze(self, pair: str, market_data: Dict) -> AnalystSignal:
         """
         Generate sentiment signal for trading pair.

@@ -5,7 +5,7 @@ The central coordinator that runs the trading cycle.
 Manages workflow between all agents.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Dict
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -149,7 +149,7 @@ class Orchestrator:
 
             # 6. Broadcast portfolio update via WebSocket
             try:
-                from api.websocket_manager import portfolio_broadcaster
+                from api.websocket_manager import portfolio_broadcaster, connection_manager
                 await portfolio_broadcaster.broadcast_portfolio_update(
                     total_value=portfolio.total_value,
                     holdings=portfolio.holdings,
@@ -157,6 +157,7 @@ class Orchestrator:
                 )
             except Exception as e:
                 logger.debug(f"WebSocket broadcast skipped: {e}")
+
 
             logger.info(f"Cycle #{self._cycle_count} complete: "
                        f"{results['pairs_analyzed']} pairs, "
@@ -303,6 +304,29 @@ class Orchestrator:
         recent = true_ranges[-min(period, len(true_ranges)):]
         return sum(recent) / len(recent) if recent else None
     
+    def _rank_pairs(self, intel_list: List[MarketIntel]) -> List[MarketIntel]:
+        """
+        Rank pairs by signal strength for capital rotation.
+
+        Score = abs(fused_direction) * fused_confidence
+        Returns intel_list sorted descending by score.
+        """
+        scored = []
+        for intel in intel_list:
+            score = abs(intel.fused_direction) * intel.fused_confidence
+            scored.append((intel, score))
+
+        scored.sort(key=lambda x: x[1], reverse=True)
+
+        # Log rankings
+        scores_str = ", ".join(f"{i.pair.split('/')[0]}={s:.2f}" for i, s in scored)
+        max_positions = getattr(self.settings.trading, 'max_active_positions', 3)
+        top_pairs = [i.pair.split('/')[0] for i, _ in scored[:max_positions]]
+        logger.info(f"[RANK] Pair scores: {scores_str}")
+        logger.info(f"[RANK] Top {max_positions}: {', '.join(top_pairs)}")
+
+        return [intel for intel, _ in scored]
+
     def _supports_batch_mode(self) -> bool:
         """Check if strategist supports batch analysis."""
         return hasattr(self.strategist, 'create_batch_plan')
@@ -339,28 +363,50 @@ class Orchestrator:
                 # Create market intel
                 from core.models import MarketIntel, Regime
 
-                if len(signals) == 1:
+                # Filter out analysts that returned no data (zero confidence)
+                active_signals = [s for s in signals if s.confidence > 0.01]
+                if not active_signals:
+                    active_signals = signals  # Fallback to all if none have data
+
+                if len(active_signals) == 1:
                     intel = MarketIntel(
                         pair=pair,
                         signals=signals,
-                        fused_direction=signals[0].direction,
-                        fused_confidence=signals[0].confidence,
+                        fused_direction=active_signals[0].direction,
+                        fused_confidence=active_signals[0].confidence,
                         regime=Regime.UNKNOWN
                     )
                 else:
-                    direction = sum(s.direction for s in signals) / len(signals)
-                    confidence = sum(s.confidence for s in signals) / len(signals)
+                    direction = sum(s.direction for s in active_signals) / len(active_signals)
+                    avg_confidence = sum(s.confidence for s in active_signals) / len(active_signals)
+
+                    # Calculate disagreement: std dev of directions normalized to 0-1
+                    directions = [s.direction for s in active_signals]
+                    mean_dir = sum(directions) / len(directions)
+                    variance = sum((d - mean_dir) ** 2 for d in directions) / len(directions)
+                    disagreement = min(1.0, variance ** 0.5)  # std dev, capped at 1.0
+
+                    # Direction-aware confidence penalty (from fusion.py logic)
+                    all_same_sign = all(d >= 0 for d in directions) or all(d <= 0 for d in directions)
+                    if all_same_sign:
+                        # Analysts agree on direction, just differ in magnitude — minor penalty
+                        fused_confidence = avg_confidence * (1 - disagreement * 0.15)
+                    else:
+                        # Genuine directional conflict — moderate penalty
+                        fused_confidence = avg_confidence * (1 - disagreement * 0.35)
+
                     intel = MarketIntel(
                         pair=pair,
                         signals=signals,
                         fused_direction=direction,
-                        fused_confidence=confidence,
+                        fused_confidence=fused_confidence,
+                        disagreement=disagreement,
                         regime=Regime.UNKNOWN
                     )
 
                 intel_list.append(intel)
                 logger.info(f"[PIPELINE] {pair}: analyst output: direction={intel.fused_direction:+.3f}, "
-                           f"confidence={intel.fused_confidence:.3f}")
+                           f"confidence={intel.fused_confidence:.3f}, disagreement={intel.disagreement:.3f}")
 
             except Exception as e:
                 logger.error(f"Error gathering intel for {pair}: {e}")
@@ -368,8 +414,62 @@ class Orchestrator:
         if not intel_list:
             return {}
 
-        # 2. Get batch trading plan (single Claude call)
-        plan = await self.strategist.create_batch_plan(intel_list, portfolio)
+        # 2. Rank pairs by signal strength and apply rotation logic
+        ranked_intel = self._rank_pairs(intel_list)
+        max_positions = getattr(self.settings.trading, 'max_active_positions', 3)
+
+        # Determine which pairs are top-ranked and which are not
+        top_pairs = {intel.pair for intel in ranked_intel[:max_positions]}
+        held_pairs = {
+            f"{asset}/{self.settings.trading.quote_currency}"
+            for asset in portfolio.positions
+            if portfolio.positions[asset].amount > 0
+        }
+
+        # Filter intel for strategist: only process pairs worth acting on
+        actionable_intel = []
+        rotation_skips = []
+        for rank_idx, intel in enumerate(ranked_intel):
+            pair_rank = rank_idx + 1
+            is_held = intel.pair in held_pairs
+            is_top = intel.pair in top_pairs
+
+            if is_top:
+                # Top-ranked: always analyze (potential BUY or HOLD)
+                # Store rank in metadata for strategist
+                for sig in intel.signals:
+                    sig.metadata["pair_rank"] = pair_rank
+                actionable_intel.append(intel)
+            elif is_held and intel.fused_direction < -0.1:
+                # Holding a low-ranked pair with negative signal: consider SELL
+                for sig in intel.signals:
+                    sig.metadata["pair_rank"] = pair_rank
+                actionable_intel.append(intel)
+            elif is_held:
+                # Holding a low-ranked pair but signal is positive: keep
+                rotation_skips.append(intel.pair)
+                logger.info(f"[RANK] {intel.pair}: Rank {pair_rank} but positive signal — keeping position")
+            else:
+                # Not held, not top-ranked: skip
+                rotation_skips.append(intel.pair)
+
+        if rotation_skips:
+            logger.info(f"[RANK] Skipping low-ranked: {', '.join(rotation_skips)}")
+
+        # Use actionable intel for strategy (or all if ranking produced nothing)
+        strategy_intel = actionable_intel if actionable_intel else intel_list
+
+        # 2b. Get batch trading plan (single Claude call)
+        risk_params = {
+            "max_position_pct": self.settings.risk.max_position_pct,
+            "stop_loss_pct": self.settings.risk.stop_loss_pct,
+            "min_confidence": self.settings.risk.min_confidence,
+        }
+        # Pass pair rankings via risk_params metadata
+        pair_ranks = {intel.pair: idx + 1 for idx, intel in enumerate(ranked_intel)}
+        risk_params["pair_ranks"] = pair_ranks
+
+        plan = await self.strategist.create_batch_plan(strategy_intel, portfolio, risk_params)
 
         # Log strategist output
         for signal in plan.signals:
@@ -408,6 +508,18 @@ class Orchestrator:
                 await self._send_trade_alert(trade)
                 # Record trade for adaptive risk
                 await self._record_trade_for_risk(trade)
+                # Broadcast to dashboard via WebSocket (fire-and-forget)
+                try:
+                    from api.websocket_manager import connection_manager
+                    import asyncio as _aio
+                    _aio.create_task(connection_manager.broadcast_event("trade_executed", {
+                        "pair": trade.pair,
+                        "action": trade.action.value,
+                        "price": getattr(trade, "price", 0),
+                        "amount": getattr(trade, "amount", 0),
+                    }))
+                except Exception:
+                    pass
         else:
             if validated_plan.rejected_signals:
                 for signal in validated_plan.rejected_signals:
@@ -443,21 +555,24 @@ class Orchestrator:
             logger.warning(f"No signals for {pair}")
             return result
         
-        # 3. Fuse intelligence (for Stage 1, just use first signal)
+        # 3. Fuse intelligence — only average analysts that returned data
         from core.models import MarketIntel, Regime
-        
-        if len(signals) == 1:
+
+        active_signals = [s for s in signals if s.confidence > 0.01]
+        if not active_signals:
+            active_signals = signals
+
+        if len(active_signals) == 1:
             intel = MarketIntel(
                 pair=pair,
                 signals=signals,
-                fused_direction=signals[0].direction,
-                fused_confidence=signals[0].confidence,
+                fused_direction=active_signals[0].direction,
+                fused_confidence=active_signals[0].confidence,
                 regime=Regime.UNKNOWN
             )
         else:
-            # Simple average fusion
-            direction = sum(s.direction for s in signals) / len(signals)
-            confidence = sum(s.confidence for s in signals) / len(signals)
+            direction = sum(s.direction for s in active_signals) / len(active_signals)
+            confidence = sum(s.confidence for s in active_signals) / len(active_signals)
             intel = MarketIntel(
                 pair=pair,
                 signals=signals,

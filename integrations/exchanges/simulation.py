@@ -168,7 +168,21 @@ class SimulationExchange(IExchange):
             "SOL": 200.0,
             "DOGE": 0.40,
             "AVAX": 45.0,
+            "DOT": 8.0,
             "ARB": 1.20,
+            # Meme coins
+            "SHIB": 0.000025,
+            "PEPE": 0.000015,
+            "BONK": 0.000035,
+            "FLOKI": 0.00020,
+            "WIF": 2.50,
+            "MEME": 0.025,
+            "TURBO": 0.008,
+            "NEIRO": 0.0015,
+            "MOG": 0.0000025,
+            "POPCAT": 0.80,
+            "BRETT": 0.15,
+            "MEW": 0.008,
         }
         self._current_prices: Dict[str, float] = dict(self._base_prices)
         self._price_history: Dict[str, deque] = {
@@ -256,6 +270,8 @@ class SimulationExchange(IExchange):
         new_price = max(base_price * 0.5, min(base_price * 2.0, new_price))
 
         self._current_prices[base] = new_price
+        if base not in self._price_history:
+            self._price_history[base] = deque(maxlen=1000)
         self._price_history[base].append({
             "price": new_price,
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -350,10 +366,25 @@ class SimulationExchange(IExchange):
 
         return candles
 
-    async def get_market_data(self, pair: str) -> MarketData:
-        """Get comprehensive market data for analysis"""
+    async def get_order_book(self, pair: str, depth: int = 25) -> Dict:
+        """Simulate order book data."""
         ticker = await self.get_ticker(pair)
-        ohlcv = await self.get_ohlcv(pair, interval=60, limit=24)
+        price = ticker["price"]
+        spread = price * 0.001  # 0.1% spread
+
+        bids = [[price - spread * (i + 1), random.uniform(0.1, 10.0)] for i in range(depth)]
+        asks = [[price + spread * (i + 1), random.uniform(0.1, 10.0)] for i in range(depth)]
+
+        return {"pair": pair, "bids": bids, "asks": asks}
+
+    async def get_market_data(self, pair: str) -> MarketData:
+        """Get comprehensive market data for analysis (multi-timeframe)"""
+        ticker = await self.get_ticker(pair)
+        ohlcv_1h = await self.get_ohlcv(pair, interval=60, limit=24)
+        ohlcv_15m = await self.get_ohlcv(pair, interval=15, limit=48)
+        ohlcv_5m = await self.get_ohlcv(pair, interval=5, limit=48)
+        ohlcv_1m = await self.get_ohlcv(pair, interval=1, limit=60)
+        ohlcv_3m = await self.get_ohlcv(pair, interval=3, limit=60)
 
         return MarketData(
             pair=pair,
@@ -361,7 +392,11 @@ class SimulationExchange(IExchange):
             high_24h=ticker["high_24h"],
             low_24h=ticker["low_24h"],
             volume_24h=ticker["volume_24h"],
-            ohlcv=ohlcv
+            ohlcv=ohlcv_1h,
+            ohlcv_5m=ohlcv_5m,
+            ohlcv_15m=ohlcv_15m,
+            ohlcv_1m=ohlcv_1m,
+            ohlcv_3m=ohlcv_3m
         )
 
     async def market_buy(self, pair: str, amount_quote: float) -> Dict:

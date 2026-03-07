@@ -80,7 +80,11 @@ class MarketData:
     volume_24h: float
     vwap_24h: Optional[float] = None
     trades_24h: Optional[int] = None
-    ohlcv: List[List] = field(default_factory=list)  # [timestamp, o, h, l, c, v]
+    ohlcv: List[List] = field(default_factory=list)  # [timestamp, o, h, l, c, v] (1h candles)
+    ohlcv_5m: List[List] = field(default_factory=list)   # 5-min candles
+    ohlcv_15m: List[List] = field(default_factory=list)  # 15-min candles
+    ohlcv_1m: List[List] = field(default_factory=list)   # 1-min candles
+    ohlcv_3m: List[List] = field(default_factory=list)   # 3-min candles
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     
     # Computed indicators (populated by technical analyst)

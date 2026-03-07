@@ -31,6 +31,8 @@ class MemeStrategist(IStrategist):
         self.config = config or MemeConfig()
         self._positions: Dict[str, MemePosition] = {}
         self._stats = {"rule_decisions": 0, "haiku_decisions": 0, "errors": 0}
+        # Track which scaled TP targets have been hit per symbol
+        self._tp_targets_hit: Dict[str, set] = {}
 
     def update_position(self, symbol: str, position: Optional[MemePosition]):
         """Track or remove a meme position."""
@@ -78,6 +80,52 @@ class MemeStrategist(IStrategist):
         confidence = intel.fused_confidence
         vol_z = self._get_volume_z(intel)
 
+        # Check if Twitter data is available — adjust thresholds if volume-only
+        twitter_available = any(
+            s.source == "twitter_sentiment" and s.confidence > 0.01
+            for s in intel.signals
+        )
+        if twitter_available:
+            entry_threshold = self.config.entry_cms_threshold  # 0.65
+            ambiguous_lower = self.config.ambiguous_cms_lower  # 0.40
+            min_vol_z = self.config.min_volume_z_score         # 1.5
+        else:
+            # Volume-only mode: CMS is capped at ~0.45 (volume weight),
+            # so use achievable thresholds based on volume signal alone
+            entry_threshold = 0.25
+            ambiguous_lower = 0.15
+            min_vol_z = 1.0
+
+        # --- SCALED TAKE-PROFIT (partial sells) ---
+        if position and self.config.take_profit_targets:
+            gain_pct = ((position._current_price or position.entry_price) - position.entry_price) / position.entry_price if position.entry_price > 0 else 0
+            hit_set = self._tp_targets_hit.get(symbol, set())
+            for i, (target_pct, sell_frac) in enumerate(self.config.take_profit_targets):
+                if i in hit_set:
+                    continue
+                if gain_pct >= target_pct:
+                    hit_set.add(i)
+                    self._tp_targets_hit[symbol] = hit_set
+                    sell_size = sell_frac  # Fraction of current position
+                    self._stats["rule_decisions"] += 1
+                    logger.info(f"[MEME_STRAT] Scaled TP #{i+1} for {symbol}: "
+                               f"gain={gain_pct:.1%} >= {target_pct:.0%}, selling {sell_frac:.0%}")
+                    return self._make_plan(pair, TradeAction.SELL, 0.90, sell_size,
+                        f"Scaled TP #{i+1}: gain={gain_pct:.1%} >= {target_pct:.0%}, sell {sell_frac:.0%}")
+
+        # --- TIME-BASED EXIT ---
+        if position and hasattr(position, 'entry_time') and position.entry_time:
+            from datetime import datetime, timezone
+            hold_minutes = (datetime.now(timezone.utc) - position.entry_time).total_seconds() / 60
+            if hold_minutes > self.config.max_hold_minutes:
+                pnl_pct = position.unrealized_pnl_pct
+                if pnl_pct < 2.0:  # Less than 2% gain
+                    self._stats["rule_decisions"] += 1
+                    logger.info(f"[MEME_STRAT] Time exit for {symbol}: held {hold_minutes:.0f}min "
+                               f"(max {self.config.max_hold_minutes}min), PnL={pnl_pct:.1f}%")
+                    return self._make_plan(pair, TradeAction.SELL, 0.85, 1.0,
+                        f"Time exit: held {hold_minutes:.0f}min with {pnl_pct:.1f}% PnL")
+
         # --- RULE-BASED EXITS (always check first) ---
 
         # Trailing stop hit
@@ -103,15 +151,22 @@ class MemeStrategist(IStrategist):
                 f"Bearish exit: CMS={cms:+.2f}, vol_z={vol_z:+.1f}")
 
         # --- RULE-BASED ENTRY ---
-        if not position and cms >= self.config.entry_cms_threshold and vol_z >= self.config.min_volume_z_score:
+        if not position and cms >= entry_threshold and vol_z >= min_vol_z:
             self._stats["rule_decisions"] += 1
             size = min(self.config.max_per_coin_pct, cms * 0.08)
-            return self._make_plan(pair, TradeAction.BUY, min(0.9, cms), size,
+            return self._make_plan(pair, TradeAction.BUY, min(0.9, max(cms, confidence)), size,
                 f"Strong entry: CMS={cms:+.2f}, vol_z={vol_z:+.1f}")
 
-        # --- AMBIGUOUS -> HAIKU ---
-        if self.config.ambiguous_cms_lower <= cms < self.config.entry_cms_threshold:
-            return await self._ask_haiku(pair, intel, portfolio, position, cms, vol_z)
+        # --- AMBIGUOUS -> HAIKU (or rule-based fallback) ---
+        if ambiguous_lower <= cms < entry_threshold:
+            if self.llm:
+                return await self._ask_haiku(pair, intel, portfolio, position, cms, vol_z)
+            # No LLM: use rule-based decision for ambiguous zone
+            if not position and vol_z >= min_vol_z * 0.8:
+                self._stats["rule_decisions"] += 1
+                size = min(self.config.max_per_coin_pct, cms * 0.06)
+                return self._make_plan(pair, TradeAction.BUY, min(0.7, confidence), size,
+                    f"Moderate entry (no LLM): CMS={cms:+.2f}, vol_z={vol_z:+.1f}")
 
         # --- HOLD ---
         self._stats["rule_decisions"] += 1

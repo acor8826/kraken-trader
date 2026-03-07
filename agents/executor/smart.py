@@ -12,12 +12,12 @@ Strategies:
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from core.interfaces import IExecutor, IExchange
-from core.models import TradingPlan, ExecutionReport, TradeAction, OrderType
+from core.models import TradingPlan, ExecutionReport, Trade, TradeAction, TradeStatus, OrderType
 from agents.executor.twap import TWAPExecutor
 from agents.executor.order_splitter import OrderSplitter
 
@@ -112,7 +112,7 @@ class SmartExecutor(IExecutor):
         Returns:
             ExecutionReport with results
         """
-        results = []
+        trades = []
 
         for signal in plan.signals:
             if signal.action == TradeAction.HOLD:
@@ -138,23 +138,36 @@ class SmartExecutor(IExecutor):
 
                 # Execute with selected strategy
                 result = await self._execute_with_strategy(signal, strategy)
-                results.append(result)
 
                 self.stats["total_orders"] += 1
 
+                # Convert result dict to Trade object
+                trades.append(Trade(
+                    pair=result.get("pair", signal.pair),
+                    action=signal.action,
+                    status=TradeStatus.FILLED if result.get("status") == "filled" else TradeStatus.FAILED,
+                    average_price=result.get("price", 0.0),
+                    exchange_order_id=result.get("order_id"),
+                    filled_size_quote=result.get("filled_quote", 0.0),
+                    filled_size_base=result.get("filled_base", 0.0),
+                    signal_confidence=signal.confidence,
+                    reasoning=signal.reasoning,
+                ))
+
             except Exception as e:
                 logger.error(f"Execution failed for {signal.pair}: {e}")
-                results.append({
-                    "pair": signal.pair,
-                    "status": "failed",
-                    "error": str(e)
-                })
+                trades.append(Trade(
+                    pair=signal.pair,
+                    action=signal.action,
+                    status=TradeStatus.FAILED,
+                    error_message=str(e),
+                    signal_confidence=signal.confidence,
+                    reasoning=signal.reasoning,
+                ))
 
         return ExecutionReport(
-            plan=plan,
-            executions=results,
-            success=all(r.get("status") == "filled" for r in results),
-            timestamp=datetime.now(timezone.utc)
+            plan_id=plan.id,
+            trades=trades
         )
 
     async def cancel_all(self) -> bool:
@@ -381,6 +394,46 @@ class SmartExecutor(IExecutor):
             pass
 
         return False
+
+    async def execute_stop_loss(self, trades: List[Trade]) -> ExecutionReport:
+        """Execute stop-loss trades via immediate market sell."""
+        report = ExecutionReport(plan_id="stop_loss", trades=[])
+
+        for trade in trades:
+            try:
+                trade.submitted_timestamp = datetime.now(timezone.utc)
+                result = await self.exchange.market_sell(
+                    trade.pair,
+                    trade.requested_size_base
+                )
+                trade.filled_timestamp = datetime.now(timezone.utc)
+                trade.exchange_order_id = result.get("order_id") or (
+                    result.get("txid", [None])[0]
+                    if isinstance(result.get("txid"), list)
+                    else result.get("txid")
+                )
+                trade.filled_size_base = trade.requested_size_base
+                trade.average_price = result.get("price", 0)
+                trade.filled_size_quote = trade.filled_size_base * trade.average_price
+                trade.status = TradeStatus.FILLED
+
+                if trade.entry_price and trade.average_price:
+                    trade.exit_price = trade.average_price
+                    trade.realized_pnl = (trade.exit_price - trade.entry_price) * trade.filled_size_base
+
+                logger.info(
+                    f"Stop-loss executed: {trade.pair} @ ${trade.average_price:,.2f} "
+                    f"(P&L: ${(trade.realized_pnl or 0):+,.2f})"
+                )
+                report.trades.append(trade)
+
+            except Exception as e:
+                trade.status = TradeStatus.FAILED
+                trade.error_message = str(e)
+                logger.error(f"Stop-loss failed for {trade.pair}: {e}")
+                report.trades.append(trade)
+
+        return report
 
     def get_stats(self) -> Dict:
         """Get execution statistics"""

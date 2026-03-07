@@ -94,7 +94,7 @@ class AnalyticsCalculator:
             "total_trades": total_count,
             "winning_trades": win_count,
             "losing_trades": loss_count,
-            "win_rate": round(win_rate * 100, 1),
+            "win_rate": round(win_rate, 4),
             "avg_win": round(avg_win, 2),
             "avg_loss": round(avg_loss, 2),
             "gross_profit": round(gross_profit, 2),
@@ -130,7 +130,7 @@ class AnalyticsCalculator:
                 "total_trades": len(trades),
                 "winning_trades": win_count,
                 "losing_trades": loss_count,
-                "win_rate": round(win_count / len(trades) * 100, 1) if trades else 0,
+                "win_rate": round(win_count / len(trades), 4) if trades else 0,
                 "total_pnl": round(total_pnl, 2),
                 "avg_pnl": round(total_pnl / len(trades), 2) if trades else 0
             }
@@ -158,7 +158,7 @@ class AnalyticsCalculator:
                 total_pnl = sum(t.pnl or 0 for t in trades)
                 result[str(hour)] = {
                     "total_trades": len(trades),
-                    "win_rate": round(win_count / len(trades) * 100, 1),
+                    "win_rate": round(win_count / len(trades), 4),
                     "total_pnl": round(total_pnl, 2)
                 }
             else:
@@ -191,7 +191,7 @@ class AnalyticsCalculator:
 
             result[regime] = {
                 "total_trades": len(trades),
-                "win_rate": round(win_count / len(trades) * 100, 1) if trades else 0,
+                "win_rate": round(win_count / len(trades), 4) if trades else 0,
                 "total_pnl": round(total_pnl, 2),
                 "avg_pnl": round(total_pnl / len(trades), 2) if trades else 0
             }

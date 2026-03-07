@@ -131,8 +131,8 @@ class MemeSentinel(ISentinel):
                 return f"Daily meme loss limit: ${self._daily_meme_pnl:.0f} <= -${max_daily_loss:.0f}"
 
         # Minimum trade size
-        if trade_value < self.config.min_trade_size_aud:
-            return f"Below minimum trade size: ${trade_value:.2f} < ${self.config.min_trade_size_aud}"
+        if trade_value < self.config.min_trade_size_quote:
+            return f"Below minimum trade size: ${trade_value:.2f} < ${self.config.min_trade_size_quote}"
 
         return None
 

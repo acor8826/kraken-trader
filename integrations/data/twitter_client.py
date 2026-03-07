@@ -30,6 +30,7 @@ class TwitterClient:
         self.bearer_token = bearer_token or os.environ.get("TWITTER_BEARER_TOKEN", "")
         self.cache = cache
         self._client: Optional[httpx.AsyncClient] = None
+        self._disabled_until: Optional[datetime] = None  # Disable after 402
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -70,6 +71,11 @@ class TwitterClient:
 
         if not self.bearer_token:
             logger.warning("[TWITTER] No bearer token configured")
+            return empty_result
+
+        # Skip if disabled due to 402 (payment required)
+        if self._disabled_until and datetime.now(timezone.utc) < self._disabled_until:
+            logger.debug("[TWITTER] Disabled due to 402 (payment required), skipping")
             return empty_result
 
         # Build OR query: ($DOGE OR $SHIB OR $PEPE ...) -is:retweet lang:en
@@ -157,7 +163,13 @@ class TwitterClient:
             return result
 
         except httpx.HTTPStatusError as e:
-            logger.warning(f"[TWITTER] HTTP error: {e.response.status_code}")
+            status = e.response.status_code
+            if status == 402:
+                # Payment required — disable for 1 hour
+                self._disabled_until = datetime.now(timezone.utc) + timedelta(hours=1)
+                logger.warning(f"[TWITTER] Payment required (402). Disabling for 1 hour.")
+            else:
+                logger.warning(f"[TWITTER] HTTP error: {status}")
             return empty_result
         except httpx.ConnectError as e:
             logger.warning(f"[TWITTER] Connection error: {e}")

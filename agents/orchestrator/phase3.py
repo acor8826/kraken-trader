@@ -64,7 +64,8 @@ class Phase3Orchestrator:
             llm: LLM provider for strategist
         """
         self.exchange = exchange
-        self.analysts = {a.name: a for a in analysts}
+        self._analysts_dict = {a.name: a for a in analysts}
+        self.analysts = list(analysts)  # Keep as list for route compatibility
         self.memory = memory
         self.settings = settings or get_settings()
         self.event_bus = event_bus or get_event_bus()
@@ -72,14 +73,14 @@ class Phase3Orchestrator:
 
         # Initialize Phase 3 components
         self.regime_classifier = RegimeClassifier()
-        self.fusion = IntelligenceFusion(regime_classifier=self.regime_classifier)
+        self.fusion = IntelligenceFusion(analysts=analysts, enable_regime_weights=True)
         self.strategist = AdvancedStrategist(llm=llm, settings=settings)
         self.sentinel = FullSentinel(
             settings=settings,
             exchange=exchange,
             event_bus=event_bus
         )
-        self.executor = SmartExecutor(exchange=exchange, settings=settings)
+        self.executor = SmartExecutor(exchange=exchange)
 
         # Learning components
         self.performance_tracker = AnalystPerformanceTracker(
@@ -100,7 +101,7 @@ class Phase3Orchestrator:
 
         logger.info(
             f"Phase3Orchestrator initialized with {len(analysts)} analysts: "
-            f"{list(self.analysts.keys())}"
+            f"{list(self._analysts_dict.keys())}"
         )
 
     def _get_analyst_weights(self) -> Dict[str, float]:
@@ -149,7 +150,7 @@ class Phase3Orchestrator:
 
         try:
             # Publish cycle start
-            await self._publish_event(EventType.SYSTEM_CYCLE_START, {
+            await self._publish_event(EventType.CYCLE_START, {
                 "cycle": self._cycle_count
             })
 
@@ -170,7 +171,7 @@ class Phase3Orchestrator:
             # Check target
             if portfolio.total_value >= portfolio.target_value:
                 logger.info("🎯 TARGET REACHED!")
-                await self._publish_event(EventType.PORTFOLIO_TARGET_REACHED, {
+                await self._publish_event(EventType.TARGET_REACHED, {
                     "value": portfolio.total_value,
                     "target": portfolio.target_value
                 })
@@ -181,11 +182,11 @@ class Phase3Orchestrator:
             stop_trades = await self.sentinel.check_stop_losses(portfolio.positions)
             if stop_trades:
                 logger.warning(f"Executing {len(stop_trades)} stop-loss trades")
+                await self.executor.execute_stop_loss(stop_trades)
                 for trade in stop_trades:
-                    await self.executor.execute_stop_loss(trade)
-                    await self._publish_event(EventType.RISK_STOP_LOSS_TRIGGERED, {
+                    await self._publish_event(EventType.STOP_LOSS_TRIGGERED, {
                         "pair": trade.pair,
-                        "reason": trade.reason
+                        "reason": getattr(trade, 'reason', 'stop-loss')
                     })
                 portfolio = await self._get_portfolio_state()
 
@@ -235,7 +236,7 @@ class Phase3Orchestrator:
                 self._cycle_metrics = self._cycle_metrics[-100:]
 
             # Publish cycle end
-            await self._publish_event(EventType.SYSTEM_CYCLE_END, {
+            await self._publish_event(EventType.CYCLE_END, {
                 "cycle": self._cycle_count,
                 "duration": results["duration_seconds"],
                 "trades": results["trades_executed"]
@@ -256,21 +257,18 @@ class Phase3Orchestrator:
         """Detect current market regime using BTC as reference."""
         try:
             # Use BTC as market proxy
-            btc_pair = "BTC/AUD"
+            qc = self.settings.trading.quote_currency
+            btc_pair = f"BTC/{qc}"
             if btc_pair not in self.settings.trading.pairs:
                 btc_pair = self.settings.trading.pairs[0]
 
-            candles = await self.exchange.get_ohlcv(
-                symbol=btc_pair,
-                timeframe="1h",
-                limit=50
-            )
+            candles = await self.exchange.get_ohlcv(btc_pair, interval=60, limit=50)
 
             if not candles:
                 return MarketRegime.UNKNOWN
 
-            regime = self.regime_classifier.classify(candles)
-            return regime
+            classification = self.regime_classifier.predict(candles)
+            return classification.regime
 
         except Exception as e:
             logger.warning(f"Regime detection failed: {e}")
@@ -293,19 +291,20 @@ class Phase3Orchestrator:
 
         # 1. Get market data
         market_data = await self.exchange.get_market_data(pair)
-        current_price = market_data.get("price", 0)
+        current_price = market_data.current_price
 
-        # 2. Run all analysts concurrently
-        signals = await self._run_analysts_concurrent(pair, market_data)
+        # 2. Run all analysts and fuse via IntelligenceFusion
+        intel = await self.fusion.analyze(pair, market_data)
+        self._latest_intel[pair] = intel
 
-        if not signals:
+        if not intel.signals:
             logger.warning(f"No signals for {pair}")
             return result
 
         # 3. Record signals for learning
-        for signal in signals:
+        for signal in intel.signals:
             await self.performance_tracker.record_signal(
-                analyst=signal.analyst,
+                analyst=signal.source,
                 pair=pair,
                 direction=signal.direction,
                 confidence=signal.confidence,
@@ -313,21 +312,34 @@ class Phase3Orchestrator:
                 regime=regime.value if regime else None
             )
 
-        # 4. Fuse intelligence with regime awareness
-        intel = self.fusion.fuse(
-            pair=pair,
-            signals=signals,
-            ohlcv_data=market_data.get("ohlcv", [])
-        )
-        self._latest_intel[pair] = intel
+        # Publish signal events
+        for signal in intel.signals:
+            await self._publish_event(EventType.ANALYST_SIGNAL, {
+                "analyst": signal.source,
+                "pair": pair,
+                "direction": signal.direction,
+                "confidence": signal.confidence
+            })
 
         # Publish fusion event
-        await self._publish_event(EventType.ANALYSIS_INTEL_FUSED, {
+        await self._publish_event(EventType.INTEL_FUSED, {
             "pair": pair,
             "direction": intel.fused_direction,
             "confidence": intel.fused_confidence,
-            "regime": intel.regime.value
+            "regime": intel.regime.value if intel.regime else "unknown"
         })
+
+        # Broadcast intel update to dashboard via WebSocket (fire-and-forget)
+        try:
+            from api.websocket_manager import connection_manager
+            asyncio.create_task(connection_manager.broadcast_event("intel_update", {
+                "pair": pair,
+                "direction": intel.fused_direction,
+                "confidence": intel.fused_confidence,
+                "regime": intel.regime.value if intel.regime else "unknown",
+            }))
+        except Exception:
+            pass
 
         logger.info(
             f"{pair}: direction={intel.fused_direction:+.2f}, "
@@ -339,7 +351,7 @@ class Phase3Orchestrator:
         plan = await self.strategist.create_plan(intel, portfolio)
 
         # Publish plan event
-        await self._publish_event(EventType.TRADING_PLAN_CREATED, {
+        await self._publish_event(EventType.PLAN_CREATED, {
             "pair": pair,
             "signals_count": len(plan.signals)
         })
@@ -353,7 +365,7 @@ class Phase3Orchestrator:
                 result["anomaly_detected"] = True
 
         # Publish validation event
-        await self._publish_event(EventType.TRADING_PLAN_VALIDATED, {
+        await self._publish_event(EventType.PLAN_VALIDATED, {
             "pair": pair,
             "actionable": len(validated_plan.actionable_signals)
         })
@@ -371,8 +383,8 @@ class Phase3Orchestrator:
             # Record trade results for sentinel
             for trade in report.successful_trades:
                 await self.sentinel.record_trade_result({
-                    "pair": trade.get("pair"),
-                    "pnl": trade.get("pnl", 0)
+                    "pair": trade.pair,
+                    "pnl": trade.pnl or 0
                 })
 
             # Publish trade event
@@ -382,6 +394,43 @@ class Phase3Orchestrator:
                     "action": result["action"],
                     "trades": len(report.successful_trades)
                 })
+
+                # Broadcast trade to dashboard via WebSocket (fire-and-forget)
+                try:
+                    from api.websocket_manager import connection_manager
+                    for t in report.successful_trades:
+                        asyncio.create_task(connection_manager.broadcast_event("trade_executed", {
+                            "pair": t.pair,
+                            "action": result["action"],
+                            "price": getattr(t, "price", 0),
+                            "amount": getattr(t, "amount", 0),
+                        }))
+                except Exception:
+                    pass
+
+                # Send trade alerts if alert manager attached
+                if hasattr(self, '_alert_manager') and self._alert_manager:
+                    try:
+                        for trade in report.successful_trades:
+                            await self._alert_manager.send_alert(
+                                level="INFO",
+                                title="Trade Executed",
+                                message=f"{result['action']} {pair} @ ${current_price:,.2f}"
+                            )
+                    except Exception as e:
+                        logger.debug(f"Alert send failed: {e}")
+
+                # Record for adaptive risk manager
+                if hasattr(self, '_risk_manager') and self._risk_manager:
+                    try:
+                        for trade in report.successful_trades:
+                            self._risk_manager.record_trade(
+                                pair=pair,
+                                pnl=trade.pnl or 0,
+                                pnl_pct=trade.pnl_percent or 0,
+                            )
+                    except Exception as e:
+                        logger.debug(f"Risk manager record failed: {e}")
 
         return result
 
@@ -399,7 +448,7 @@ class Phase3Orchestrator:
                 return None
 
         # Run all analysts in parallel
-        tasks = [run_analyst(a) for a in self.analysts.values()]
+        tasks = [run_analyst(a) for a in self._analysts_dict.values()]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Filter out failures
@@ -407,8 +456,8 @@ class Phase3Orchestrator:
         for result in results:
             if isinstance(result, AnalystSignal):
                 signals.append(result)
-                await self._publish_event(EventType.ANALYSIS_SIGNAL_CREATED, {
-                    "analyst": result.analyst,
+                await self._publish_event(EventType.ANALYST_SIGNAL, {
+                    "analyst": result.source,
                     "pair": pair,
                     "direction": result.direction,
                     "confidence": result.confidence
@@ -440,8 +489,8 @@ class Phase3Orchestrator:
             # Update fusion weights
             new_weights = result.new_weights
             for analyst, weight in new_weights.items():
-                if analyst in self.analysts:
-                    self.analysts[analyst].weight = weight
+                if analyst in self._analysts_dict:
+                    self._analysts_dict[analyst].weight = weight
 
             logger.info(f"Weights optimized: {new_weights}")
 
@@ -453,14 +502,15 @@ class Phase3Orchestrator:
     async def _get_portfolio_state(self) -> Portfolio:
         """Fetch and construct current portfolio state."""
         balance = await self.exchange.get_balance()
+        qc = self.settings.trading.quote_currency
 
         positions = {}
         for asset, amount in balance.items():
-            if asset in ["AUD", "total"] or amount <= 0:
+            if asset in [qc, "total"] or amount <= 0:
                 continue
 
             try:
-                ticker = await self.exchange.get_ticker(f"{asset}/AUD")
+                ticker = await self.exchange.get_ticker(f"{asset}/{qc}")
                 current_price = ticker.get("price", 0)
             except:
                 current_price = 0
@@ -475,7 +525,7 @@ class Phase3Orchestrator:
             )
 
         return Portfolio(
-            available_quote=balance.get("AUD", 0),
+            available_quote=balance.get(qc, 0),
             positions=positions,
             initial_value=self.settings.trading.initial_capital,
             target_value=self.settings.trading.target_capital
@@ -529,7 +579,7 @@ class Phase3Orchestrator:
             "running": self._running,
             "cycle_count": self._cycle_count,
             "current_regime": self._current_regime.value if self._current_regime else None,
-            "analysts": list(self.analysts.keys()),
+            "analysts": list(self._analysts_dict.keys()),
             "weights": self.weight_optimizer.get_weights(),
             "anomaly_summary": self.sentinel.get_anomaly_summary(),
             "correlation_summary": self.sentinel.get_correlation_summary(),

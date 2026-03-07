@@ -106,17 +106,17 @@ class FullSentinel(ISentinel):
                 return self._block_all_trades(plan)
 
         # Check circuit breakers
-        if not await self.circuit_breakers.is_trading_allowed():
-            tripped = self.circuit_breakers.get_tripped_breakers()
-            logger.warning(f"Circuit breakers tripped: {tripped}")
-            await self._publish_event("CIRCUIT_BREAKER_TRIPPED", {"breakers": tripped})
+        can_trade, reason = self.circuit_breakers.check_all(
+            portfolio_value=getattr(portfolio, 'total_value', 0)
+        )
+        if not can_trade:
+            logger.warning(f"Circuit breakers tripped: {reason}")
+            await self._publish_event("CIRCUIT_BREAKER_TRIPPED", {"reason": reason})
             return self._block_all_trades(plan)
 
-        # Check anomaly for each signal
-        validated_signals = []
+        # Check anomaly for each signal (pre-filter before basic validation)
         for signal in plan.signals:
             if signal.action == TradeAction.HOLD:
-                validated_signals.append(signal)
                 continue
 
             # Check anomaly
@@ -138,7 +138,7 @@ class FullSentinel(ISentinel):
 
             # Check correlation for BUY signals (new positions)
             if signal.action == TradeAction.BUY:
-                current_positions = list(portfolio.holdings.keys()) if portfolio.holdings else []
+                current_positions = list(portfolio.positions.keys()) if portfolio.positions else []
                 is_allowed, corr_reason = await self.correlation_monitor.check_new_position(
                     new_pair=signal.pair,
                     current_positions=current_positions
@@ -147,17 +147,9 @@ class FullSentinel(ISentinel):
                     signal.action = TradeAction.HOLD
                     signal.reasoning = f"BLOCKED: {corr_reason}"
                     logger.warning(f"Position blocked by correlation monitor: {signal.pair}")
-                    validated_signals.append(signal)
-                    continue
 
-            # Apply basic validation
-            is_valid = await self.basic_sentinel.validate_signal(signal, portfolio)
-            if is_valid:
-                validated_signals.append(signal)
-
-        # Update plan with validated signals
-        plan.signals = validated_signals
-        plan.overall_confidence = sum(s.confidence for s in validated_signals) / len(validated_signals) if validated_signals else 0
+        # Delegate to basic sentinel for standard risk checks
+        plan = await self.basic_sentinel.validate_plan(plan, portfolio)
 
         return plan
 
@@ -170,7 +162,8 @@ class FullSentinel(ISentinel):
         if self._is_paused:
             return False
 
-        if not await self.circuit_breakers.is_trading_allowed():
+        can_trade, _ = self.circuit_breakers.check_all(portfolio_value=0)
+        if not can_trade:
             return False
 
         return True
@@ -178,9 +171,25 @@ class FullSentinel(ISentinel):
     async def emergency_stop(self) -> None:
         """Trigger emergency stop"""
         self._pause_trading(hours=24, reason="Emergency stop activated")
-        await self.circuit_breakers.trigger_emergency_stop()
+        self.circuit_breakers.reset_all()  # Trip all breakers to prevent trading
         await self._publish_event("EMERGENCY_STOP", {"reason": "Manual emergency stop"})
         logger.critical("EMERGENCY STOP ACTIVATED")
+
+    @property
+    def is_paused(self) -> bool:
+        """Check if trading is paused."""
+        return self._is_paused
+
+    def pause(self) -> None:
+        """Pause trading indefinitely."""
+        self._pause_trading(hours=8760, reason="Manual pause")
+
+    def resume(self) -> None:
+        """Resume trading."""
+        self._is_paused = False
+        self._pause_reason = None
+        self._pause_until = None
+        logger.info("Trading resumed (manual)")
 
     async def _check_anomaly(self, pair: str) -> AnomalyResult:
         """Check for anomalies in current market conditions"""
@@ -294,9 +303,8 @@ class FullSentinel(ISentinel):
 
     async def record_trade_result(self, trade_result: Dict) -> None:
         """Record trade result for circuit breaker tracking"""
-        await self.circuit_breakers.record_trade(
-            pnl=trade_result.get("pnl", 0),
-            is_win=trade_result.get("pnl", 0) > 0
+        self.circuit_breakers.record_trade(
+            pnl=trade_result.get("pnl", 0)
         )
 
     def get_correlation_summary(self) -> Dict:

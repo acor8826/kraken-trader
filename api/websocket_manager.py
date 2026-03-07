@@ -54,6 +54,12 @@ class ConnectionManager:
         for connection_id in dead_connections:
             await self.disconnect(connection_id)
 
+    async def broadcast_event(self, event_type: str, data: dict):
+        """Broadcast a typed event to all connected clients (fire-and-forget safe)."""
+        import time as _time
+        msg = {"type": event_type, "data": data, "timestamp": _time.time()}
+        await self.broadcast(msg)
+
     @property
     def connection_count(self) -> int:
         """Return the number of active connections."""

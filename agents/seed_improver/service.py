@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .analyzer import SeedImproverAnalyzer
-from .models import AnalysisResult
+from .auto_apply import AutoApplyPipeline
+from .deployer import SelfDeployer
+from .models import AnalysisResult, AutoApplyResult
+from .safety import SafetyValidator
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +23,17 @@ class SeedImproverResult:
     status: str
     summary: str
     analysis: Optional[AnalysisResult] = None
+    auto_apply: Optional[AutoApplyResult] = None
 
 
 class SeedImproverService:
-    """Seed improver service with Phase 0 audit + Phase 1 LLM analysis.
+    """Seed improver service with Phase 0 audit + Phase 1 LLM analysis + Phase 2 auto-apply.
 
     Phase 0: Observability audit (data coverage checks).
     Phase 1: LLM-powered analysis producing actionable recommendations.
+    Phase 2: Auto-apply config patches and self-deploy to Cloud Run.
 
-    Graceful degradation: if no LLM is provided, Phase 1 is skipped.
+    Graceful degradation: if no LLM is provided, Phase 1+2 are skipped.
     """
 
     def __init__(
@@ -37,6 +42,7 @@ class SeedImproverService:
         llm: Any = None,
         alert_manager: Any = None,
         repo_root: Optional[Path] = None,
+        auto_apply_config: Optional[Dict[str, Any]] = None,
     ):
         self.memory = memory
         self.llm = llm
@@ -53,6 +59,35 @@ class SeedImproverService:
             fallback.mkdir(parents=True, exist_ok=True)
             self.memory_dir = fallback
             logger.warning("SeedImprover using fallback writable dir: %s", self.memory_dir)
+
+        # Phase 2: Auto-apply setup
+        aa_cfg = auto_apply_config or {}
+        self.auto_apply_enabled = aa_cfg.get("auto_apply", False)
+        if self.auto_apply_enabled and llm:
+            safety = SafetyValidator(
+                max_patches_per_run=aa_cfg.get("max_patches_per_run", 3),
+                cooldown_hours=aa_cfg.get("cooldown_hours", 2.0),
+            )
+            deployer = SelfDeployer(
+                gcs_bucket=aa_cfg.get("gcs_config_bucket", ""),
+            )
+            self.auto_apply_pipeline = AutoApplyPipeline(
+                llm=llm,
+                safety=safety,
+                deployer=deployer,
+                config_path=self.repo_root / "config" / "stage2.yaml",
+                min_confidence=aa_cfg.get("min_confidence", 0.70),
+                max_risk=aa_cfg.get("max_risk", "low"),
+            )
+            logger.info("SeedImprover Phase 2 auto-apply ENABLED "
+                       "(confidence>=%.2f, risk<=%s, bucket=%s)",
+                       aa_cfg.get("min_confidence", 0.70),
+                       aa_cfg.get("max_risk", "low"),
+                       aa_cfg.get("gcs_config_bucket", ""))
+        else:
+            self.auto_apply_pipeline = None
+            if self.auto_apply_enabled and not llm:
+                logger.warning("Auto-apply enabled but no LLM provided, skipping Phase 2")
 
     async def run(self, trigger_type: str, context: Optional[Dict[str, Any]] = None) -> SeedImproverResult:
         context = context or {}
@@ -71,10 +106,21 @@ class SeedImproverService:
                 if analysis:
                     summary += f" | Phase1: {len(analysis.recommendations)} recommendations"
 
+            # Phase 2: Auto-apply (skipped if not enabled or no recommendations)
+            auto_apply_result = None
+            if analysis and self.auto_apply_pipeline:
+                auto_apply_result = await self._phase2_auto_apply(run_id, analysis)
+                if auto_apply_result:
+                    summary += (
+                        f" | Phase2: {len(auto_apply_result.patches_applied)} applied, "
+                        f"{len(auto_apply_result.patches_rejected)} rejected, "
+                        f"deploy={auto_apply_result.deploy_status}"
+                    )
+
             await self._record_run_complete(run_id, summary)
 
             # Send notification
-            await self._notify_run_complete(run_id, trigger_type, analysis)
+            await self._notify_run_complete(run_id, trigger_type, analysis, auto_apply_result)
 
             return SeedImproverResult(
                 run_id=run_id,
@@ -82,6 +128,7 @@ class SeedImproverService:
                 status="completed",
                 summary=summary,
                 analysis=analysis,
+                auto_apply=auto_apply_result,
             )
         except Exception as e:
             err = f"Seed improver failed: {e}"
@@ -200,8 +247,8 @@ class SeedImproverService:
     def _gather_config(self) -> Dict[str, Any]:
         """Snapshot current trading config."""
         try:
-            from core.config.settings import Settings
-            s = Settings.from_env()
+            from core.config.settings import init_settings
+            s = init_settings()
             return {
                 "pairs": s.trading.pairs,
                 "check_interval_minutes": s.trading.check_interval_minutes,
@@ -312,11 +359,69 @@ class SeedImproverService:
             logger.debug("Failed to append analysis to log: %s", e)
 
     # ------------------------------------------------------------------
+    # Phase 2: Auto-Apply
+    # ------------------------------------------------------------------
+
+    async def _phase2_auto_apply(
+        self, run_id: str, analysis: AnalysisResult
+    ) -> Optional[AutoApplyResult]:
+        """Run Phase 2: auto-apply config patches and self-deploy."""
+        if not analysis.recommendations:
+            logger.info("Skipping Phase 2: no recommendations to apply")
+            return None
+
+        try:
+            result = await self.auto_apply_pipeline.apply(analysis)
+
+            # Log to markdown
+            self._append_auto_apply_to_log(run_id, result)
+
+            logger.info(
+                "Phase 2 complete: proposed=%d, applied=%d, rejected=%d, deploy=%s",
+                len(result.patches_proposed),
+                len(result.patches_applied),
+                len(result.patches_rejected),
+                result.deploy_status,
+            )
+            return result
+        except Exception as e:
+            logger.warning("Phase 2 auto-apply failed: %s", e)
+            return AutoApplyResult(deploy_status="failed", error=str(e))
+
+    def _append_auto_apply_to_log(self, run_id: str, result: AutoApplyResult) -> None:
+        """Append Phase 2 auto-apply results to the day's markdown log."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        day_file = self.memory_dir / f"{today}.md"
+        try:
+            with day_file.open("a", encoding="utf-8") as f:
+                f.write(f"\n### Phase 2 Auto-Apply (Run {run_id})\n")
+                f.write(f"- Deploy status: {result.deploy_status}\n")
+                f.write(f"- Patches proposed: {len(result.patches_proposed)}\n")
+                f.write(f"- Patches applied: {len(result.patches_applied)}\n")
+                f.write(f"- Patches rejected: {len(result.patches_rejected)}\n")
+                if result.revision_id:
+                    f.write(f"- Revision: {result.revision_id}\n")
+                if result.rolled_back:
+                    f.write(f"- ROLLED BACK: {result.error}\n")
+                for p in result.patches_applied:
+                    f.write(f"  - APPLIED: {p.yaml_path}: {p.old_value} -> {p.new_value}\n")
+                for r in result.patches_rejected:
+                    f.write(f"  - REJECTED: {r['patch'].get('yaml_path', '?')} — {r['reason']}\n")
+                if result.error:
+                    f.write(f"- Error: {result.error}\n")
+        except Exception as e:
+            logger.debug("Failed to append auto-apply to log: %s", e)
+
+    # ------------------------------------------------------------------
     # Notifications
     # ------------------------------------------------------------------
 
     async def _notify_run_complete(
-        self, run_id: str, trigger_type: str, analysis: Optional[AnalysisResult]
+        self,
+        run_id: str,
+        trigger_type: str,
+        analysis: Optional[AnalysisResult],
+        auto_apply: Optional[AutoApplyResult] = None,
     ) -> None:
         """Send notification about completed run via alert manager."""
         if not self.alert_manager:
@@ -329,10 +434,19 @@ class SeedImproverService:
                 r = analysis.recommendations[0]
                 top_rec = f"\nTop: [{r.priority}] {r.change_summary}"
 
+            auto_apply_info = ""
+            if auto_apply and auto_apply.deploy_status != "skipped":
+                auto_apply_info = (
+                    f"\nAuto-Apply: {auto_apply.deploy_status} "
+                    f"({len(auto_apply.patches_applied)} patches applied)"
+                )
+                if auto_apply.rolled_back:
+                    auto_apply_info += " [ROLLED BACK]"
+
             msg = (
                 f"Seed Improver run completed\n"
                 f"Trigger: {trigger_type} | Run: {run_id}\n"
-                f"Recommendations: {rec_count}{top_rec}"
+                f"Recommendations: {rec_count}{top_rec}{auto_apply_info}"
             )
             await self.alert_manager.system_alert(msg, data={"run_id": run_id, "trigger": trigger_type})
         except Exception as e:

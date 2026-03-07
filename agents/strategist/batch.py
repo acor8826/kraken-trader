@@ -313,18 +313,53 @@ class RuleBasedBatchStrategist(IStrategist):
             "min_confidence": self.settings.risk.min_confidence
         }
 
+        # Extract pair rankings if provided
+        pair_ranks = risk.get("pair_ranks", {})
+
         signals = []
         for intel in intel_list:
             action = TradeAction.HOLD
             size_pct = 0.0
             reasoning = "Rule-based batch: "
 
-            if intel.fused_direction > 0.3 and intel.fused_confidence > 0.5:
+            # Get pair rank (1-based, None if not ranked)
+            pair_rank = pair_ranks.get(intel.pair)
+
+            # Lower thresholds for top-ranked pairs
+            buy_dir_threshold = 0.25
+            buy_conf_threshold = 0.50
+            if pair_rank is not None and pair_rank <= 2:
+                buy_dir_threshold = 0.05   # Very easy entry for top 2
+                buy_conf_threshold = 0.40
+            elif pair_rank == 3:
+                buy_dir_threshold = 0.15
+                buy_conf_threshold = 0.45
+
+            # FEAR_BUY: Contrarian accumulation in extreme fear
+            is_fear_buy = (
+                intel.fused_direction > 0.15
+                and intel.fused_confidence > 0.35
+                and intel.disagreement > 0.25
+            )
+
+            if is_fear_buy:
+                action = TradeAction.BUY
+                confidence = intel.fused_confidence
+                size_pct = risk["max_position_pct"] * 0.6 * min(1.0, abs(intel.fused_direction))
+                reasoning += (f"FEAR_BUY: Contrarian accumulation "
+                             f"(direction: {intel.fused_direction:+.2f}, "
+                             f"disagreement: {intel.disagreement:.2f})")
+            elif intel.fused_direction > buy_dir_threshold and intel.fused_confidence > buy_conf_threshold:
                 action = TradeAction.BUY
                 confidence = intel.fused_confidence
                 size_pct = risk["max_position_pct"] * min(1.0, abs(intel.fused_direction) + 0.2)
+                # Boost sizing for top-ranked pairs
+                if pair_rank is not None and pair_rank <= 2:
+                    size_pct = max(size_pct, risk["max_position_pct"] * 0.35)
                 reasoning += f"Bullish ({intel.fused_direction:+.2f})"
-            elif intel.fused_direction < -0.3 and intel.fused_confidence > 0.5:
+                if pair_rank:
+                    reasoning += f" [rank {pair_rank}]"
+            elif intel.fused_direction < -0.25 and intel.fused_confidence > 0.45:
                 action = TradeAction.SELL
                 confidence = intel.fused_confidence
                 size_pct = 1.0

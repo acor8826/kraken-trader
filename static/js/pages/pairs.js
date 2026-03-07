@@ -69,11 +69,28 @@ const PairsPage = {
         try {
             const [positions, portfolio] = await Promise.all([
                 api.getDetailedPositions().catch(() => null),
-                api.getPortfolio()
+                api.getPortfolio().catch(() => null)
             ]);
 
-            // Use positions if available, otherwise fall back to portfolio positions
-            const pairs = positions?.positions || portfolio?.positions || [];
+            // Detailed positions returns an array; portfolio.positions is an object
+            let pairs = [];
+            if (positions?.positions && Array.isArray(positions.positions)) {
+                pairs = positions.positions;
+            } else if (portfolio?.positions) {
+                // Convert object to array
+                const posObj = portfolio.positions;
+                pairs = Object.entries(posObj).map(([symbol, pos]) => ({
+                    symbol,
+                    pair: `${symbol}/${portfolio.quote_currency || 'USDT'}`,
+                    amount: pos.amount,
+                    entry_price: pos.entry_price,
+                    current_price: pos.current_price,
+                    pnl: pos.unrealized_pnl,
+                    pnl_percent: pos.unrealized_pnl_pct ? pos.unrealized_pnl_pct / 100 : 0,
+                    value: pos.value_quote,
+                    stop_loss: pos.stop_loss_price,
+                }));
+            }
             this.renderPairs(pairs);
 
         } catch (error) {
@@ -250,11 +267,17 @@ const PairsPage = {
                 crosshairMarkerVisible: false
             });
 
-            // Transform data
-            const data = ohlcv.candles.map(c => ({
-                time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000),
-                value: c.close
-            })).sort((a, b) => a.time - b.time);
+            // Transform data — candles are arrays [timestamp, o, h, l, c, v]
+            const data = ohlcv.candles.map(c => {
+                if (Array.isArray(c)) {
+                    return { time: Math.floor(c[0] / 1000), value: c[4] };
+                }
+                // Fallback for object format
+                return {
+                    time: Math.floor(new Date(c.timestamp || c.time).getTime() / 1000),
+                    value: c.close
+                };
+            }).sort((a, b) => a.time - b.time);
 
             areaSeries.setData(data);
             chart.timeScale().fitContent();

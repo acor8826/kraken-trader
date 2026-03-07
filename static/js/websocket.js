@@ -166,14 +166,24 @@ class WebSocketManager {
      * Handle incoming WebSocket message
      */
     handleMessage(data) {
-        // Update store with portfolio data
-        if (data.portfolio || data.total_value !== undefined) {
-            this.updateStoreFromPortfolio(data);
+        // Ignore pong and connection messages
+        if (data.type === 'pong' || data.type === 'connection') {
+            return;
         }
 
-        // Emit to listeners
+        // Handle typed events (trade_executed, intel_update, etc.)
+        if (data.type && data.data) {
+            this.emit(data.type, data.data);
+        }
+
+        // Update store with portfolio data (must have total_value)
+        if (data.total_value !== undefined) {
+            this.updateStoreFromPortfolio(data);
+            this.emit('portfolio', data);
+        }
+
+        // Emit to all message listeners
         this.emit('message', data);
-        this.emit('portfolio', data);
     }
 
     /**

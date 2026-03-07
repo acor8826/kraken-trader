@@ -29,6 +29,7 @@ class TradingConfig:
     initial_capital: float = 1000.0
     target_capital: float = 5000.0
     check_interval_minutes: int = 60
+    max_active_positions: int = 3
 
 
 @dataclass
@@ -149,7 +150,7 @@ class LLMConfig:
     """LLM configuration"""
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-20250514"
-    validation_model: str = "claude-haiku-3-5-20241022"
+    validation_model: str = "claude-haiku-4-5-20251001"
     api_key: str = ""
     max_tokens: int = 1000
 
@@ -269,12 +270,21 @@ class BreakevenConfig:
 
 
 @dataclass
+class TakeProfitTarget:
+    """A scaled take-profit level: sell sell_pct of remaining position at pct gain."""
+    pct: float       # e.g. 0.02 = +2%
+    sell_pct: float   # e.g. 0.50 = sell 50% of current position
+
+
+@dataclass
 class ExitManagementConfig:
     """Exit management settings for trailing stop, breakeven, etc."""
     enable_trailing_stop: bool = True
     enable_breakeven_stop: bool = True
     trailing_stop: TrailingStopConfig = field(default_factory=TrailingStopConfig)
     breakeven: BreakevenConfig = field(default_factory=BreakevenConfig)
+    take_profit_targets: List[TakeProfitTarget] = field(default_factory=list)
+    max_hold_hours: Optional[float] = None
 
 
 @dataclass
@@ -448,6 +458,16 @@ class Settings:
         exit_data = data.get("exit_management", {})
         trailing_data = exit_data.get("trailing_stop", {})
         breakeven_data = exit_data.get("breakeven", {})
+        # Parse take-profit targets
+        tp_targets_data = exit_data.get("take_profit_targets", [])
+        tp_targets = [
+            TakeProfitTarget(
+                pct=float(t.get("pct", 0)),
+                sell_pct=float(t.get("sell_pct", 0)),
+            )
+            for t in tp_targets_data
+        ]
+
         exit_management = ExitManagementConfig(
             enable_trailing_stop=exit_data.get("enable_trailing_stop", True),
             enable_breakeven_stop=exit_data.get("enable_breakeven_stop", True),
@@ -459,6 +479,8 @@ class Settings:
                 activation_pct=breakeven_data.get("activation_pct", 0.005),
                 buffer_pct=breakeven_data.get("buffer_pct", 0.001),
             ),
+            take_profit_targets=tp_targets,
+            max_hold_hours=exit_data.get("max_hold_hours"),
         )
 
         # Parse adaptive risk config
@@ -495,8 +517,47 @@ def get_settings() -> Settings:
     return _settings
 
 
+def _try_load_from_gcs(bucket_name: str, blob_name: str, local_path: str) -> bool:
+    """Attempt to download config from GCS and save locally.
+
+    Returns True if GCS config was downloaded, False otherwise.
+    """
+    try:
+        import httpx
+        # Use GCE metadata server for auth (works on Cloud Run)
+        token_url = (
+            "http://metadata.google.internal/computeMetadata/v1/"
+            "instance/service-accounts/default/token"
+        )
+        token_resp = httpx.get(token_url, headers={"Metadata-Flavor": "Google"}, timeout=3)
+        if token_resp.status_code != 200:
+            return False
+        token = token_resp.json()["access_token"]
+
+        gcs_url = (
+            f"https://storage.googleapis.com/storage/v1/b/"
+            f"{bucket_name}/o/{blob_name}?alt=media"
+        )
+        resp = httpx.get(gcs_url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        if resp.status_code == 200:
+            with open(local_path, "w", encoding="utf-8") as f:
+                f.write(resp.text)
+            logger.info("Loaded config from GCS: gs://%s/%s", bucket_name, blob_name)
+            return True
+    except Exception as e:
+        logger.debug("GCS config load failed (using local): %s", e)
+    return False
+
+
 def init_settings(stage: Stage = None, config_path: str = None) -> Settings:
-    """Initialize settings from stage or config file"""
+    """Initialize settings from stage or config file.
+
+    Load order:
+    1. Explicit config_path if provided
+    2. GCS bucket if GCS_CONFIG_BUCKET env var is set
+    3. Local YAML file based on stage
+    4. Default settings
+    """
     global _settings
     if config_path:
         _settings = Settings.from_yaml(config_path)
@@ -508,6 +569,14 @@ def init_settings(stage: Stage = None, config_path: str = None) -> Settings:
             "config",
             f"{stage.value}.yaml"
         )
+
+        # Try GCS first (for auto-applied configs)
+        gcs_bucket = os.getenv("GCS_CONFIG_BUCKET", "")
+        if gcs_bucket:
+            blob_name = f"{stage.value}.yaml"
+            if _try_load_from_gcs(gcs_bucket, blob_name, yaml_path):
+                logger.info("Using GCS-sourced config at %s", yaml_path)
+
         if os.path.exists(yaml_path):
             logger.info(f"Loading config from {yaml_path}")
             _settings = Settings.from_yaml(yaml_path)

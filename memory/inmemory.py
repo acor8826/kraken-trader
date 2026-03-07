@@ -108,24 +108,71 @@ class InMemoryStore(IMemory):
         self._peak_prices.pop(symbol, None)
 
     async def get_performance_summary(self) -> Dict:
-        """Get trading performance summary"""
+        """Get trading performance summary with full metrics."""
         if not self._trades:
             return {
                 "total_trades": 0,
                 "winning_trades": 0,
                 "losing_trades": 0,
                 "total_pnl": 0.0,
-                "win_rate": 0.0
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "max_drawdown": 0.0,
+                "total_exposure": 0.0,
+                "sharpe_ratio": 0.0,
             }
-        
+
         winning = [t for t in self._trades if t.realized_pnl and t.realized_pnl > 0]
         losing = [t for t in self._trades if t.realized_pnl and t.realized_pnl < 0]
         total_pnl = sum(t.realized_pnl or 0 for t in self._trades)
-        
+
+        # Profit factor
+        gross_profit = sum(t.realized_pnl for t in winning) if winning else 0
+        gross_loss = abs(sum(t.realized_pnl for t in losing)) if losing else 0
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (gross_profit if gross_profit > 0 else 0.0)
+
+        # Max drawdown from cumulative PnL curve
+        max_drawdown = 0.0
+        cumulative = 0.0
+        peak = 0.0
+        for t in self._trades:
+            cumulative += t.realized_pnl or 0
+            if cumulative > peak:
+                peak = cumulative
+            dd = (peak - cumulative) / self._portfolio.initial_value if self._portfolio.initial_value else 0
+            if dd > max_drawdown:
+                max_drawdown = dd
+
+        # Total exposure: fraction of portfolio currently in positions
+        total_value = self._portfolio.total_value or self._portfolio.initial_value or 1
+        positions_value = sum(
+            pos.amount * (pos.current_price or pos.entry_price or 0)
+            for pos in self._portfolio.positions.values()
+        )
+        total_exposure = positions_value / total_value if total_value > 0 else 0.0
+
+        # Sharpe ratio from trade returns
+        returns = [t.realized_pnl / self._portfolio.initial_value for t in self._trades if t.realized_pnl is not None] if self._portfolio.initial_value else []
+        if len(returns) >= 2:
+            import statistics
+            mean_ret = statistics.mean(returns)
+            std_ret = statistics.stdev(returns)
+            sharpe_ratio = mean_ret / std_ret if std_ret > 0 else 0.0
+        else:
+            sharpe_ratio = 0.0
+
         return {
             "total_trades": len(self._trades),
             "winning_trades": len(winning),
             "losing_trades": len(losing),
             "total_pnl": total_pnl,
-            "win_rate": len(winning) / len(self._trades) if self._trades else 0
+            "win_rate": len(winning) / len(self._trades) if self._trades else 0,
+            "profit_factor": round(profit_factor, 2),
+            "max_drawdown": round(max_drawdown, 4),
+            "total_exposure": round(total_exposure, 4),
+            "sharpe_ratio": round(sharpe_ratio, 2),
         }
+
+    async def save_signal(self, signal_data: Dict) -> None:
+        """Store signal data (no-op for in-memory, silences learning module errors)."""
+        pass

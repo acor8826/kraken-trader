@@ -110,11 +110,17 @@ class CryptoNewsAPI:
             logger.warning(f"No news data returned for {asset}")
             return []
 
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                logger.debug(f"No news available for {asset} (404)")
+            else:
+                logger.warning(f"HTTP error fetching news for {asset}: {e}")
+            return []
         except httpx.HTTPError as e:
-            logger.error(f"HTTP error fetching news for {asset}: {e}")
+            logger.warning(f"HTTP error fetching news for {asset}: {e}")
             return []
         except Exception as e:
-            logger.error(f"Error fetching news for {asset}: {e}")
+            logger.warning(f"Error fetching news for {asset}: {e}")
             return []
 
     async def get_trending_news(self, limit: int = 20) -> Optional[List[Dict]]:

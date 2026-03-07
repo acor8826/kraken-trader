@@ -57,6 +57,7 @@ class OnChainAnalyst(IAnalyst):
         self.whale_tracker = WhaleTracker(self.glassnode)
         self.exchange_flow_analyzer = ExchangeFlowAnalyzer(self.glassnode)
 
+        self._weight = 0.20  # 20% weight
         logger.info("OnChainAnalyst initialized with Glassnode integration")
 
     @property
@@ -67,7 +68,11 @@ class OnChainAnalyst(IAnalyst):
     @property
     def weight(self) -> float:
         """Default weight in intelligence fusion"""
-        return 0.20  # 20% weight
+        return self._weight
+
+    @weight.setter
+    def weight(self, value: float):
+        self._weight = value
 
     async def analyze(self, pair: str, market_data: Dict) -> AnalystSignal:
         """

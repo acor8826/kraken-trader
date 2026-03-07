@@ -401,9 +401,13 @@ class BinanceExchange(IExchange):
     # -------------------------------------------------------- get_market_data
 
     async def get_market_data(self, pair: str) -> MarketData:
-        """Compose ticker + OHLCV into a MarketData object."""
+        """Compose ticker + OHLCV into a MarketData object (multi-timeframe)."""
         ticker = await self.get_ticker(pair)
         ohlcv = await self.get_ohlcv(pair, interval=60, limit=24)
+        ohlcv_15m = await self.get_ohlcv(pair, interval=15, limit=48)
+        ohlcv_5m = await self.get_ohlcv(pair, interval=5, limit=48)
+        ohlcv_1m = await self.get_ohlcv(pair, interval=1, limit=60)
+        ohlcv_3m = await self.get_ohlcv(pair, interval=3, limit=60)
         return MarketData(
             pair=pair,
             current_price=ticker["price"],
@@ -413,6 +417,10 @@ class BinanceExchange(IExchange):
             vwap_24h=ticker.get("vwap_24h"),
             trades_24h=ticker.get("trades_24h"),
             ohlcv=ohlcv,
+            ohlcv_5m=ohlcv_5m,
+            ohlcv_15m=ohlcv_15m,
+            ohlcv_1m=ohlcv_1m,
+            ohlcv_3m=ohlcv_3m,
         )
 
     # ------------------------------------------------------------- market_buy

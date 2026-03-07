@@ -191,16 +191,17 @@ class TradingPlan:
     regime: str = "unknown"
     overall_confidence: float = 0.0
     reasoning: str = ""
+    metadata: Dict = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    
+
     @property
     def approved_signals(self) -> List[TradeSignal]:
         return [s for s in self.signals if s.status == TradeStatus.APPROVED]
-    
+
     @property
     def rejected_signals(self) -> List[TradeSignal]:
         return [s for s in self.signals if s.status == TradeStatus.REJECTED]
-    
+
     @property
     def actionable_signals(self) -> List[TradeSignal]:
         """Signals that require action (not HOLD)"""

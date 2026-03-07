@@ -223,10 +223,14 @@ class IntelligenceFusion:
         variance = sum((d - mean_dir) ** 2 for d in directions) / len(directions)
         disagreement = min(1.0, variance ** 0.5)  # Std dev, clamped to [0,1]
 
-        # Confidence: average of confidences, penalized by disagreement
-        # Use lighter penalty when analysts agree on direction (same sign)
-        avg_confidence = sum(s.confidence for s in signals) / len(signals)
-        all_same_sign = all(d >= 0 for d in directions) or all(d <= 0 for d in directions)
+        # Confidence: average of active analysts only (skip zero-confidence = no data)
+        # Penalize by disagreement among active analysts
+        active = [s for s in signals if s.confidence > 0.01]
+        if not active:
+            active = signals
+        avg_confidence = sum(s.confidence for s in active) / len(active)
+        active_dirs = [s.direction for s in active]
+        all_same_sign = all(d >= 0 for d in active_dirs) or all(d <= 0 for d in active_dirs)
         if all_same_sign:
             # Magnitude disagreement only — less concerning
             fused_confidence = avg_confidence * (1 - disagreement * 0.15)

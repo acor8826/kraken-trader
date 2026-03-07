@@ -50,34 +50,34 @@ STRATEGY_LIBRARY = {
         name="Trend Follow",
         description="Ride momentum in established trends with trailing stops",
         preferred_regimes=[Regime.TRENDING_UP, Regime.TRENDING_DOWN],
-        min_confidence=0.55,
+        min_confidence=0.45,
         position_sizing="aggressive",
-        stop_loss_multiplier=1.5,  # Wider stops for trends
-        take_profit_multiplier=3.0
+        stop_loss_multiplier=1.5,
+        take_profit_multiplier=2.5
     ),
     Strategy.MEAN_REVERT: StrategyConfig(
         name="Mean Reversion",
         description="Fade extremes with tight stops, expecting return to mean",
         preferred_regimes=[Regime.RANGING],
-        min_confidence=0.65,
+        min_confidence=0.50,
         position_sizing="moderate",
-        stop_loss_multiplier=0.75,  # Tighter stops
+        stop_loss_multiplier=0.75,
         take_profit_multiplier=1.5
     ),
     Strategy.BREAKOUT: StrategyConfig(
         name="Breakout",
         description="Trade volatility expansion with momentum confirmation",
         preferred_regimes=[Regime.VOLATILE],
-        min_confidence=0.70,
+        min_confidence=0.55,
         position_sizing="conservative",
-        stop_loss_multiplier=2.0,  # Wide stops for volatility
+        stop_loss_multiplier=2.0,
         take_profit_multiplier=2.5
     ),
     Strategy.ACCUMULATE: StrategyConfig(
         name="Accumulate",
         description="DCA into position during uncertainty or corrections",
         preferred_regimes=[Regime.UNKNOWN, Regime.RANGING],
-        min_confidence=0.50,
+        min_confidence=0.40,
         position_sizing="conservative",
         stop_loss_multiplier=1.0,
         take_profit_multiplier=2.0
@@ -175,10 +175,16 @@ class AdvancedStrategist(IStrategist):
                 decision = await self._llm_decision(intel, portfolio, risk, strategy)
                 return self._build_plan(intel, decision, strategy_config, risk)
             except Exception as e:
-                logger.warning(f"LLM decision failed, using rule-based: {e}")
+                logger.warning(f"[{intel.pair}] LLM decision failed ({type(e).__name__}: {e}), using RULE-BASED fallback")
+        else:
+            logger.info(f"[{intel.pair}] No LLM configured, using RULE-BASED strategy")
 
         # Fall back to rule-based decision
-        decision = self._rule_based_decision(intel, strategy, risk)
+        pair_rank = risk.get("pair_ranks", {}).get(intel.pair) if risk else None
+        decision = self._rule_based_decision(intel, strategy, risk, pair_rank=pair_rank)
+        logger.info(f"[{intel.pair}] Rule-based decision: {decision.get('action')} "
+                     f"(confidence={decision.get('confidence', 0):.2f}, strategy={decision.get('strategy')}"
+                     f"{f', rank={pair_rank}' if pair_rank else ''})")
         return self._build_plan(intel, decision, strategy_config, risk)
 
     def _select_strategy(self, intel: MarketIntel) -> Strategy:
@@ -251,15 +257,39 @@ Generate your decision as JSON."""
             system_prompt=ADVANCED_SYSTEM_PROMPT
         )
 
+        # LLM sometimes returns a list or string; normalize to dict
+        if isinstance(decision, str):
+            import json, re
+            # Try direct parse first
+            try:
+                decision = json.loads(decision)
+            except (json.JSONDecodeError, ValueError):
+                # Try to extract JSON object from text
+                m = re.search(r'\{[\s\S]*\}', decision)
+                if m:
+                    decision = json.loads(m.group())
+                else:
+                    raise ValueError(f"Could not extract JSON from LLM string response")
+        if isinstance(decision, list):
+            decision = decision[0] if decision else {}
+        if not isinstance(decision, dict):
+            raise ValueError(f"LLM returned unexpected type: {type(decision)}")
+
         return decision
 
     def _rule_based_decision(
         self,
         intel: MarketIntel,
         strategy: Strategy,
-        risk: Dict
+        risk: Dict,
+        pair_rank: int = None
     ) -> Dict:
-        """Generate decision using rules (LLM fallback)"""
+        """Generate decision using rules (LLM fallback).
+
+        Args:
+            pair_rank: 1-based rank of this pair by signal strength (1=strongest).
+                       Used to lower thresholds for top-ranked pairs.
+        """
         config = STRATEGY_LIBRARY[strategy]
 
         # Determine action based on signal and strategy
@@ -268,48 +298,61 @@ Generate your decision as JSON."""
         size_pct = 0.0
         stop_distance = risk["stop_loss_pct"] * config.stop_loss_multiplier
 
+        # Lower direction threshold for top-ranked pairs
+        buy_direction_threshold = 0.15  # default
+        if pair_rank is not None and pair_rank <= 2:
+            buy_direction_threshold = 0.05  # Very easy entry for top 2 pairs
+
         # Strategy-specific logic
         if strategy == Strategy.TREND_FOLLOW:
-            if intel.regime == Regime.TRENDING_UP and intel.fused_direction > 0.3:
+            if intel.regime == Regime.TRENDING_UP and intel.fused_direction > buy_direction_threshold:
                 action = "BUY"
-                confidence = min(0.9, intel.fused_confidence * 1.1)
+                # Scale confidence with direction strength
+                direction_boost = min(1.0, abs(intel.fused_direction) / 0.5)
+                confidence = min(0.9, intel.fused_confidence * (0.9 + 0.2 * direction_boost))
                 size_pct = risk["max_position_pct"] * 0.8
-            elif intel.regime == Regime.TRENDING_DOWN and intel.fused_direction < -0.3:
+            elif intel.regime == Regime.TRENDING_DOWN and intel.fused_direction < -0.15:
                 action = "SELL"
                 confidence = min(0.9, intel.fused_confidence * 1.1)
                 size_pct = 1.0  # Full exit in downtrend
 
         elif strategy == Strategy.MEAN_REVERT:
             # Look for extremes to fade
-            if intel.fused_direction < -0.5 and intel.fused_confidence > 0.6:
+            if intel.fused_direction < -0.3 and intel.fused_confidence > 0.45:
                 action = "BUY"  # Buy the dip
                 confidence = intel.fused_confidence * 0.9
                 size_pct = risk["max_position_pct"] * 0.5
-            elif intel.fused_direction > 0.5 and intel.fused_confidence > 0.6:
+            elif intel.fused_direction > 0.3 and intel.fused_confidence > 0.45:
                 action = "SELL"  # Sell the rip
                 confidence = intel.fused_confidence * 0.9
                 size_pct = 1.0
 
         elif strategy == Strategy.BREAKOUT:
             # Trade strong moves in volatile conditions
-            if abs(intel.fused_direction) > 0.6 and intel.fused_confidence > 0.65:
+            if abs(intel.fused_direction) > 0.4 and intel.fused_confidence > 0.50:
                 action = "BUY" if intel.fused_direction > 0 else "SELL"
                 confidence = intel.fused_confidence
                 size_pct = risk["max_position_pct"] * 0.4
 
         elif strategy == Strategy.ACCUMULATE:
             # Gradual entry on moderate signals
-            if intel.fused_direction > 0.2 and intel.fused_confidence > 0.5:
+            dir_threshold = buy_direction_threshold if pair_rank and pair_rank <= 2 else 0.10
+            if intel.fused_direction > dir_threshold and intel.fused_confidence > 0.40:
                 action = "BUY"
                 confidence = intel.fused_confidence * 0.8
                 size_pct = risk["max_position_pct"] * 0.25  # Small bites
 
         elif strategy == Strategy.RISK_OFF:
             # Reduce exposure or stay out
-            if intel.fused_direction < -0.2:
+            if intel.fused_direction < -0.15:
                 action = "SELL"
                 confidence = 0.7
                 size_pct = 0.5  # Partial exit
+
+        # Boost sizing for top-ranked pairs when capital is idle
+        if action == "BUY" and pair_rank is not None and pair_rank <= 2:
+            if strategy in (Strategy.ACCUMULATE, Strategy.TREND_FOLLOW):
+                size_pct = max(size_pct, risk["max_position_pct"] * 0.35)
 
         reasoning = f"{strategy.value}: {config.description}. "
         if action != "HOLD":

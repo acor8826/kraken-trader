@@ -98,9 +98,13 @@ class MockExchange(IExchange):
         return candles
 
     async def get_market_data(self, pair: str) -> MarketData:
-        """Get comprehensive market data for analysis"""
+        """Get comprehensive market data for analysis (multi-timeframe)"""
         ticker = await self.get_ticker(pair)
         ohlcv = await self.get_ohlcv(pair, interval=60, limit=24)
+        ohlcv_15m = await self.get_ohlcv(pair, interval=15, limit=48)
+        ohlcv_5m = await self.get_ohlcv(pair, interval=5, limit=48)
+        ohlcv_1m = await self.get_ohlcv(pair, interval=1, limit=60)
+        ohlcv_3m = await self.get_ohlcv(pair, interval=3, limit=60)
 
         return MarketData(
             pair=pair,
@@ -108,7 +112,11 @@ class MockExchange(IExchange):
             high_24h=ticker["high_24h"],
             low_24h=ticker["low_24h"],
             volume_24h=ticker["volume_24h"],
-            ohlcv=ohlcv
+            ohlcv=ohlcv,
+            ohlcv_5m=ohlcv_5m,
+            ohlcv_15m=ohlcv_15m,
+            ohlcv_1m=ohlcv_1m,
+            ohlcv_3m=ohlcv_3m
         )
 
     async def market_buy(self, pair: str, amount_quote: float) -> Dict:

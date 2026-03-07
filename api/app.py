@@ -10,7 +10,7 @@ from typing import Optional
 import logging
 import time
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -153,7 +153,7 @@ async def _create_orchestrator(settings: Settings):
     from agents.strategist.cost_optimized import CostOptimizedStrategist
     from agents.sentinel import BasicSentinel
     from agents.executor import SimpleExecutor
-    from agents.orchestrator import Orchestrator
+    from agents.orchestrator import Orchestrator, Phase3Orchestrator
     from memory import InMemoryStore
 
     # Exchange
@@ -163,8 +163,8 @@ async def _create_orchestrator(settings: Settings):
             from integrations.exchanges.simulation import SimulationExchange, SimulationConfig, MarketScenario
             import os
 
-            # Get scenario from environment or default to ranging
-            scenario_name = os.getenv("SIMULATION_SCENARIO", "ranging")
+            # Get scenario from environment or default to volatile
+            scenario_name = os.getenv("SIMULATION_SCENARIO", "volatile")
             try:
                 scenario = MarketScenario(scenario_name)
             except ValueError:
@@ -201,7 +201,7 @@ async def _create_orchestrator(settings: Settings):
 
     # Memory - Phase 2: PostgreSQL or Phase 1: In-Memory
     cache = None
-    if settings.stage.value == "stage2" and settings.features.enable_postgres:
+    if settings.stage.value in ("stage2", "stage3") and settings.features.enable_postgres:
         try:
             from memory.postgres import PostgresStore
             from memory.redis_cache import RedisCache
@@ -227,32 +227,37 @@ async def _create_orchestrator(settings: Settings):
         logger.info("Using in-memory storage (Phase 1)")
 
     # =========================================================================
-    # Cost-Optimized Strategist
+    # Strategist / Sentinel / Executor (Stage 1/2 only — Phase3 creates its own)
     # =========================================================================
-    cost_opt = settings.cost_optimization
-    if cost_opt.enable_batch_analysis or cost_opt.enable_hybrid_mode:
-        # Use cost-optimized strategist
-        strategist = CostOptimizedStrategist(
-            llm=llm,
-            cache=cache if cost_opt.enable_decision_cache else None,
-            settings=settings
-        )
-        opt_features = []
-        if cost_opt.enable_batch_analysis:
-            opt_features.append("batch")
-        if cost_opt.enable_hybrid_mode:
-            opt_features.append("hybrid")
-        if cost_opt.enable_decision_cache and cache:
-            opt_features.append("cache")
-        logger.info(f"[COST_OPT] Using cost-optimized strategist: {', '.join(opt_features)}")
-    elif llm:
-        # Standard LLM strategist
-        strategist = SimpleStrategist(llm, settings)
-        logger.info("Using standard Claude strategist")
-    else:
-        # No LLM - rules only
-        strategist = RuleBasedStrategist(settings)
-        logger.info("Using rule-based strategist (no LLM)")
+    strategist = None
+    sentinel = None
+    executor = None
+
+    if settings.stage != Stage.STAGE_3_FULL:
+        cost_opt = settings.cost_optimization
+        if cost_opt.enable_batch_analysis or cost_opt.enable_hybrid_mode:
+            # Use cost-optimized strategist
+            strategist = CostOptimizedStrategist(
+                llm=llm,
+                cache=cache if cost_opt.enable_decision_cache else None,
+                settings=settings
+            )
+            opt_features = []
+            if cost_opt.enable_batch_analysis:
+                opt_features.append("batch")
+            if cost_opt.enable_hybrid_mode:
+                opt_features.append("hybrid")
+            if cost_opt.enable_decision_cache and cache:
+                opt_features.append("cache")
+            logger.info(f"[COST_OPT] Using cost-optimized strategist: {', '.join(opt_features)}")
+        elif llm:
+            # Standard LLM strategist
+            strategist = SimpleStrategist(llm, settings)
+            logger.info("Using standard Claude strategist")
+        else:
+            # No LLM - rules only
+            strategist = RuleBasedStrategist(settings)
+            logger.info("Using rule-based strategist (no LLM)")
 
     # Log risk profile
     if settings.risk_profile == "aggressive":
@@ -260,11 +265,11 @@ async def _create_orchestrator(settings: Settings):
                    f"position={settings.aggressive_risk.max_position_pct:.0%}, "
                    f"confidence={settings.aggressive_risk.min_confidence:.0%}")
 
-    # Analysts - Phase 2: Technical + Sentiment
+    # Analysts - Technical always, Sentiment for Stage 2+, full set for Stage 3
     analysts = [TechnicalAnalyst()]
     logger.info("✅ Technical analyst initialized")
 
-    if settings.stage.value == "stage2" and settings.features.enable_sentiment_analyst:
+    if settings.stage.value in ("stage2", "stage3") and settings.features.enable_sentiment_analyst:
         try:
             from integrations.data import FearGreedAPI, CryptoNewsAPI
             from agents.analysts.sentiment import SentimentAnalyst
@@ -277,47 +282,89 @@ async def _create_orchestrator(settings: Settings):
         except Exception as e:
             logger.warning(f"Failed to initialize sentiment analyst: {e}")
 
-    # Sentinel - Phase 2: Enhanced with Circuit Breakers
-    if settings.stage.value == "stage2" and settings.features.enable_circuit_breakers:
-        try:
-            from agents.sentinel.circuit_breakers import CircuitBreakers
+    # Stage 3: Additional analysts
+    if settings.stage == Stage.STAGE_3_FULL:
+        if settings.features.enable_onchain_analyst:
+            try:
+                from agents.analysts.onchain import OnChainAnalyst
+                analysts.append(OnChainAnalyst(cache=cache))
+                logger.info("✅ OnChainAnalyst initialized (Glassnode)")
+            except Exception as e:
+                logger.warning(f"Failed to init on-chain analyst: {e}")
 
-            circuit_breakers = CircuitBreakers(
-                max_daily_loss_pct=settings.risk.max_daily_loss_pct,
-                max_daily_trades=settings.risk.max_daily_trades,
-                volatility_threshold_pct=0.10,
-                consecutive_loss_limit=3
-            )
-            logger.info("✅ Circuit breakers initialized")
+        if settings.features.enable_macro_analyst:
+            try:
+                from agents.analysts.macro import MacroAnalyst
+                analysts.append(MacroAnalyst(cache=cache))
+                logger.info("✅ MacroAnalyst initialized (FRED)")
+            except Exception as e:
+                logger.warning(f"Failed to init macro analyst: {e}")
 
-            # TODO: Create EnhancedSentinel that uses circuit_breakers
-            # For now, use BasicSentinel
+        if settings.features.enable_orderbook_analyst:
+            try:
+                from agents.analysts.orderbook import OrderBookAnalyst
+                analysts.append(OrderBookAnalyst(exchange=exchange))
+                logger.info("✅ OrderBookAnalyst initialized")
+            except Exception as e:
+                logger.warning(f"Failed to init orderbook analyst: {e}")
+
+    # Sentinel - Phase 2: Enhanced with Circuit Breakers (Stage 1/2 only)
+    if settings.stage != Stage.STAGE_3_FULL:
+        if settings.stage.value == "stage2" and settings.features.enable_circuit_breakers:
+            try:
+                from agents.sentinel.circuit_breakers import CircuitBreakers
+
+                circuit_breakers = CircuitBreakers(
+                    max_daily_loss_pct=settings.risk.max_daily_loss_pct,
+                    max_daily_trades=settings.risk.max_daily_trades,
+                    volatility_threshold_pct=0.10,
+                    consecutive_loss_limit=3
+                )
+                logger.info("✅ Circuit breakers initialized")
+
+                sentinel = BasicSentinel(memory, settings)
+                sentinel.circuit_breakers = circuit_breakers
+            except Exception as e:
+                logger.warning(f"Failed to initialize circuit breakers: {e}")
+                sentinel = BasicSentinel(memory, settings)
+        else:
             sentinel = BasicSentinel(memory, settings)
-            sentinel.circuit_breakers = circuit_breakers  # Attach for manual use
-        except Exception as e:
-            logger.warning(f"Failed to initialize circuit breakers: {e}")
-            sentinel = BasicSentinel(memory, settings)
-    else:
-        sentinel = BasicSentinel(memory, settings)
 
-    # Executor
-    executor = SimpleExecutor(exchange, memory, settings)
+        # Executor
+        executor = SimpleExecutor(exchange, memory, settings)
 
     # Orchestrator
-    orch = Orchestrator(
-        exchange=exchange,
-        analysts=analysts,
-        strategist=strategist,
-        sentinel=sentinel,
-        executor=executor,
-        memory=memory,
-        settings=settings
-    )
+    if settings.stage == Stage.STAGE_3_FULL:
+        from core.events import get_event_bus
+        event_bus = get_event_bus()
+
+        orch = Phase3Orchestrator(
+            exchange=exchange,
+            analysts=analysts,
+            memory=memory,
+            settings=settings,
+            event_bus=event_bus,
+            llm=llm
+        )
+        logger.info(f"🚀 Phase3Orchestrator created with {len(analysts)} analysts")
+    else:
+        orch = Orchestrator(
+            exchange=exchange,
+            analysts=analysts,
+            strategist=strategist,
+            sentinel=sentinel,
+            executor=executor,
+            memory=memory,
+            settings=settings
+        )
 
     # Attach cache, circuit breakers, and LLM for access in routes
     orch._cache = cache
-    orch._circuit_breakers = getattr(sentinel, 'circuit_breakers', None)
     orch._llm = llm
+    if settings.stage == Stage.STAGE_3_FULL:
+        orch._circuit_breakers = orch.sentinel.circuit_breakers
+    else:
+        orch._circuit_breakers = getattr(sentinel, 'circuit_breakers', None)
 
     # =========================================================================
     # Alert Manager
@@ -475,17 +522,33 @@ async def _create_orchestrator(settings: Settings):
     else:
         logger.info("Meme trading module disabled (set ENABLE_MEME_TRADING=true to enable)")
 
-    # Seed improver service (Phase 0 + Phase 1)
+    # Seed improver service (Phase 0 + Phase 1 + Phase 2 auto-apply)
     global seed_improver
     try:
         from agents.seed_improver import SeedImproverService
+
+        # Load seed_improver config from YAML if available
+        auto_apply_config = {}
+        try:
+            import yaml as _yaml
+            _cfg_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", f"{settings.stage.value}.yaml")
+            if os.path.exists(_cfg_path):
+                with open(_cfg_path) as _f:
+                    _raw = _yaml.safe_load(_f)
+                    auto_apply_config = _raw.get("seed_improver", {})
+        except Exception:
+            pass
+
         seed_improver = SeedImproverService(
             memory=memory,
             llm=llm,
             alert_manager=alert_manager,
+            auto_apply_config=auto_apply_config,
         )
         phase = "Phase 0 + 1" if llm else "Phase 0 only (no LLM)"
-        logger.info(f"✅ SeedImprover initialized ({phase})")
+        if auto_apply_config.get("auto_apply"):
+            phase += " + Phase 2 (auto-apply)"
+        logger.info(f"SeedImprover initialized ({phase})")
 
         from api.routes.seed_improver import set_seed_improver
         set_seed_improver(seed_improver, memory)
@@ -521,7 +584,10 @@ async def _run_seed_improver_daily():
     global seed_improver
     if seed_improver:
         try:
-            await seed_improver.run("scheduled", {"source": "apscheduler"})
+            result = await seed_improver.run("scheduled", {"source": "apscheduler"})
+            # Store in the in-memory route log
+            from api.routes.seed_improver import _store_run_in_memory
+            _store_run_in_memory(result)
         except Exception as e:
             logger.error(f"Seed improver daily run error: {e}", exc_info=True)
 
@@ -556,7 +622,7 @@ def _register_routes(app: FastAPI):
     @app.get("/")
     async def root():
         """Redirect to dashboard"""
-        return RedirectResponse(url="/dashboard/index-bassie.html")
+        return RedirectResponse(url="/dashboard/")
 
     @app.get("/api/status")
     async def api_status():
@@ -570,6 +636,100 @@ def _register_routes(app: FastAPI):
             "simulation_mode": settings.features.simulation_mode
         }
     
+    @app.get("/api/agents")
+    async def get_agents():
+        """Return all agents with their runtime active status"""
+        # Metadata not available from the analyst objects themselves
+        agent_meta = {
+            "technical": {
+                "display_name": "Technical Analyst", "type": "analyst",
+                "description": "Analyzes price action using SMA crossovers and RSI indicators to identify trend direction and momentum.",
+                "accuracy": 0.72, "stage": 1, "icon": "candlestick-chart",
+            },
+            "sentiment": {
+                "display_name": "Sentiment Analyst", "type": "analyst",
+                "description": "Monitors Fear & Greed Index and crypto news headlines for market sentiment signals with contrarian logic.",
+                "accuracy": 0.68, "stage": 2, "icon": "heart-pulse",
+            },
+            "onchain": {
+                "display_name": "On-Chain Analyst", "type": "analyst",
+                "description": "Analyzes blockchain metrics including exchange flows, active addresses, and whale activity.",
+                "accuracy": 0.65, "stage": 3, "icon": "link",
+            },
+            "macro": {
+                "display_name": "Macro Analyst", "type": "analyst",
+                "description": "Evaluates macroeconomic factors like DXY, interest rates, and global M2 money supply.",
+                "accuracy": 0.60, "stage": 3, "icon": "globe",
+            },
+            "orderbook": {
+                "display_name": "Order Book Analyst", "type": "analyst",
+                "description": "Analyzes market microstructure including bid/ask imbalance and order book depth.",
+                "accuracy": 0.62, "stage": 3, "icon": "book-open",
+            },
+        }
+
+        agents_list = []
+        active_names = set()
+
+        # Build list from live orchestrator analysts
+        if orchestrator:
+            for analyst in orchestrator.analysts:
+                name = analyst.name
+                active_names.add(name)
+                meta = agent_meta.get(name, {})
+                agents_list.append({
+                    "name": name,
+                    "display_name": meta.get("display_name", name.title()),
+                    "type": meta.get("type", "analyst"),
+                    "description": meta.get("description", ""),
+                    "weight": analyst.weight,
+                    "accuracy": meta.get("accuracy", 0.0),
+                    "stage": meta.get("stage", 1),
+                    "active": True,
+                    "icon": meta.get("icon", "cpu"),
+                })
+
+        # Add any agents that exist in metadata but weren't initialized
+        for name, meta in agent_meta.items():
+            if name not in active_names:
+                agents_list.append({
+                    "name": name,
+                    "active": False,
+                    **meta,
+                    "weight": 0.0,
+                })
+
+        # Always include strategist and sentinel (non-analyst agents)
+        agents_list.append({
+            "name": "strategist",
+            "display_name": "Claude Strategist",
+            "type": "strategist",
+            "description": "LLM-powered decision engine that synthesizes all analyst signals into trading plans.",
+            "weight": 1.0, "accuracy": 0.70, "stage": 1,
+            "active": orchestrator is not None,
+            "icon": "sparkles",
+        })
+        agents_list.append({
+            "name": "sentinel",
+            "display_name": "Risk Sentinel",
+            "type": "sentinel",
+            "description": "Validates all trading decisions against risk parameters, position limits, and circuit breakers.",
+            "weight": 1.0, "accuracy": 0.95, "stage": 1,
+            "active": orchestrator is not None,
+            "icon": "shield",
+        })
+        agents_list.append({
+            "name": "fusion",
+            "display_name": "Intelligence Fusion",
+            "type": "analyst",
+            "description": "Combines signals from multiple analysts using weighted averaging and disagreement detection.",
+            "weight": 1.0, "accuracy": 0.73, "stage": 2,
+            "active": orchestrator is not None,
+            "icon": "merge",
+        })
+
+        return {"agents": agents_list}
+
     @app.get("/health")
     async def health():
         """Health check"""
@@ -611,25 +771,63 @@ def _register_routes(app: FastAPI):
     async def get_portfolio_history(range: str = "7D"):
         """Get portfolio value history for charting"""
         if not orchestrator:
-            raise HTTPException(status_code=503, detail="Agent not initialized")
+            return {"snapshots": [], "range": range, "count": 0}
 
-        range_map = {"1D": 1, "7D": 7, "30D": 30, "90D": 90, "ALL": 365}
+        range_map = {"1H": 0.04, "1D": 1, "24H": 1, "7D": 7, "30D": 30, "90D": 90, "ALL": 365}
         days = range_map.get(range, 7)
 
         try:
             db = orchestrator.memory
-            async with db._connection() as conn:
-                rows = await conn.fetch("""
-                    SELECT total_value, created_at
-                    FROM portfolio_snapshots
-                    WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
-                    ORDER BY created_at ASC
-                """, str(days))
+            # Try PostgreSQL first
+            if hasattr(db, '_connection'):
+                async with db._connection() as conn:
+                    rows = await conn.fetch("""
+                        SELECT total_value, created_at
+                        FROM portfolio_snapshots
+                        WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+                        ORDER BY created_at ASC
+                    """, str(int(days) if days >= 1 else 1))
 
-            snapshots = [
-                {"timestamp": row["created_at"].isoformat(), "total_value": float(row["total_value"])}
-                for row in rows
-            ]
+                snapshots = [
+                    {"timestamp": row["created_at"].isoformat(), "total_value": float(row["total_value"])}
+                    for row in rows
+                ]
+            else:
+                # In-memory fallback: build from trade history
+                snapshots = []
+                trades = await orchestrator.memory.get_trade_history(1000)
+                initial_capital = settings.trading.initial_capital
+
+                # Get current portfolio value safely
+                try:
+                    portfolio = await orchestrator._get_portfolio_state()
+                    current_value = portfolio.total_value
+                except Exception:
+                    p = await orchestrator.memory.get_portfolio()
+                    current_value = p.total_value if p else initial_capital
+
+                if trades:
+                    # Create snapshots from trade timestamps
+                    running_value = initial_capital
+                    for trade in reversed(trades):
+                        pnl = getattr(trade, 'realized_pnl', 0) or 0
+                        running_value += pnl
+                        ts = trade.timestamp.isoformat() if trade.timestamp else datetime.now(timezone.utc).isoformat()
+                        snapshots.append({"timestamp": ts, "total_value": round(running_value, 2)})
+
+                    # Add initial capital as first point
+                    first_ts = trades[-1].timestamp if trades[-1].timestamp else datetime.now(timezone.utc)
+                    snapshots.insert(0, {
+                        "timestamp": (first_ts.replace(second=0, microsecond=0)).isoformat(),
+                        "total_value": initial_capital
+                    })
+
+                # Always add current value as latest point
+                snapshots.append({
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "total_value": round(current_value, 2)
+                })
+
             return {"snapshots": snapshots, "range": range, "count": len(snapshots)}
         except Exception as e:
             logger.error(f"Portfolio history error: {e}")
@@ -1001,6 +1199,38 @@ def _register_routes(app: FastAPI):
             "estimated_monthly_cost": _estimate_monthly_cost(cost_opt)
         }
 
+    @app.post("/api/cost/hybrid/toggle")
+    async def toggle_hybrid_mode(request: Request):
+        """Toggle hybrid mode (rule-based vs Claude LLM) at runtime."""
+        global settings
+        body = await request.json()
+        enabled = body.get("enabled", False)
+
+        # Update settings
+        settings.cost_optimization.enable_hybrid_mode = enabled
+
+        # Rebuild strategist stack if cost-optimized
+        strategist = orchestrator.strategist if orchestrator else None
+        if strategist and hasattr(strategist, '_build_stack'):
+            strategist.config.enable_hybrid_mode = enabled
+            strategist._build_stack()
+            mode = "HYBRID (rule-based for clear signals)" if enabled else "CLAUDE LLM (all signals)"
+            logger.info(f"[COST_OPT] Hybrid mode toggled: {mode}")
+
+        return {
+            "status": "ok",
+            "hybrid_enabled": enabled,
+            "mode": "hybrid" if enabled else "llm"
+        }
+
+    @app.get("/api/cost/hybrid/status")
+    async def get_hybrid_status():
+        """Get current hybrid mode status."""
+        return {
+            "hybrid_enabled": settings.cost_optimization.enable_hybrid_mode,
+            "mode": "hybrid" if settings.cost_optimization.enable_hybrid_mode else "llm"
+        }
+
     def _estimate_monthly_cost(cost_opt) -> str:
         """Estimate monthly API cost based on configuration."""
         base_cost = 12.0  # Base cost without optimization
@@ -1055,6 +1285,350 @@ def _register_routes(app: FastAPI):
             "aggressive_available": settings.aggressive_risk is not None,
             "pairs": settings.trading.pairs
         }
+
+    # =========================================================================
+    # Missing endpoints (required by dashboard frontend)
+    # =========================================================================
+
+    @app.get("/api/positions/detailed")
+    async def get_detailed_positions():
+        """Get detailed position information including stop-loss levels."""
+        try:
+            portfolio = await orchestrator.memory.get_portfolio()
+            quote = settings.trading.quote_currency
+            positions = []
+
+            for symbol, position in portfolio.positions.items():
+                stop_loss_pct = orchestrator.sentinel.stop_loss_pct if hasattr(orchestrator.sentinel, 'stop_loss_pct') else 0.05
+                stop_loss_price = position.entry_price * (1 - stop_loss_pct) if position.entry_price else None
+
+                positions.append({
+                    "symbol": symbol,
+                    "pair": f"{symbol}/{quote}",
+                    "amount": position.amount,
+                    "entry_price": position.entry_price,
+                    "current_price": position.current_price,
+                    "stop_loss_price": stop_loss_price,
+                    "stop_loss_pct": stop_loss_pct * 100,
+                    "unrealized_pnl": position.unrealized_pnl,
+                    "unrealized_pnl_pct": position.unrealized_pnl_pct,
+                    "value_quote": position.amount * position.current_price if position.current_price else 0
+                })
+
+            return {
+                "positions": positions,
+                "total_positions": len(positions),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error fetching detailed positions: {e}")
+            return {"positions": [], "error": str(e)}
+
+    @app.get("/api/costs/usage")
+    async def get_api_usage():
+        """Get API token usage and costs."""
+        try:
+            from integrations.llm.claude import ClaudeLLM
+            usage_stats = ClaudeLLM.get_usage_stats()
+            return {"enabled": True, "usage": usage_stats}
+        except Exception:
+            return {"enabled": False, "usage": {
+                "total_calls": 0, "total_input_tokens": 0, "total_output_tokens": 0,
+                "total_cost_usd": 0, "input_cost_usd": 0, "output_cost_usd": 0
+            }}
+
+    @app.get("/api/costs/breakdown")
+    async def get_cost_breakdown():
+        """Get cost breakdown analysis."""
+        try:
+            from integrations.llm.claude import ClaudeLLM
+            usage = ClaudeLLM.get_usage_stats()
+            total_api_cost = usage.get("total_cost_usd", 0)
+        except Exception:
+            usage = {}
+            total_api_cost = 0
+
+        trading_pnl = 0
+        if orchestrator and orchestrator.memory:
+            try:
+                summary = await orchestrator.memory.get_performance_summary()
+                trading_pnl = summary.get("total_pnl", 0)
+            except Exception:
+                pass
+
+        return {
+            "api_costs_total_usd": round(total_api_cost, 4),
+            "trading_pnl_usd": round(trading_pnl, 2),
+            "net_profit_usd": round(trading_pnl - total_api_cost, 2),
+            "efficiency": {
+                "total_calls": usage.get("total_calls", 0),
+                "total_tokens": usage.get("total_input_tokens", 0) + usage.get("total_output_tokens", 0),
+            }
+        }
+
+    @app.get("/api/pnl/summary")
+    async def get_pnl_summary():
+        """Get comprehensive P&L summary."""
+        if not orchestrator:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+
+        try:
+            portfolio = await orchestrator._get_portfolio_state()
+            performance = await orchestrator.memory.get_performance_summary()
+
+            realized_pnl = performance.get("total_pnl", 0)
+            unrealized_pnl = sum(
+                pos.current_price * pos.amount - pos.entry_price * pos.amount
+                for pos in portfolio.positions.values()
+                if pos.entry_price and pos.entry_price > 0
+            )
+
+            try:
+                from integrations.llm.claude import ClaudeLLM
+                api_cost = ClaudeLLM.get_usage_stats().get("total_cost_usd", 0)
+            except Exception:
+                api_cost = 0
+
+            return {
+                "realized_pnl": round(realized_pnl, 2),
+                "unrealized_pnl": round(unrealized_pnl, 2),
+                "total_pnl": round(realized_pnl + unrealized_pnl, 2),
+                "api_costs": {"total_usd": round(api_cost, 4)},
+                "net_profit": round(realized_pnl + unrealized_pnl - api_cost, 2),
+                "portfolio_value": round(portfolio.total_value, 2),
+                "initial_capital": settings.trading.initial_capital,
+                "target_value": settings.trading.target_capital,
+                "progress_pct": round(portfolio.progress_to_target, 2),
+                "win_rate": performance.get("win_rate", 0),
+                "profit_factor": performance.get("profit_factor", 0),
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        except Exception as e:
+            logger.error(f"Error getting P&L summary: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.get("/api/pnl/by-pair")
+    async def get_pnl_by_pair():
+        """Get P&L breakdown by trading pair."""
+        if not orchestrator:
+            raise HTTPException(status_code=503, detail="Agent not initialized")
+
+        try:
+            trades = await orchestrator.memory.get_trade_history(1000)
+            by_pair = {}
+            for trade in trades:
+                pair = trade.pair
+                if pair not in by_pair:
+                    by_pair[pair] = {"realized_pnl": 0, "trade_count": 0, "wins": 0, "losses": 0}
+
+                pnl = getattr(trade, 'realized_pnl', 0) or 0
+                by_pair[pair]["realized_pnl"] += pnl
+                by_pair[pair]["trade_count"] += 1
+                if pnl > 0:
+                    by_pair[pair]["wins"] += 1
+                elif pnl < 0:
+                    by_pair[pair]["losses"] += 1
+
+            for pair in by_pair:
+                total = by_pair[pair]["trade_count"]
+                wins = by_pair[pair]["wins"]
+                by_pair[pair]["win_rate"] = wins / total if total > 0 else 0
+
+            return {"pairs": by_pair}
+        except Exception as e:
+            logger.error(f"Error getting P&L by pair: {e}")
+            return {"pairs": {}}
+
+    @app.get("/api/trades/rejected")
+    async def get_rejected_trades(limit: int = 100):
+        """Get rejected trade signals."""
+        try:
+            if hasattr(orchestrator.memory, 'get_rejected_trades'):
+                rejected = await orchestrator.memory.get_rejected_trades(limit)
+                return {"trades": [r.to_dict() if hasattr(r, 'to_dict') else r for r in rejected]}
+            return {"trades": []}
+        except Exception as e:
+            logger.error(f"Error getting rejected trades: {e}")
+            return {"trades": []}
+
+    @app.get("/api/settings")
+    async def get_settings_api():
+        """Get current settings for the settings page."""
+        effective = settings.get_effective_risk()
+        return {
+            "risk": {
+                "max_position_pct": effective.max_position_pct,
+                "max_exposure_pct": effective.max_total_exposure_pct,
+                "stop_loss_pct": effective.stop_loss_pct,
+                "min_confidence": effective.min_confidence,
+                "max_daily_trades": effective.max_daily_trades,
+                "max_daily_loss_pct": effective.max_daily_loss_pct
+            },
+            "circuit_breakers": {
+                "max_daily_loss_pct": effective.max_daily_loss_pct,
+                "max_daily_trades": effective.max_daily_trades,
+                "volatility_threshold_pct": 0.10,
+                "consecutive_loss_limit": 3
+            },
+            "analyst_weights": {
+                "technical": 0.45, "sentiment": 0.35, "onchain": 0.15, "macro": 0.05
+            },
+            "trading": {
+                "pairs": settings.trading.pairs,
+                "quote_currency": settings.trading.quote_currency,
+                "initial_capital": settings.trading.initial_capital,
+                "target_capital": settings.trading.target_capital,
+                "check_interval_minutes": settings.trading.check_interval_minutes
+            },
+            "risk_profile": settings.risk_profile,
+            "stage": settings.stage.value,
+            "simulation_mode": settings.features.simulation_mode
+        }
+
+    @app.put("/api/settings")
+    async def update_settings_api(body: dict):
+        """Update runtime settings."""
+        section = body.get("section", "")
+        updates = body.get("updates", {})
+
+        if not section or not updates:
+            raise HTTPException(status_code=400, detail="Missing section or updates")
+
+        applied = {}
+
+        if section == "risk":
+            effective = settings.get_effective_risk()
+            for key, value in updates.items():
+                if hasattr(effective, key):
+                    setattr(effective, key, value)
+                    applied[key] = value
+
+        elif section == "trading":
+            for key, value in updates.items():
+                if hasattr(settings.trading, key):
+                    setattr(settings.trading, key, value)
+                    applied[key] = value
+
+        elif section == "cost_optimization":
+            # Store cost optimization config in-memory (no persistent model for this)
+            applied = updates
+
+        elif section == "analyst_weights":
+            if orchestrator:
+                for analyst in orchestrator.analysts:
+                    if analyst.name in updates:
+                        analyst.weight = float(updates[analyst.name])
+                        applied[analyst.name] = analyst.weight
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown section: {section}")
+
+        logger.info(f"Settings updated [{section}]: {applied}")
+        return {"status": "ok", "section": section, "applied": applied}
+
+    # ------------------------------------------------------------------
+    # AI Activity / Intel / Patterns endpoints (for Charts page)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/ai/activity")
+    async def get_ai_activity(limit: int = 20):
+        """Return recent trading activity events from the event bus."""
+        from core.events import get_event_bus, EventType
+        bus = get_event_bus()
+
+        activities = []
+        for et in (EventType.TRADE_EXECUTED, EventType.INTEL_FUSED, EventType.STOP_LOSS_TRIGGERED):
+            for ev in bus.get_history(event_type=et, limit=limit):
+                activities.append({
+                    "type": et.value,
+                    "data": ev.data,
+                    "timestamp": ev.timestamp.isoformat(),
+                    "source": ev.source,
+                })
+
+        # Sort newest-first, cap to limit
+        activities.sort(key=lambda a: a["timestamp"], reverse=True)
+        return {"activities": activities[:limit]}
+
+    @app.get("/api/ai/intel")
+    async def get_ai_intel():
+        """Return latest fused intel for all pairs."""
+        if not orchestrator:
+            return {"intel": {}}
+
+        intel_data = {}
+        latest = getattr(orchestrator, "_latest_intel", {})
+        for pair, intel in latest.items():
+            intel_data[pair] = {
+                "pair": pair,
+                "direction": intel.fused_direction,
+                "confidence": intel.fused_confidence,
+                "regime": intel.regime.value if hasattr(intel.regime, "value") else str(intel.regime),
+                "disagreement": getattr(intel, "disagreement", 0),
+                "signal_count": len(intel.signals) if intel.signals else 0,
+                "timestamp": intel.timestamp.isoformat() if hasattr(intel, "timestamp") and intel.timestamp else None,
+            }
+        return {"intel": intel_data}
+
+    @app.get("/api/ai/patterns/{pair:path}")
+    async def get_ai_patterns(pair: str):
+        """Return detected candlestick patterns from latest analysis."""
+        pair = pair.replace("-", "/").upper()
+        if "/" not in pair and len(pair) >= 6:
+            pair = f"{pair[:-4]}/{pair[-4:]}"
+
+        patterns = []
+
+        # Pull pattern data from latest intel signals
+        if orchestrator:
+            latest = getattr(orchestrator, "_latest_intel", {})
+            intel = latest.get(pair)
+            if intel and intel.signals:
+                for sig in intel.signals:
+                    meta = getattr(sig, "metadata", {}) or {}
+                    if meta.get("patterns"):
+                        for p in meta["patterns"]:
+                            patterns.append(p)
+
+        # Also check event bus for pattern events
+        from core.events import get_event_bus, EventType
+        bus = get_event_bus()
+        for ev in bus.get_history(event_type=EventType.ANALYST_SIGNAL, limit=50):
+            if ev.data.get("pair") == pair and ev.data.get("patterns"):
+                for p in ev.data["patterns"]:
+                    patterns.append({
+                        **p,
+                        "timestamp": ev.timestamp.isoformat(),
+                    })
+
+        return {"pair": pair, "patterns": patterns}
+
+    @app.get("/api/market/ohlcv/{pair:path}")
+    async def get_market_ohlcv(pair: str, interval: int = 60, limit: int = 100):
+        """Get OHLCV data for a trading pair."""
+        try:
+            pair = pair.replace("-", "/").upper()
+            if "/" not in pair and len(pair) >= 6:
+                pair = f"{pair[:-4]}/{pair[-4:]}"
+
+            ohlcv = await orchestrator.exchange.get_ohlcv(pair, interval=interval, limit=limit)
+            return {
+                "pair": pair,
+                "interval": interval,
+                "candles": ohlcv if ohlcv else [],
+                "count": len(ohlcv) if ohlcv else 0
+            }
+        except Exception as e:
+            logger.error(f"Error fetching OHLCV for {pair}: {e}")
+            return {"candles": [], "pair": pair, "error": str(e)}
+
+    # Cache-control: prevent stale JS/CSS/HTML
+    @app.middleware("http")
+    async def add_cache_headers(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/dashboard"):
+            response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
     # Serve dashboard static files
     static_dir = Path(__file__).parent.parent / "static"

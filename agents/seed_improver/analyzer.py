@@ -55,6 +55,10 @@ class SeedImproverAnalyzer:
             max_tokens=2000,
         )
 
+        logger.info("LLM raw response type=%s keys=%s",
+                     type(raw).__name__,
+                     list(raw.keys()) if isinstance(raw, dict) else f"len={len(raw)}" if isinstance(raw, list) else "N/A")
+
         result = self._parse_response(raw)
 
         model_name = getattr(self.llm, "model", "unknown")
@@ -99,8 +103,26 @@ class SeedImproverAnalyzer:
         return dicts
 
     @staticmethod
-    def _parse_response(raw: Dict[str, Any]) -> AnalysisResult:
+    def _parse_response(raw: Any) -> AnalysisResult:
         """Parse the LLM JSON response into an AnalysisResult."""
+        # Handle list responses — LLM may return:
+        # 1. A flat list of recommendation dicts
+        # 2. A single-element list wrapping the expected schema
+        if isinstance(raw, list):
+            if not raw:
+                return AnalysisResult(summary="Empty LLM response")
+            # Check if the first item looks like the full schema (has 'recommendations' key)
+            if isinstance(raw[0], dict) and "recommendations" in raw[0]:
+                raw = raw[0]
+            else:
+                # Treat entire list as recommendations
+                recs = [Recommendation.from_dict(r) for r in raw if isinstance(r, dict)]
+                return AnalysisResult(
+                    summary=f"LLM returned {len(recs)} recommendations",
+                    recommendations=recs,
+                )
+        if not isinstance(raw, dict):
+            return AnalysisResult(summary=f"Unexpected response type: {type(raw).__name__}")
         try:
             return AnalysisResult.from_dict(raw)
         except Exception as e:

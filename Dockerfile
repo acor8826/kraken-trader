@@ -56,7 +56,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy application code
+# Copy application code (cache bust via build arg)
+ARG CACHEBUST=1
 COPY . .
 
 # Create necessary directories and set ownership

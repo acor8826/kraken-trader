@@ -57,6 +57,7 @@ class MacroAnalyst(IAnalyst):
         self.fed_watcher = FedWatcher(self.fred)
         self.correlation_tracker = CorrelationTracker(self.fred)
 
+        self._weight = 0.15  # 15% weight
         logger.info("MacroAnalyst initialized with FRED integration")
 
     @property
@@ -67,7 +68,11 @@ class MacroAnalyst(IAnalyst):
     @property
     def weight(self) -> float:
         """Default weight in intelligence fusion"""
-        return 0.15  # 15% weight
+        return self._weight
+
+    @weight.setter
+    def weight(self, value: float):
+        self._weight = value
 
     async def analyze(self, pair: str, market_data: Dict) -> AnalystSignal:
         """

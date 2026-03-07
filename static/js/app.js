@@ -193,8 +193,10 @@ async function registerPages() {
         AgentDetailPage,
         MetricsPage,
         ImproverPage,
+        MemePage,
         CostsPage,
-        SettingsPage
+        SettingsPage,
+        ChartsPage
     ] = await Promise.all([
         import('./pages/home.js').then(m => m.default).catch(() => createPlaceholderPage('Home')),
         import('./pages/pairs.js').then(m => m.default).catch(() => createPlaceholderPage('Trading Pairs')),
@@ -204,8 +206,10 @@ async function registerPages() {
         import('./pages/agent-detail.js').then(m => m.default).catch(() => createPlaceholderPage('Agent Detail')),
         import('./pages/metrics.js').then(m => m.default).catch(() => createPlaceholderPage('Metrics')),
         import('./pages/improver.js').then(m => m.default).catch(() => createPlaceholderPage('Improvement Cycles')),
+        import('./pages/meme.js').then(m => m.default).catch(() => createPlaceholderPage('Meme Trading')),
         import('./pages/costs.js').then(m => m.default).catch(() => createPlaceholderPage('Cost Optimization')),
-        import('./pages/settings.js').then(m => m.default).catch(() => createPlaceholderPage('Settings'))
+        import('./pages/settings.js').then(m => m.default).catch(() => createPlaceholderPage('Settings')),
+        import('./pages/charts.js').then(m => m.default).catch(() => createPlaceholderPage('Charts'))
     ]);
 
     // Register routes
@@ -217,8 +221,10 @@ async function registerPages() {
     router.register('/agents/:name', AgentDetailPage);
     router.register('/metrics', MetricsPage);
     router.register('/improver', ImproverPage);
+    router.register('/meme', MemePage);
     router.register('/costs', CostsPage);
     router.register('/settings', SettingsPage);
+    router.register('/charts', ChartsPage);
 }
 
 /**
@@ -308,7 +314,109 @@ async function loadInitialData() {
 // Application Initialization
 // ========================================
 
+let appInitialized = false;
+
+// ========================================
+// Header Action Buttons
+// ========================================
+
+function initHeaderActions() {
+    // --- Claude LLM Toggle ---
+    const llmBtn = document.getElementById('llm-toggle');
+    if (llmBtn) {
+        // Fetch initial state
+        api.get('/api/cost/hybrid/status').then(data => {
+            updateLLMButton(llmBtn, !data.hybrid_enabled);
+        }).catch(() => {
+            updateLLMButton(llmBtn, true); // Default: LLM on
+        });
+
+        llmBtn.addEventListener('click', async () => {
+            llmBtn.disabled = true;
+            try {
+                const current = await api.get('/api/cost/hybrid/status');
+                const newHybrid = !current.hybrid_enabled;
+                await api.post('/api/cost/hybrid/toggle', { enabled: newHybrid });
+                const llmOn = !newHybrid;
+                updateLLMButton(llmBtn, llmOn);
+                showToast(llmOn ? 'Claude LLM enabled' : 'Claude LLM disabled (rule-based)', llmOn ? 'success' : 'warning', 3000);
+            } catch (e) {
+                showToast('Failed to toggle LLM mode', 'error');
+            }
+            llmBtn.disabled = false;
+        });
+    }
+
+    // --- Trigger Cycle (fires both main + meme) ---
+    const triggerBtn = document.getElementById('trigger-btn');
+    if (triggerBtn) {
+        triggerBtn.addEventListener('click', async () => {
+            triggerBtn.disabled = true;
+            triggerBtn.classList.add('triggering');
+            showToast('Triggering all cycles...', 'info', 2000);
+
+            const results = await Promise.allSettled([
+                api.post('/trigger', {}),
+                api.post('/api/meme/trigger', {})
+            ]);
+
+            const mainOk = results[0].status === 'fulfilled';
+            const memeOk = results[1].status === 'fulfilled';
+            const mainResult = mainOk ? results[0].value?.result : null;
+            const memeResult = memeOk ? results[1].value?.result : null;
+
+            const parts = [];
+            if (mainOk && mainResult) {
+                parts.push(`Main: ${mainResult.pairs_analyzed} pairs, ${mainResult.trades_executed} trades`);
+            } else if (!mainOk) {
+                parts.push('Main: failed');
+            }
+            if (memeOk && memeResult) {
+                parts.push(`Meme: ${memeResult.coins_analyzed?.length || 0} coins, ${memeResult.trades_executed?.length || 0} trades`);
+            } else if (!memeOk) {
+                parts.push('Meme: skipped');
+            }
+
+            const allOk = mainOk || memeOk;
+            showToast(parts.join(' | '), allOk ? 'success' : 'error', 4000);
+
+            triggerBtn.classList.remove('triggering');
+            triggerBtn.disabled = false;
+        });
+    }
+
+    // --- Refresh ---
+    const refreshBtn = document.getElementById('refresh-btn');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', () => {
+            loadInitialData();
+            showToast('Refreshing data...', 'info', 1500);
+        });
+    }
+
+    // --- Theme Toggle ---
+    const themeBtn = document.getElementById('theme-toggle');
+    if (themeBtn) {
+        themeBtn.addEventListener('click', () => {
+            const body = document.body;
+            const current = body.getAttribute('data-theme') || 'dark';
+            const next = current === 'dark' ? 'light' : 'dark';
+            body.setAttribute('data-theme', next);
+            localStorage.setItem('theme', next);
+        });
+    }
+}
+
+function updateLLMButton(btn, llmOn) {
+    btn.title = llmOn ? 'Claude LLM: ON (click to switch to rules)' : 'Claude LLM: OFF (rule-based)';
+    btn.classList.toggle('active', llmOn);
+    btn.classList.toggle('dimmed', !llmOn);
+}
+
 async function initApp() {
+    if (appInitialized) return;
+    appInitialized = true;
+
     console.log('Initializing Kraken Trading Dashboard...');
 
     // Initialize components
@@ -317,6 +425,9 @@ async function initApp() {
 
     header.init();
     nav.init();
+
+    // Initialize header action buttons
+    initHeaderActions();
 
     // Register pages
     await registerPages();
@@ -329,7 +440,7 @@ async function initApp() {
 
     // Set up WebSocket event handlers
     wsManager.subscribe('portfolio', (data) => {
-        if (data) {
+        if (data && data.total_value !== undefined) {
             store.update({
                 portfolio: data,
                 totalValue: data.total_value || 0,

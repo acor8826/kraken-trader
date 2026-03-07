@@ -5,7 +5,7 @@
 
 import store from '../store.js';
 import api from '../api.js';
-import { formatCurrency, formatPercent, formatDateTime, formatTimeAgo, setHTML, escapeHTML, getPnLClass, getActionClass } from '../utils.js';
+import { formatCurrency, formatPercent, formatCryptoAmount, formatDateTime, formatTimeAgo, setHTML, escapeHTML, getPnLClass, getActionClass } from '../utils.js';
 
 // ========================================
 // Trade History Page Module

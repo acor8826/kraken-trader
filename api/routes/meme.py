@@ -43,6 +43,14 @@ async def meme_trigger():
     return {"status": "completed", "result": result}
 
 
+@router.get("/analyses")
+async def meme_analyses(symbol: str = None, limit: int = 50):
+    """Get recent per-coin analysis snapshots with full evidence trail"""
+    _check_meme_enabled()
+    history = _meme_orchestrator.get_analysis_history(symbol=symbol, limit=limit)
+    return {"analyses": history, "total": len(_meme_orchestrator._analysis_history)}
+
+
 @router.post("/pause")
 async def meme_pause():
     """Pause meme trading"""

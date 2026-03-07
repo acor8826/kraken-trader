@@ -337,7 +337,6 @@ const HomePage = {
         const unsubPortfolio = store.subscribe('portfolio', (portfolio) => {
             if (portfolio) {
                 this.updateChartFooter(portfolio);
-                this.updateMetrics(portfolio);
             }
         });
 
@@ -356,12 +355,17 @@ const HomePage = {
      */
     async loadData() {
         try {
-            const [portfolio, performance, trades, history] = await Promise.all([
+            const results = await Promise.allSettled([
                 api.getPortfolio(),
                 api.getPerformance(),
                 api.getTrades(20),
                 api.getPortfolioHistory('7D')
             ]);
+
+            const portfolio = results[0].status === 'fulfilled' ? results[0].value : null;
+            const performance = results[1].status === 'fulfilled' ? results[1].value : null;
+            const trades = results[2].status === 'fulfilled' ? results[2].value : null;
+            const history = results[3].status === 'fulfilled' ? results[3].value : null;
 
             // Update store
             if (portfolio) {

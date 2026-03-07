@@ -121,3 +121,67 @@ def build_analysis_prompt(
     sections.append(f"```json\n{json.dumps(RESPONSE_SCHEMA, indent=2)}\n```")
 
     return "\n".join(sections)
+
+
+# ------------------------------------------------------------------
+# Phase 2: Config Patch Generation Prompts
+# ------------------------------------------------------------------
+
+CONFIG_PATCH_SYSTEM_PROMPT = """\
+You are the Config Patch Generator for a live crypto trading bot.
+Your role is to translate high-level trading recommendations into precise
+YAML configuration changes.
+
+Rules:
+- Only output changes to parameters that exist in the current YAML config.
+- Use dot-notation paths (e.g. "risk.stop_loss_pct", "fusion.analyst_weights.technical").
+- Include the exact current value as old_value so it can be verified.
+- New values must be the same type as old values (float for float, int for int, etc.).
+- Never change infrastructure keys (database, redis, stage, features.simulation_mode).
+- Be conservative: prefer small adjustments over large changes.
+- If a recommendation cannot be expressed as a config change, skip it.
+
+Respond with JSON only.\
+"""
+
+CONFIG_PATCH_SCHEMA = {
+    "patches": [
+        {
+            "yaml_path": "string - dot-notation path to the YAML key",
+            "old_value": "any - the current value (must match exactly)",
+            "new_value": "any - the proposed new value",
+            "reasoning": "string - why this specific value change helps",
+            "recommendation_idx": "int - index of the source recommendation (0-based)",
+        }
+    ]
+}
+
+
+def build_config_patch_prompt(
+    recommendations: list,
+    current_yaml: str,
+) -> str:
+    """Build prompt for converting recommendations into config patches."""
+    sections = []
+
+    sections.append("## Current YAML Configuration")
+    sections.append(f"```yaml\n{current_yaml}\n```")
+
+    sections.append("\n## Recommendations to Convert")
+    for i, rec in enumerate(recommendations):
+        rec_dict = rec.to_dict() if hasattr(rec, "to_dict") else rec
+        sections.append(
+            f"{i}. [{rec_dict.get('priority', '?')}] {rec_dict.get('category', '?')}: "
+            f"{rec_dict.get('change_summary', '?')} "
+            f"(confidence={rec_dict.get('confidence', '?')}, risk={rec_dict.get('risk_assessment', '?')})"
+        )
+
+    sections.append("\n## Your Task")
+    sections.append(
+        "Convert each recommendation above into concrete YAML config patches. "
+        "Skip any recommendation that cannot be expressed as a config change. "
+        "Respond with JSON matching this schema:"
+    )
+    sections.append(f"```json\n{json.dumps(CONFIG_PATCH_SCHEMA, indent=2)}\n```")
+
+    return "\n".join(sections)

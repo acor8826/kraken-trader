@@ -203,14 +203,14 @@ class RuleBasedStrategist(IStrategist):
         # but disagree on magnitude (e.g. extreme fear)
         is_fear_buy = (
             intel.fused_direction > 0.15
-            and intel.fused_confidence > 0.40
-            and intel.disagreement > 0.3
+            and intel.fused_confidence > 0.35
+            and intel.disagreement > 0.25
             and not already_holding
         )
 
         if is_fear_buy:
             action = TradeAction.BUY
-            confidence = intel.fused_confidence * 0.85  # Discount for uncertainty
+            confidence = intel.fused_confidence  # Use full confidence for fear buys
             size_pct = risk["max_position_pct"] * 0.6 * min(1.0, abs(intel.fused_direction))
             reasoning += (f"FEAR_BUY: Contrarian accumulation "
                          f"(direction: {intel.fused_direction:+.2f}, "

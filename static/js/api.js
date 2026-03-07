@@ -156,6 +156,14 @@ class ApiClient {
         return this.get('/api/ai/cycle/current');
     }
 
+    async getAIIntel() {
+        return this.get('/api/ai/intel');
+    }
+
+    async getAIPatterns(pair) {
+        return this.get(`/api/ai/patterns/${encodeURIComponent(pair)}`);
+    }
+
     // ========================================
     // Phase 2 Endpoints
     // ========================================
@@ -286,6 +294,36 @@ class ApiClient {
 
     async getAgent(name) {
         return this.get(`/api/agents/${encodeURIComponent(name)}`);
+    }
+
+    // ========================================
+    // Meme Trading Endpoints
+    // ========================================
+
+    async getMemeStatus() {
+        return this.get('/api/meme/status');
+    }
+
+    async getMemeBudget() {
+        return this.get('/api/meme/budget');
+    }
+
+    async triggerMemeCycle() {
+        return this.post('/api/meme/trigger');
+    }
+
+    async pauseMeme() {
+        return this.post('/api/meme/pause');
+    }
+
+    async resumeMeme() {
+        return this.post('/api/meme/resume');
+    }
+
+    async getMemeAnalyses(symbol = null, limit = 50) {
+        const params = new URLSearchParams({ limit });
+        if (symbol) params.set('symbol', symbol);
+        return this.get(`/api/meme/analyses?${params}`);
     }
 
     // ========================================

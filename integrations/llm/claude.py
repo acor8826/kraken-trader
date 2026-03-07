@@ -73,20 +73,28 @@ class ClaudeLLM(ILLM):
     def _can_use_codex_fallback(self) -> bool:
         return bool(self.codex_api_key)
 
-    def _looks_like_connection_failure(self, error: Exception) -> bool:
+    def _should_fallback(self, error: Exception) -> bool:
+        """Determine if we should fall back to Codex/OpenAI.
+
+        Falls back on ALL error types except explicitly non-retriable ones
+        like invalid API key format or programming errors.
+        """
+        # Never fallback on these — they indicate code bugs, not service issues
+        if isinstance(error, (TypeError, SyntaxError, ImportError)):
+            return False
+
         text = str(error).lower()
-        markers = [
-            "timeout",
-            "timed out",
-            "connection",
-            "dns",
-            "network",
-            "unreachable",
-            "temporarily unavailable",
-            "service unavailable",
-            "connection reset"
-        ]
-        return any(marker in text for marker in markers)
+
+        # Don't fallback if the Anthropic key is simply malformed/empty
+        # (user needs to fix config, not silently switch providers)
+        if "invalid x-api-key" in text or "invalid api key format" in text:
+            logger.error("Anthropic API key is invalid — fix ANTHROPIC_API_KEY, not falling back")
+            return False
+
+        # Fallback on everything else: connection errors, rate limits,
+        # auth errors (expired/revoked key), server errors, overloaded, etc.
+        logger.warning(f"Claude API error (will fallback to Codex): {type(error).__name__}: {error}")
+        return True
 
     def _extract_openai_text(self, payload: Dict) -> str:
         output_text = payload.get("output_text")
@@ -118,6 +126,8 @@ class ClaudeLLM(ILLM):
         if not self.codex_api_key:
             raise Exception("Codex fallback not configured (OPENAI_API_KEY missing)")
 
+        logger.info(f"[CODEX FALLBACK] Calling OpenAI model={self.codex_model}, max_tokens={max_tokens}")
+
         headers = {
             "Authorization": f"Bearer {self.codex_api_key}",
             "Content-Type": "application/json"
@@ -136,15 +146,21 @@ class ClaudeLLM(ILLM):
             "max_output_tokens": max_tokens
         }
 
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post("https://api.openai.com/v1/responses", headers=headers, json=body)
-            response.raise_for_status()
-            data = response.json()
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post("https://api.openai.com/v1/responses", headers=headers, json=body)
+                response.raise_for_status()
+                data = response.json()
 
-        return self._extract_openai_text(data)
+            result = self._extract_openai_text(data)
+            logger.info(f"[CODEX FALLBACK] Success, response length={len(result)}")
+            return result
+        except Exception as codex_err:
+            logger.error(f"[CODEX FALLBACK] Also failed: {type(codex_err).__name__}: {codex_err}")
+            raise
     
     async def complete(self, prompt: str, max_tokens: int = 1000) -> str:
-        """Get text completion from Claude"""
+        """Get text completion from Claude, with Codex fallback."""
         if self.client:
             try:
                 message = self.client.messages.create(
@@ -155,16 +171,19 @@ class ClaudeLLM(ILLM):
                 self._track_usage(message, "complete")
                 return message.content[0].text
             except Exception as e:
-                if self._can_use_codex_fallback() and self._looks_like_connection_failure(e):
-                    logger.warning(f"Claude connection failed, falling back to Codex: {e}")
-                    return self._complete_with_codex(prompt, max_tokens=max_tokens)
+                if self._can_use_codex_fallback() and self._should_fallback(e):
+                    try:
+                        return self._complete_with_codex(prompt, max_tokens=max_tokens)
+                    except Exception as codex_err:
+                        logger.error(f"Both Claude and Codex failed: {codex_err}")
+                        raise  # Let strategist catch and use rule-based
                 raise
 
         if self._can_use_codex_fallback():
             logger.warning("Claude not configured, falling back to Codex")
             return self._complete_with_codex(prompt, max_tokens=max_tokens)
 
-        raise Exception("Claude API not configured")
+        raise Exception("No LLM configured (set ANTHROPIC_API_KEY or OPENAI_API_KEY)")
     
     async def complete_json(self, prompt: str, max_tokens: int = 1000) -> Dict:
         """
@@ -184,9 +203,12 @@ class ClaudeLLM(ILLM):
                 self._track_usage(message, "complete_json")
                 response_text = message.content[0].text.strip()
             except Exception as e:
-                if self._can_use_codex_fallback() and self._looks_like_connection_failure(e):
-                    logger.warning(f"Claude connection failed for JSON call, falling back to Codex: {e}")
-                    response_text = self._complete_with_codex(json_prompt, max_tokens=max_tokens).strip()
+                if self._can_use_codex_fallback() and self._should_fallback(e):
+                    try:
+                        response_text = self._complete_with_codex(json_prompt, max_tokens=max_tokens).strip()
+                    except Exception as codex_err:
+                        logger.error(f"Both Claude and Codex failed (JSON): {codex_err}")
+                        raise
                 else:
                     raise
         elif self._can_use_codex_fallback():
@@ -236,13 +258,16 @@ class ClaudeLLM(ILLM):
                 self._track_usage(message, "analyze_market")
                 response_text = message.content[0].text.strip()
             except Exception as e:
-                if self._can_use_codex_fallback() and self._looks_like_connection_failure(e):
-                    logger.warning(f"Claude connection failed for market analysis, falling back to Codex: {e}")
-                    response_text = self._complete_with_codex(
-                        prompt,
-                        max_tokens=max_tokens,
-                        system_prompt=system_prompt
-                    ).strip()
+                if self._can_use_codex_fallback() and self._should_fallback(e):
+                    try:
+                        response_text = self._complete_with_codex(
+                            prompt,
+                            max_tokens=max_tokens,
+                            system_prompt=system_prompt
+                        ).strip()
+                    except Exception as codex_err:
+                        logger.error(f"Both Claude and Codex failed (market): {codex_err}")
+                        raise
                 else:
                     raise
         elif self._can_use_codex_fallback():
@@ -256,8 +281,22 @@ class ClaudeLLM(ILLM):
             raise Exception("Claude API not configured")
         
         # Parse JSON (handles both objects and arrays)
+        def _ensure_dict(result):
+            """Ensure we always return a dict."""
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, list) and result:
+                return result[0] if isinstance(result[0], dict) else {"action": "HOLD", "confidence": 0.3, "reasoning": str(result)}
+            if isinstance(result, str):
+                # JSON string literal parsed; try to find JSON object inside
+                m = re.search(r'\{[\s\S]*\}', result)
+                if m:
+                    return json.loads(m.group())
+                return {"action": "HOLD", "confidence": 0.3, "reasoning": result}
+            return {"action": "HOLD", "confidence": 0.3, "reasoning": str(result)}
+
         try:
-            return json.loads(response_text)
+            return _ensure_dict(json.loads(response_text))
         except json.JSONDecodeError:
             # Try to extract JSON from response (handles markdown code fences, extra text)
             # First, try to find array pattern for batch responses
@@ -271,7 +310,7 @@ class ClaudeLLM(ILLM):
                         bracket_count -= 1
                         if bracket_count == 0:
                             try:
-                                return json.loads(response_text[start:i+1])
+                                return _ensure_dict(json.loads(response_text[start:i+1]))
                             except json.JSONDecodeError:
                                 pass
                             break

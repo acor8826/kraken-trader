@@ -7,16 +7,20 @@ class MemeConfig:
     max_meme_allocation_pct: float = 0.25      # 25% of total portfolio
     max_per_coin_pct: float = 0.05             # 5% per coin
     max_simultaneous_positions: int = 3
-    min_trade_size_aud: float = 5.0
+    min_trade_size_quote: float = 5.0
 
     # Timing
     cycle_interval_seconds: int = 180           # 3 minutes
     listing_check_every_n_cycles: int = 5       # ~15 min
 
     # Stop losses
-    trailing_stop_activation_pct: float = 0.20  # Activate at +20% gain
-    trailing_stop_distance_pct: float = 0.10    # Trail at 10% from peak
-    hard_stop_loss_pct: float = 0.15            # Hard stop at -15%
+    trailing_stop_activation_pct: float = 0.08  # Activate at +8% gain
+    trailing_stop_distance_pct: float = 0.05    # Trail at 5% from peak
+    hard_stop_loss_pct: float = 0.10            # Hard stop at -10%
+
+    # Scaled take-profit targets (pct gain, fraction of remaining position to sell)
+    take_profit_targets: List[tuple] = None  # Initialized in __post_init__
+    max_hold_minutes: int = 360  # 6 hours max hold
 
     # Decision thresholds
     entry_cms_threshold: float = 0.65           # CMS >= 0.65 for rule-based BUY
@@ -33,7 +37,7 @@ class MemeConfig:
     monthly_api_reads: int = 10000
 
     # LLM
-    haiku_model: str = "claude-haiku-3-5-20241022"
+    haiku_model: str = "claude-haiku-4-5-20251001"
 
     # Circuit breaker
     consecutive_loss_trigger: int = 2
@@ -48,3 +52,8 @@ class MemeConfig:
 
     # Runtime state (populated by ListingDetector)
     known_meme_coins: Dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.take_profit_targets is None:
+            # Sell 50% at +5%, sell 50% of remainder at +10%
+            self.take_profit_targets = [(0.05, 0.50), (0.10, 0.50)]

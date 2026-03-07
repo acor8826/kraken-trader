@@ -111,18 +111,27 @@ aggressive_risk:
   max_total_exposure_pct: 0.95
   stop_loss_pct: 0.015
   take_profit_multiplier: 2.0
-  min_confidence: 0.45
+  min_confidence: 0.35
   max_daily_trades: 30
   max_daily_loss_pct: 0.15
 
 # Cost optimization with lowered hybrid thresholds
 cost_optimization:
   enable_batch_analysis: true
-  enable_hybrid_mode: true
+  enable_hybrid_mode: false
   enable_decision_cache: false
   hybrid:
     direction_threshold: 0.30
     confidence_threshold: 0.50
     disagreement_threshold: 0.40
+
+# Seed Improver — recursive self-improvement
+seed_improver:
+  auto_apply: true
+  min_confidence: 0.70          # Only apply high-confidence recommendations
+  max_risk: medium              # Apply low and medium risk changes
+  max_patches_per_run: 3        # Rate limit patches per run
+  cooldown_hours: 2             # Min time between auto-deploys
+  gcs_config_bucket: "cryptotrading-485110-config"
 
 log_level: INFO

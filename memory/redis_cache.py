@@ -44,7 +44,7 @@ class RedisCache:
             logger.info("Connected to Redis successfully")
 
         except Exception as e:
-            logger.error(f"Failed to connect to Redis: {e}")
+            logger.warning(f"Failed to connect to Redis: {e}")
             raise
 
     async def disconnect(self):
@@ -72,7 +72,7 @@ class RedisCache:
             return value
 
         except Exception as e:
-            logger.error(f"Redis GET error for {key}: {e}")
+            logger.debug(f"Redis GET error for {key}: {e}")
             return None
 
     async def set(
@@ -98,7 +98,7 @@ class RedisCache:
             return True
 
         except Exception as e:
-            logger.error(f"Redis SET error for {key}: {e}")
+            logger.debug(f"Redis SET error for {key}: {e}")
             return False
 
     async def delete(self, key: str) -> bool:
@@ -112,7 +112,7 @@ class RedisCache:
             return True
 
         except Exception as e:
-            logger.error(f"Redis DELETE error for {key}: {e}")
+            logger.debug(f"Redis DELETE error for {key}: {e}")
             return False
 
     async def exists(self, key: str) -> bool:
@@ -123,7 +123,7 @@ class RedisCache:
         try:
             return await self._client.exists(key) > 0
         except Exception as e:
-            logger.error(f"Redis EXISTS error for {key}: {e}")
+            logger.debug(f"Redis EXISTS error for {key}: {e}")
             return False
 
     # =========================================================================
@@ -276,7 +276,7 @@ class RedisCache:
         try:
             return await self._client.incrby(key, amount)
         except Exception as e:
-            logger.error(f"Redis INCR error for {key}: {e}")
+            logger.debug(f"Redis INCR error for {key}: {e}")
             return None
 
     async def get_int(self, key: str) -> Optional[int]:
@@ -308,7 +308,7 @@ class RedisCache:
             )
             return True
         except Exception as e:
-            logger.error(f"Redis SETEX error for {key}: {e}")
+            logger.debug(f"Redis SETEX error for {key}: {e}")
             return False
 
     async def flush_all(self) -> bool:
@@ -321,7 +321,7 @@ class RedisCache:
             logger.warning("Redis cache flushed!")
             return True
         except Exception as e:
-            logger.error(f"Redis FLUSHDB error: {e}")
+            logger.debug(f"Redis FLUSHDB error: {e}")
             return False
 
     # =========================================================================
@@ -502,5 +502,5 @@ class RedisCache:
                 "decision_cache": decision_stats
             }
         except Exception as e:
-            logger.error(f"Failed to get Redis stats: {e}")
+            logger.debug(f"Failed to get Redis stats: {e}")
             return {"connected": False, "error": str(e)}
