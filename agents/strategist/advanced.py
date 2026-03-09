@@ -169,22 +169,32 @@ class AdvancedStrategist(IStrategist):
 
         logger.info(f"[{intel.pair}] Regime: {intel.regime.value} → Strategy: {strategy.value}")
 
+        decision = None
+
         # Try LLM-based decision first
         if self.llm:
             try:
                 decision = await self._llm_decision(intel, portfolio, risk, strategy)
-                return self._build_plan(intel, decision, strategy_config, risk)
             except Exception as e:
                 logger.warning(f"[{intel.pair}] LLM decision failed ({type(e).__name__}: {e}), using RULE-BASED fallback")
         else:
             logger.info(f"[{intel.pair}] No LLM configured, using RULE-BASED strategy")
 
-        # Fall back to rule-based decision
-        pair_rank = risk.get("pair_ranks", {}).get(intel.pair) if risk else None
-        decision = self._rule_based_decision(intel, strategy, risk, pair_rank=pair_rank)
-        logger.info(f"[{intel.pair}] Rule-based decision: {decision.get('action')} "
-                     f"(confidence={decision.get('confidence', 0):.2f}, strategy={decision.get('strategy')}"
-                     f"{f', rank={pair_rank}' if pair_rank else ''})")
+        # Fall back to rule-based decision if LLM failed
+        if decision is None:
+            pair_rank = risk.get("pair_ranks", {}).get(intel.pair) if risk else None
+            decision = self._rule_based_decision(intel, strategy, risk, pair_rank=pair_rank)
+            logger.info(f"[{intel.pair}] Rule-based decision: {decision.get('action')} "
+                         f"(confidence={decision.get('confidence', 0):.2f}, strategy={decision.get('strategy')}"
+                         f"{f', rank={pair_rank}' if pair_rank else ''})")
+
+        # Pattern override: if decision is HOLD, check for strong patterns
+        # This applies regardless of whether LLM or rule-based made the decision
+        decision = self._apply_pattern_override(intel, decision, risk)
+
+        logger.info(f"[{intel.pair}] Final decision: {decision.get('action')} "
+                     f"(conf={float(decision.get('confidence', 0)):.2f})")
+
         return self._build_plan(intel, decision, strategy_config, risk)
 
     def _select_strategy(self, intel: MarketIntel) -> Strategy:
@@ -277,6 +287,26 @@ Generate your decision as JSON."""
 
         return decision
 
+    def _extract_patterns(self, intel: MarketIntel) -> list:
+        """Extract candlestick patterns from analyst signal metadata."""
+        patterns = []
+        for sig in (intel.signals or []):
+            if sig.source != "technical":
+                continue
+            meta = sig.metadata or {}
+            for key, val in meta.items():
+                if key.endswith("_candle_pattern") and val:
+                    tf = key.replace("_candle_pattern", "")
+                    signal_val = meta.get(f"{tf}_candle_signal", 0)
+                    patterns.append({"name": val, "timeframe": tf, "signal": signal_val})
+        return patterns
+
+    def _strongest_pattern(self, patterns: list) -> dict | None:
+        """Return the strongest pattern by absolute signal, or None."""
+        if not patterns:
+            return None
+        return max(patterns, key=lambda p: abs(p.get("signal", 0)))
+
     def _rule_based_decision(
         self,
         intel: MarketIntel,
@@ -303,51 +333,113 @@ Generate your decision as JSON."""
         if pair_rank is not None and pair_rank <= 2:
             buy_direction_threshold = 0.05  # Very easy entry for top 2 pairs
 
+        # ─── Check for strong candlestick patterns ─────────────────
+        patterns = self._extract_patterns(intel)
+        best_pattern = self._strongest_pattern(patterns)
+        has_strong_pattern = best_pattern and abs(best_pattern["signal"]) >= 0.6
+        pattern_bullish = has_strong_pattern and best_pattern["signal"] > 0
+        pattern_bearish = has_strong_pattern and best_pattern["signal"] < 0
+
         # Strategy-specific logic
         if strategy == Strategy.TREND_FOLLOW:
             if intel.regime == Regime.TRENDING_UP and intel.fused_direction > buy_direction_threshold:
                 action = "BUY"
-                # Scale confidence with direction strength
                 direction_boost = min(1.0, abs(intel.fused_direction) / 0.5)
                 confidence = min(0.9, intel.fused_confidence * (0.9 + 0.2 * direction_boost))
                 size_pct = risk["max_position_pct"] * 0.8
             elif intel.regime == Regime.TRENDING_DOWN and intel.fused_direction < -0.15:
                 action = "SELL"
                 confidence = min(0.9, intel.fused_confidence * 1.1)
-                size_pct = 1.0  # Full exit in downtrend
+                size_pct = 1.0
 
         elif strategy == Strategy.MEAN_REVERT:
-            # Look for extremes to fade
             if intel.fused_direction < -0.3 and intel.fused_confidence > 0.45:
-                action = "BUY"  # Buy the dip
+                action = "BUY"
                 confidence = intel.fused_confidence * 0.9
                 size_pct = risk["max_position_pct"] * 0.5
             elif intel.fused_direction > 0.3 and intel.fused_confidence > 0.45:
-                action = "SELL"  # Sell the rip
+                action = "SELL"
                 confidence = intel.fused_confidence * 0.9
                 size_pct = 1.0
 
         elif strategy == Strategy.BREAKOUT:
-            # Trade strong moves in volatile conditions
             if abs(intel.fused_direction) > 0.4 and intel.fused_confidence > 0.50:
                 action = "BUY" if intel.fused_direction > 0 else "SELL"
                 confidence = intel.fused_confidence
                 size_pct = risk["max_position_pct"] * 0.4
 
         elif strategy == Strategy.ACCUMULATE:
-            # Gradual entry on moderate signals
             dir_threshold = buy_direction_threshold if pair_rank and pair_rank <= 2 else 0.10
             if intel.fused_direction > dir_threshold and intel.fused_confidence > 0.40:
                 action = "BUY"
                 confidence = intel.fused_confidence * 0.8
-                size_pct = risk["max_position_pct"] * 0.25  # Small bites
+                size_pct = risk["max_position_pct"] * 0.25
 
         elif strategy == Strategy.RISK_OFF:
-            # Reduce exposure or stay out
             if intel.fused_direction < -0.15:
                 action = "SELL"
                 confidence = 0.7
-                size_pct = 0.5  # Partial exit
+                size_pct = 0.5
+
+        # ─── Pattern-driven entries ─────────────────────────────────
+        # Strong patterns can drive entries even when other signals are weak.
+        # Higher timeframe patterns (15m, 1h) get stronger treatment.
+        if action == "HOLD" and has_strong_pattern:
+            pattern_tf = best_pattern.get("timeframe", "5m")
+            pattern_strength = abs(best_pattern["signal"])
+
+            # Higher timeframes require less directional agreement
+            if pattern_tf in ("1h", "15m"):
+                dir_threshold = -0.05  # Allow slightly opposing fused direction
+                size_mult = 0.45
+            elif pattern_tf in ("5m", "3m"):
+                dir_threshold = 0.0    # Need at least neutral direction
+                size_mult = 0.35
+            else:
+                dir_threshold = 0.03   # 1m needs weak confirmation
+                size_mult = 0.25
+
+            # Pattern confidence: blend pattern signal with fused confidence
+            pattern_conf = min(0.88, intel.fused_confidence * 0.6 + pattern_strength * 0.45)
+
+            if pattern_bullish and intel.fused_direction > dir_threshold:
+                action = "BUY"
+                confidence = pattern_conf
+                size_pct = risk["max_position_pct"] * size_mult
+                stop_distance = risk["stop_loss_pct"] * 1.2
+                logger.info(f"[{intel.pair}] Pattern-driven BUY: {best_pattern['name']} "
+                           f"({pattern_tf}, signal={best_pattern['signal']:+.2f}, conf={confidence:.2f})")
+            elif pattern_bearish and intel.fused_direction < -dir_threshold:
+                action = "SELL"
+                confidence = pattern_conf
+                size_pct = 0.5
+                logger.info(f"[{intel.pair}] Pattern-driven SELL: {best_pattern['name']} "
+                           f"({pattern_tf}, signal={best_pattern['signal']:+.2f}, conf={confidence:.2f})")
+
+        # ─── Multi-pattern boost ──────────────────────────────────
+        # Multiple patterns across timeframes = stronger signal
+        if action == "HOLD" and len(patterns) >= 2:
+            bullish_patterns = [p for p in patterns if p["signal"] > 0.3]
+            bearish_patterns = [p for p in patterns if p["signal"] < -0.3]
+            if len(bullish_patterns) >= 2 and intel.fused_direction > -0.10:
+                action = "BUY"
+                avg_signal = sum(p["signal"] for p in bullish_patterns) / len(bullish_patterns)
+                confidence = min(0.85, intel.fused_confidence * 0.5 + avg_signal * 0.4 + 0.1)
+                size_pct = risk["max_position_pct"] * 0.35
+                stop_distance = risk["stop_loss_pct"] * 1.2
+                logger.info(f"[{intel.pair}] Multi-pattern BUY: {len(bullish_patterns)} bullish patterns")
+            elif len(bearish_patterns) >= 2 and intel.fused_direction < 0.10:
+                action = "SELL"
+                avg_signal = sum(abs(p["signal"]) for p in bearish_patterns) / len(bearish_patterns)
+                confidence = min(0.85, intel.fused_confidence * 0.5 + avg_signal * 0.4 + 0.1)
+                size_pct = 0.5
+                logger.info(f"[{intel.pair}] Multi-pattern SELL: {len(bearish_patterns)} bearish patterns")
+
+        # ─── Pattern confidence boost for existing decisions ───────
+        if action != "HOLD" and has_strong_pattern:
+            confirms = (action == "BUY" and pattern_bullish) or (action == "SELL" and pattern_bearish)
+            if confirms:
+                confidence = min(0.92, confidence + 0.10)
 
         # Boost sizing for top-ranked pairs when capital is idle
         if action == "BUY" and pair_rank is not None and pair_rank <= 2:
@@ -357,8 +449,15 @@ Generate your decision as JSON."""
         reasoning = f"{strategy.value}: {config.description}. "
         if action != "HOLD":
             reasoning += f"Signal strength {intel.fused_direction:+.2f} with {intel.fused_confidence:.0%} confidence."
+            if has_strong_pattern:
+                reasoning += f" Pattern: {best_pattern['name']} ({best_pattern['timeframe']})."
         else:
             reasoning += "Conditions don't favor action."
+            if has_strong_pattern:
+                reasoning += f" Pattern {best_pattern['name']}({best_pattern['timeframe']}) present but not triggered."
+
+        logger.info(f"[{intel.pair}] Decision: {action} (conf={confidence:.2f}, dir={intel.fused_direction:+.2f}, "
+                    f"patterns={len(patterns)}, strong={'yes' if has_strong_pattern else 'no'})")
 
         return {
             "action": action,
@@ -368,8 +467,142 @@ Generate your decision as JSON."""
             "stop_distance_pct": stop_distance,
             "reasoning": reasoning,
             "regime_assessment": intel.regime.value,
-            "key_signals": []
+            "key_signals": [best_pattern["name"]] if has_strong_pattern else []
         }
+
+    def _apply_pattern_override(
+        self,
+        intel: MarketIntel,
+        decision: Dict,
+        risk: Dict
+    ) -> Dict:
+        """Override HOLD decisions with pattern-driven entries.
+
+        Called after both LLM and rule-based decisions so that strong
+        candlestick patterns can trigger trades even when the LLM says HOLD.
+        Selects the best *direction-aligned* pattern rather than just the
+        absolute strongest (which may oppose the fused direction).
+        """
+        # Ensure confidence is always a float (LLM may return string)
+        try:
+            decision["confidence"] = float(decision.get("confidence", 0))
+        except (TypeError, ValueError):
+            decision["confidence"] = 0.0
+
+        patterns = self._extract_patterns(intel)
+        if not patterns:
+            return decision
+
+        if decision.get("action", "HOLD").upper() != "HOLD":
+            # Already has an action — only boost confidence if pattern confirms
+            best = self._strongest_pattern(patterns)
+            if best and abs(best["signal"]) >= 0.6:
+                action = decision["action"].upper()
+                confirms = (action == "BUY" and best["signal"] > 0) or \
+                           (action == "SELL" and best["signal"] < 0)
+                if confirms:
+                    decision["confidence"] = min(0.92, decision["confidence"] + 0.10)
+                    decision.setdefault("key_signals", []).append(best["name"])
+            return decision
+
+        # Decision is HOLD — find direction-aligned pattern to override with
+        direction = intel.fused_direction
+        strong = [p for p in patterns if abs(p["signal"]) >= 0.6]
+
+        # Separate into bullish and bearish strong patterns
+        bullish_strong = sorted([p for p in strong if p["signal"] > 0],
+                                key=lambda p: p["signal"], reverse=True)
+        bearish_strong = sorted([p for p in strong if p["signal"] < 0],
+                                key=lambda p: abs(p["signal"]), reverse=True)
+
+        # Try the best direction-aligned pattern first
+        # If direction is positive or neutral, prefer bullish patterns
+        # If direction is negative, prefer bearish patterns
+        candidates = []
+        if direction >= -0.05:
+            candidates.extend([(p, "BUY") for p in bullish_strong])
+        if direction <= 0.05:
+            candidates.extend([(p, "SELL") for p in bearish_strong])
+        # Also try opposing-direction patterns on higher TFs
+        if direction < -0.05:
+            candidates.extend([(p, "BUY") for p in bullish_strong
+                              if p.get("timeframe") in ("1h", "15m")])
+        if direction > 0.05:
+            candidates.extend([(p, "SELL") for p in bearish_strong
+                              if p.get("timeframe") in ("1h", "15m")])
+
+        # TF-specific directional thresholds
+        tf_params = {
+            "1h":  {"dir": -0.10, "size": 0.45},
+            "15m": {"dir": -0.05, "size": 0.45},
+            "5m":  {"dir":  0.0,  "size": 0.35},
+            "3m":  {"dir":  0.0,  "size": 0.35},
+        }
+        default_params = {"dir": 0.03, "size": 0.25}
+
+        for pat, action in candidates:
+            tf = pat.get("timeframe", "5m")
+            params = tf_params.get(tf, default_params)
+            strength = abs(pat["signal"])
+            conf = min(0.88, intel.fused_confidence * 0.6 + strength * 0.45)
+
+            if action == "BUY" and direction > params["dir"]:
+                logger.info(f"[{intel.pair}] Pattern override → BUY: {pat['name']} "
+                           f"({tf}, signal={pat['signal']:+.2f}, conf={conf:.2f})")
+                return {
+                    **decision,
+                    "action": "BUY",
+                    "confidence": conf,
+                    "size_pct": risk["max_position_pct"] * params["size"],
+                    "stop_distance_pct": risk["stop_loss_pct"] * 1.2,
+                    "reasoning": f"Pattern override: {pat['name']} ({tf}). {decision.get('reasoning', '')}",
+                    "key_signals": [pat["name"]],
+                }
+            elif action == "SELL" and direction < -params["dir"]:
+                logger.info(f"[{intel.pair}] Pattern override → SELL: {pat['name']} "
+                           f"({tf}, signal={pat['signal']:+.2f}, conf={conf:.2f})")
+                return {
+                    **decision,
+                    "action": "SELL",
+                    "confidence": conf,
+                    "size_pct": 0.5,
+                    "reasoning": f"Pattern override: {pat['name']} ({tf}). {decision.get('reasoning', '')}",
+                    "key_signals": [pat["name"]],
+                }
+
+        # Multi-pattern override: 2+ bullish/bearish patterns across timeframes
+        bullish_all = [p for p in patterns if p["signal"] > 0.3]
+        bearish_all = [p for p in patterns if p["signal"] < -0.3]
+
+        if len(bullish_all) >= 2 and direction > -0.10:
+            avg = sum(p["signal"] for p in bullish_all) / len(bullish_all)
+            conf = min(0.85, intel.fused_confidence * 0.5 + avg * 0.4 + 0.1)
+            names = [p["name"] for p in bullish_all]
+            logger.info(f"[{intel.pair}] Multi-pattern override → BUY: {names}")
+            return {
+                **decision,
+                "action": "BUY",
+                "confidence": conf,
+                "size_pct": risk["max_position_pct"] * 0.35,
+                "stop_distance_pct": risk["stop_loss_pct"] * 1.2,
+                "reasoning": f"Multi-pattern override: {', '.join(names)}. {decision.get('reasoning', '')}",
+                "key_signals": names,
+            }
+        elif len(bearish_all) >= 2 and direction < 0.10:
+            avg = sum(abs(p["signal"]) for p in bearish_all) / len(bearish_all)
+            conf = min(0.85, intel.fused_confidence * 0.5 + avg * 0.4 + 0.1)
+            names = [p["name"] for p in bearish_all]
+            logger.info(f"[{intel.pair}] Multi-pattern override → SELL: {names}")
+            return {
+                **decision,
+                "action": "SELL",
+                "confidence": conf,
+                "size_pct": 0.5,
+                "reasoning": f"Multi-pattern override: {', '.join(names)}. {decision.get('reasoning', '')}",
+                "key_signals": names,
+            }
+
+        return decision
 
     def _build_plan(
         self,

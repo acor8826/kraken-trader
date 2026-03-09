@@ -105,54 +105,70 @@ class SmartExecutor(IExecutor):
     async def execute(self, plan: TradingPlan) -> ExecutionReport:
         """
         Execute trading plan with smart routing.
-
-        Args:
-            plan: Trading plan with signals
-
-        Returns:
-            ExecutionReport with results
         """
         trades = []
+
+        # Get actual available balance
+        balance = await self.exchange.get_balance()
+        quote_currency = "USDT"
+        available_quote = balance.get(quote_currency, 0)
 
         for signal in plan.signals:
             if signal.action == TradeAction.HOLD:
                 continue
 
             try:
-                # Calculate order value
                 ticker = await self.exchange.get_ticker(signal.pair)
                 current_price = ticker["price"]
 
-                # Estimate order value based on size_pct and available balance
-                # For now, use a simple estimate
-                order_value = signal.size_pct * 1000  # Placeholder
+                # Calculate real order value from available balance
+                order_value = signal.size_pct * available_quote
 
-                # Check volatility
                 is_volatile = await self._check_volatility(signal.pair)
-
-                # Select execution strategy
                 strategy = self._select_strategy(order_value, is_volatile, signal)
 
                 logger.info(f"[{signal.pair}] Executing {signal.action.value} "
                            f"via {strategy.method}: {strategy.reason}")
 
-                # Execute with selected strategy
-                result = await self._execute_with_strategy(signal, strategy)
+                result = await self._execute_with_strategy(
+                    signal, strategy, available_quote
+                )
 
                 self.stats["total_orders"] += 1
 
-                # Convert result dict to Trade object
-                trades.append(Trade(
+                # Check for exchange errors
+                if result.get("error"):
+                    trades.append(Trade(
+                        pair=signal.pair,
+                        action=signal.action,
+                        status=TradeStatus.FAILED,
+                        error_message=result["error"],
+                        signal_confidence=signal.confidence,
+                        reasoning=signal.reasoning,
+                    ))
+                    continue
+
+                # Extract fill data from exchange result
+                fill_price = result.get("price", current_price)
+                fill_base = result.get("volume", 0.0)
+                fill_quote = result.get("cost", fill_base * fill_price)
+
+                trade = Trade(
                     pair=result.get("pair", signal.pair),
                     action=signal.action,
                     status=TradeStatus.FILLED if result.get("status") == "filled" else TradeStatus.FAILED,
-                    average_price=result.get("price", 0.0),
-                    exchange_order_id=result.get("order_id"),
-                    filled_size_quote=result.get("filled_quote", 0.0),
-                    filled_size_base=result.get("filled_base", 0.0),
+                    average_price=fill_price,
+                    exchange_order_id=result.get("order_id") or result.get("txid"),
+                    filled_size_quote=fill_quote,
+                    filled_size_base=fill_base,
                     signal_confidence=signal.confidence,
                     reasoning=signal.reasoning,
-                ))
+                )
+                trades.append(trade)
+
+                # Update available balance for subsequent signals
+                if trade.is_successful and signal.action == TradeAction.BUY:
+                    available_quote -= fill_quote
 
             except Exception as e:
                 logger.error(f"Execution failed for {signal.pair}: {e}")
@@ -238,21 +254,21 @@ class SmartExecutor(IExecutor):
     async def _execute_with_strategy(
         self,
         signal,
-        strategy: ExecutionStrategy
+        strategy: ExecutionStrategy,
+        available_quote: float = 0
     ) -> Dict:
         """Execute order with selected strategy"""
         pair = signal.pair
         is_buy = signal.action == TradeAction.BUY
 
-        # Get current price for size calculation
         ticker = await self.exchange.get_ticker(pair)
         current_price = ticker["price"]
 
         if strategy.method == "market":
-            return await self._execute_market(pair, signal, is_buy, current_price)
+            return await self._execute_market(pair, signal, is_buy, current_price, available_quote)
 
         elif strategy.method == "limit":
-            return await self._execute_limit(pair, signal, is_buy, current_price)
+            return await self._execute_limit(pair, signal, is_buy, current_price, available_quote)
 
         elif strategy.method == "twap":
             return await self._execute_twap(pair, signal, is_buy, current_price)
@@ -268,59 +284,69 @@ class SmartExecutor(IExecutor):
         pair: str,
         signal,
         is_buy: bool,
-        price: float
+        price: float,
+        available_quote: float = 0
     ) -> Dict:
         """Execute market order"""
         self.stats["market_orders"] += 1
 
         if is_buy:
-            # Buy with quote amount
-            amount = signal.size_pct * 1000  # Placeholder
-            result = await self.exchange.market_buy(pair, amount)
+            amount_quote = signal.size_pct * available_quote
+            if amount_quote < 5:
+                return {"error": f"Order too small: ${amount_quote:.2f}"}
+            result = await self.exchange.market_buy(pair, amount_quote)
         else:
-            # Sell with base amount
-            amount = signal.size_pct  # Placeholder
-            result = await self.exchange.market_sell(pair, amount)
+            # Get actual position size for sells
+            balance = await self.exchange.get_balance()
+            base = pair.split("/")[0]
+            base_amount = balance.get(base, 0)
+            sell_amount = base_amount * signal.size_pct
+            if sell_amount <= 0:
+                return {"error": f"No {base} to sell"}
+            result = await self.exchange.market_sell(pair, sell_amount)
 
-        return {
-            "pair": pair,
-            "status": "filled",
-            "strategy": "market",
-            "price": price,
-            "order_id": result.get("order_id") or result.get("txid")
-        }
+        if result.get("error"):
+            return result
+
+        result["status"] = "filled"
+        result["strategy"] = "market"
+        return result
 
     async def _execute_limit(
         self,
         pair: str,
         signal,
         is_buy: bool,
-        price: float
+        price: float,
+        available_quote: float = 0
     ) -> Dict:
         """Execute limit order with timeout and market fallback"""
         self.stats["limit_orders"] += 1
 
-        # Calculate limit price (slightly inside spread)
         ticker = await self.exchange.get_ticker(pair)
         spread_buffer = 0.001
 
         if is_buy:
             limit_price = ticker["ask"] * (1 - spread_buffer)
-            amount = signal.size_pct * 1000
-            result = await self.exchange.limit_buy(pair, amount, limit_price)
+            amount_quote = signal.size_pct * available_quote
+            if amount_quote < 5:
+                return {"error": f"Order too small: ${amount_quote:.2f}"}
+            result = await self.exchange.limit_buy(pair, amount_quote, limit_price)
         else:
             limit_price = ticker["bid"] * (1 + spread_buffer)
-            amount = signal.size_pct
-            result = await self.exchange.limit_sell(pair, amount, limit_price)
+            balance = await self.exchange.get_balance()
+            base = pair.split("/")[0]
+            sell_amount = balance.get(base, 0) * signal.size_pct
+            if sell_amount <= 0:
+                return {"error": f"No {base} to sell"}
+            result = await self.exchange.limit_sell(pair, sell_amount, limit_price)
 
-        # For simplicity, assume fill - real implementation would poll
-        return {
-            "pair": pair,
-            "status": "filled",
-            "strategy": "limit",
-            "price": limit_price,
-            "order_id": result.get("order_id") or result.get("txid")
-        }
+        if result.get("error"):
+            return result
+
+        result["status"] = "filled"
+        result["strategy"] = "limit"
+        return result
 
     async def _execute_twap(
         self,

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from core.interfaces import IAnalyst, IExchange, IMemory
 from core.models import Portfolio, Position, MarketIntel, Regime, AnalystSignal
+from core.models.trading import TradeAction
 from core.config import Settings, get_settings
 from core.events import EventBus, Event, EventType, get_event_bus
 from core.ml import RegimeClassifier, MarketRegime
@@ -365,9 +366,16 @@ class Phase3Orchestrator:
                 result["anomaly_detected"] = True
 
         # Publish validation event
+        actionable_count = len(validated_plan.actionable_signals)
+        total_signals = len(validated_plan.signals) if validated_plan.signals else 0
+        rejected_signals = [s for s in (validated_plan.signals or []) if s.action.value == "HOLD" or getattr(s, 'rejected', False)]
+        logger.info(
+            f"{pair}: plan has {total_signals} signals, {actionable_count} actionable"
+            + (f", rejected: {[s.reasoning[:60] for s in rejected_signals]}" if rejected_signals and actionable_count == 0 else "")
+        )
         await self._publish_event(EventType.PLAN_VALIDATED, {
             "pair": pair,
-            "actionable": len(validated_plan.actionable_signals)
+            "actionable": actionable_count
         })
 
         # 7. Execute via smart executor
@@ -380,12 +388,23 @@ class Phase3Orchestrator:
                 if validated_plan.signals else "HOLD"
             )
 
-            # Record trade results for sentinel
+            # Record trade results for sentinel + memory
             for trade in report.successful_trades:
                 await self.sentinel.record_trade_result({
                     "pair": trade.pair,
                     "pnl": trade.pnl or 0
                 })
+                # Persist trade to memory for history endpoint
+                try:
+                    await self.memory.record_trade(trade, intel)
+                    # Track entry price for position display
+                    if trade.action == TradeAction.BUY and trade.average_price > 0:
+                        base = trade.pair.split("/")[0]
+                        await self.memory.set_entry_price(
+                            base, trade.average_price, trade.filled_size_base
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to record trade to memory: {e}")
 
             # Publish trade event
             if result["executed"]:

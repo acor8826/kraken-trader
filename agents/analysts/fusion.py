@@ -32,7 +32,7 @@ class IntelligenceFusion:
     # Default regime-specific weight adjustments
     REGIME_WEIGHTS = {
         MarketRegime.TRENDING_UP: {
-            "technical": 0.50,  # Increased in trends
+            "technical": 0.50,
             "sentiment": 0.20,
             "onchain": 0.15,
             "macro": 0.10,
@@ -46,17 +46,17 @@ class IntelligenceFusion:
             "orderbook": 0.05
         },
         MarketRegime.RANGING: {
-            "technical": 0.25,
-            "sentiment": 0.25,
-            "onchain": 0.20,
+            "technical": 0.40,  # Patterns are key entry signals in ranges
+            "sentiment": 0.20,
+            "onchain": 0.15,
             "macro": 0.10,
-            "orderbook": 0.20  # Increased for timing
+            "orderbook": 0.15
         },
         MarketRegime.VOLATILE: {
-            "technical": 0.25,
-            "sentiment": 0.20,
-            "onchain": 0.25,  # Increased for whale activity
-            "macro": 0.15,
+            "technical": 0.40,  # Patterns help time volatile entries
+            "sentiment": 0.15,
+            "onchain": 0.20,
+            "macro": 0.10,
             "orderbook": 0.15
         }
     }

@@ -31,7 +31,7 @@ class ClaudeLLM(ILLM):
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY", "")
         self.model = model
         self.codex_api_key = os.getenv("OPENAI_API_KEY", "")
-        self.codex_model = os.getenv("OPENAI_MODEL", "gpt-5-codex")
+        self.codex_model = os.getenv("OPENAI_MODEL", "gpt-5.4")
 
         # Token usage tracking
         self._total_input_tokens = 0
@@ -97,67 +97,122 @@ class ClaudeLLM(ILLM):
         return True
 
     def _extract_openai_text(self, payload: Dict) -> str:
+        # 1. Responses API: top-level output_text
         output_text = payload.get("output_text")
         if isinstance(output_text, str) and output_text.strip():
             return output_text.strip()
 
+        # 2. Responses API: output[] — deep scan for any text content
         output = payload.get("output", [])
         if isinstance(output, list):
             text_chunks = []
             for item in output:
                 if not isinstance(item, dict):
                     continue
+                # Direct text on output item
+                if item.get("type") == "message" and isinstance(item.get("content"), list):
+                    for block in item["content"]:
+                        if isinstance(block, dict) and block.get("text"):
+                            text_chunks.append(block["text"])
+                # Nested content blocks
                 content = item.get("content", [])
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") in ("output_text", "text"):
-                        t = block.get("text")
-                        if isinstance(t, str):
-                            text_chunks.append(t)
+                if isinstance(content, list):
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        for key in ("text", "output_text", "value"):
+                            t = block.get(key)
+                            if isinstance(t, str) and t.strip():
+                                text_chunks.append(t)
+                # Direct text field on item
+                for key in ("text", "content"):
+                    val = item.get(key)
+                    if isinstance(val, str) and val.strip():
+                        text_chunks.append(val)
             if text_chunks:
                 return "".join(text_chunks).strip()
 
+        # 3. ChatCompletion format: choices[].message.content
+        choices = payload.get("choices", [])
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                msg = choice.get("message", {})
+                if isinstance(msg, dict):
+                    content = msg.get("content")
+                    if isinstance(content, str) and content.strip():
+                        return content.strip()
+
+        # 4. Brute-force: recursively find any text-like string in response
+        found = self._deep_find_text(payload)
+        if found:
+            return found
+
+        logger.error(f"[CODEX] Cannot extract text. Keys: {list(payload.keys())}, output types: {[type(i).__name__ for i in output] if isinstance(output, list) else 'N/A'}")
         raise ValueError("No text content found in Codex response")
+
+    def _deep_find_text(self, obj, depth: int = 0) -> Optional[str]:
+        """Recursively search for text content in nested response structures."""
+        if depth > 5:
+            return None
+        if isinstance(obj, str) and len(obj) > 5 and not obj.startswith("http"):
+            return obj
+        if isinstance(obj, dict):
+            # Prioritize known text keys
+            for key in ("text", "content", "output_text", "value", "message"):
+                val = obj.get(key)
+                if isinstance(val, str) and len(val) > 5:
+                    return val
+                if isinstance(val, (dict, list)):
+                    found = self._deep_find_text(val, depth + 1)
+                    if found:
+                        return found
+        if isinstance(obj, list):
+            for item in obj:
+                found = self._deep_find_text(item, depth + 1)
+                if found:
+                    return found
+        return None
 
     def _complete_with_codex(self, prompt: str, max_tokens: int = 1000, system_prompt: str = None) -> str:
         if not self.codex_api_key:
             raise Exception("Codex fallback not configured (OPENAI_API_KEY missing)")
-
-        logger.info(f"[CODEX FALLBACK] Calling OpenAI model={self.codex_model}, max_tokens={max_tokens}")
 
         headers = {
             "Authorization": f"Bearer {self.codex_api_key}",
             "Content-Type": "application/json"
         }
 
-        input_payload = prompt
-        if system_prompt:
-            input_payload = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
+        # Try Responses API first, then Chat Completions as fallback
+        for api_name, url, body_fn in [
+            ("Responses", "https://api.openai.com/v1/responses", lambda: {
+                "model": self.codex_model,
+                "input": ([{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}] if system_prompt else prompt),
+                "max_output_tokens": max_tokens,
+            }),
+            ("ChatCompletions", "https://api.openai.com/v1/chat/completions", lambda: {
+                "model": self.codex_model,
+                "messages": ([{"role": "system", "content": system_prompt}] if system_prompt else []) + [{"role": "user", "content": prompt}],
+                "max_tokens": max_tokens,
+            }),
+        ]:
+            try:
+                body = body_fn()
+                logger.info(f"[CODEX FALLBACK] Trying {api_name} API, model={body.get('model')}")
+                with httpx.Client(timeout=30.0) as client:
+                    response = client.post(url, headers=headers, json=body)
+                    response.raise_for_status()
+                    data = response.json()
 
-        body = {
-            "model": self.codex_model,
-            "input": input_payload,
-            "max_output_tokens": max_tokens
-        }
+                result = self._extract_openai_text(data)
+                logger.info(f"[CODEX FALLBACK] {api_name} success, response length={len(result)}")
+                return result
+            except Exception as e:
+                logger.warning(f"[CODEX FALLBACK] {api_name} failed: {type(e).__name__}: {e}")
+                continue
 
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                response = client.post("https://api.openai.com/v1/responses", headers=headers, json=body)
-                response.raise_for_status()
-                data = response.json()
-
-            result = self._extract_openai_text(data)
-            logger.info(f"[CODEX FALLBACK] Success, response length={len(result)}")
-            return result
-        except Exception as codex_err:
-            logger.error(f"[CODEX FALLBACK] Also failed: {type(codex_err).__name__}: {codex_err}")
-            raise
+        raise Exception("All OpenAI API attempts failed")
     
     async def complete(self, prompt: str, max_tokens: int = 1000) -> str:
         """Get text completion from Claude, with Codex fallback."""

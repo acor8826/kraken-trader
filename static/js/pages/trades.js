@@ -292,9 +292,9 @@ const TradesPage = {
             const tradeId = trade.id || trade.trade_id || idx;
             const pair = trade.pair || trade.symbol || 'UNKNOWN';
             const action = trade.action || 'HOLD';
-            const amount = trade.amount || trade.quantity || 0;
-            const price = trade.price || trade.executed_price || 0;
-            const pnl = trade.pnl || trade.realized_pnl || 0;
+            const amount = trade.filled_size_base || trade.amount || trade.quantity || 0;
+            const price = trade.average_price || trade.price || trade.executed_price || 0;
+            const pnl = trade.realized_pnl || trade.pnl || 0;
             const pnlClass = getPnLClass(pnl);
             const actionClass = getActionClass(action);
             const status = trade.status || 'FILLED';
@@ -333,10 +333,10 @@ const TradesPage = {
                                 </h4>
                                 <p class="detail-reasoning">${escapeHTML(reasoning)}</p>
                             </div>
-                            ${trade.confidence ? `
+                            ${(trade.signal_confidence || trade.confidence) ? `
                                 <div class="detail-meta">
                                     <span class="meta-item">
-                                        <strong>Confidence:</strong> ${formatPercent(trade.confidence)}
+                                        <strong>Confidence:</strong> ${formatPercent(trade.signal_confidence || trade.confidence)}
                                     </span>
                                     ${trade.agent ? `<span class="meta-item"><strong>Agent:</strong> ${escapeHTML(trade.agent)}</span>` : ''}
                                 </div>

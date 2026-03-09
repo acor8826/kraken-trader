@@ -240,7 +240,7 @@ const HomePage = {
         // Create chart with cyberpunk theme
         this.chart = LightweightCharts.createChart(chartContainer, {
             width: chartContainer.clientWidth,
-            height: 320,
+            height: 260,
             layout: {
                 background: { type: 'solid', color: 'transparent' },
                 textColor: 'rgba(0, 212, 255, 0.7)',
@@ -417,10 +417,27 @@ const HomePage = {
         if (!this.areaSeries || !history?.snapshots) return;
 
         // Transform to chart format
-        const data = history.snapshots.map(snap => ({
+        let data = history.snapshots.map(snap => ({
             time: Math.floor(new Date(snap.timestamp).getTime() / 1000),
             value: snap.total_value || 0
         })).sort((a, b) => a.time - b.time);
+
+        // If very few data points, pad with synthetic points for a visible chart
+        if (data.length > 0 && data.length < 3) {
+            const latest = data[data.length - 1];
+            const initial = 1000; // initial capital
+            const padded = [];
+            const nowSec = Math.floor(Date.now() / 1000);
+            // Add a starting point 24h before first data point
+            const startTime = data[0].time - 86400;
+            padded.push({ time: startTime, value: initial });
+            padded.push(...data);
+            // Add current time if latest is older than 5 minutes
+            if (nowSec - latest.time > 300) {
+                padded.push({ time: nowSec, value: latest.value });
+            }
+            data = padded;
+        }
 
         if (data.length > 0) {
             this.areaSeries.setData(data);
@@ -464,6 +481,10 @@ const HomePage = {
             const time = formatTimeAgo(trade.timestamp || trade.created_at);
             const pair = trade.pair || trade.symbol || 'UNKNOWN';
             const reasoning = trade.reasoning || trade.signal_reason || 'No reasoning provided';
+            const tradePrice = trade.average_price || trade.price || 0;
+            const tradePnl = trade.realized_pnl || trade.pnl;
+            const tradeAmount = trade.filled_size_base || trade.amount || 0;
+            const confidence = trade.signal_confidence || trade.confidence || 0;
 
             return `
                 <div class="activity-item ${actionClass}" style="animation-delay: ${index * 50}ms">
@@ -476,8 +497,10 @@ const HomePage = {
                         </div>
                         <div class="activity-details">
                             <span class="activity-agent">${escapeHTML(trade.agent || 'Sentinel')}</span>
-                            ${trade.price ? `<span class="activity-price font-mono">@ ${formatCurrency(trade.price)}</span>` : ''}
-                            ${trade.pnl !== undefined ? `<span class="activity-pnl font-mono ${trade.pnl >= 0 ? 'profit' : 'loss'}">${formatCurrency(trade.pnl)}</span>` : ''}
+                            ${tradePrice ? `<span class="activity-price font-mono">@ ${formatCurrency(tradePrice)}</span>` : ''}
+                            ${tradeAmount ? `<span class="activity-amount font-mono">${tradeAmount.toFixed(4)}</span>` : ''}
+                            ${confidence ? `<span class="activity-confidence font-mono">${(confidence * 100).toFixed(0)}%</span>` : ''}
+                            ${tradePnl !== undefined && tradePnl !== null ? `<span class="activity-pnl font-mono ${tradePnl >= 0 ? 'profit' : 'loss'}">${formatCurrency(tradePnl)}</span>` : ''}
                         </div>
                         <div class="activity-reasoning">${escapeHTML(reasoning.substring(0, 100))}${reasoning.length > 100 ? '...' : ''}</div>
                     </div>

@@ -48,7 +48,7 @@ class TwitterSentimentAnalyst(IAnalyst):
     async def fetch_and_classify_batch(
         self,
         symbols: List[str],
-        since_minutes: int = 15,
+        since_minutes: int = 60,
     ) -> Dict[str, CoinSentiment]:
         """
         Fetch tweets for all symbols in 1 API call, classify with 1 Haiku call.
@@ -89,12 +89,10 @@ class TwitterSentimentAnalyst(IAnalyst):
                 prompt=f"{CLASSIFICATION_SYSTEM}\n\nTweets:\n{numbered_tweets}",
                 max_tokens=200,
             )
+            labels = [l.strip().upper() for l in classification.split(",")]
         except Exception as e:
-            logger.warning(f"[TWITTER_ANALYST] Haiku classification failed: {e}")
-            return dict(self._last_sentiments)
-
-        # 3. Parse B/N/R labels
-        labels = [l.strip().upper() for l in classification.split(",")]
+            logger.warning(f"[TWITTER_ANALYST] LLM classification failed, using keyword fallback: {e}")
+            labels = [self._keyword_classify(t["text"]) for t in tweets[:100]]
         # Pad with N if too few
         while len(labels) < len(tweets):
             labels.append("N")
@@ -159,6 +157,20 @@ class TwitterSentimentAnalyst(IAnalyst):
         self._last_sentiments = sentiments
         logger.info(f"[TWITTER_ANALYST] Classified {len(tweets)} tweets across {len(symbols)} symbols")
         return sentiments
+
+    @staticmethod
+    def _keyword_classify(text: str) -> str:
+        """Simple keyword-based sentiment when LLM is unavailable."""
+        t = text.lower()
+        bull_words = ("bull", "moon", "pump", "buy", "long", "ath", "breakout", "rocket", "gem", "100x", "fire", "lfg", "wagmi")
+        bear_words = ("bear", "dump", "sell", "short", "crash", "rug", "scam", "dead", "rekt", "ngmi")
+        bull = sum(1 for w in bull_words if w in t)
+        bear = sum(1 for w in bear_words if w in t)
+        if bull > bear:
+            return "B"
+        if bear > bull:
+            return "R"
+        return "N"
 
     def _update_velocity(self, symbol: str, count: int, now: datetime, window_minutes: int) -> float:
         """Track mention velocity (mentions per minute) via rolling history."""

@@ -274,21 +274,41 @@ class TechnicalAnalyst(IAnalyst):
     def _aggregate(self, tf_results: Dict[str, dict]) -> Tuple[float, float, str]:
         """Combine per-timeframe signals into one direction + confidence."""
 
-        # Weighted direction
+        # Check for strong patterns on any timeframe
+        best_pattern_tf = None
+        best_pattern_signal = 0
+        best_pattern_name = None
+        for tf, res in tf_results.items():
+            cp = res["indicators"].get("candle_pattern")
+            cs = res["indicators"].get("candle_signal", 0)
+            if cp and abs(cs) >= 0.6:
+                if abs(cs) > abs(best_pattern_signal):
+                    best_pattern_tf = tf
+                    best_pattern_signal = cs
+                    best_pattern_name = cp
+
+        # Weighted direction — boost timeframes with strong patterns
         total_w = 0.0
         weighted_dir = 0.0
         for tf, res in tf_results.items():
             w = TF_WEIGHTS.get(tf, 0.15)
+            # Boost weight of timeframe with strong pattern
+            if tf == best_pattern_tf:
+                w *= 1.5
             weighted_dir += res["direction"] * w
             total_w += w
         direction = weighted_dir / total_w if total_w else 0.0
 
-        # Weighted confidence
+        # Weighted confidence — pattern timeframes weighted higher
         weighted_conf = 0.0
+        total_cw = 0.0
         for tf, res in tf_results.items():
             w = TF_WEIGHTS.get(tf, 0.15)
+            if tf == best_pattern_tf:
+                w *= 1.5
             weighted_conf += res["confidence"] * w
-        base_confidence = weighted_conf / total_w if total_w else 0.3
+            total_cw += w
+        base_confidence = weighted_conf / total_cw if total_cw else 0.3
 
         # Alignment bonus: if all timeframes agree on direction, boost confidence
         directions = [res["direction"] for res in tf_results.values()]
@@ -296,14 +316,21 @@ class TechnicalAnalyst(IAnalyst):
         all_bearish = all(d < -0.05 for d in directions)
 
         if len(directions) >= 2 and (all_bullish or all_bearish):
-            # Timeframes agree — boost confidence (scale with number of TFs)
             alignment_bonus = 0.15 * (len(directions) / 5)
             base_confidence = min(0.92, base_confidence + alignment_bonus)
         elif len(directions) >= 2:
-            # Timeframes disagree — penalize
             spread = max(directions) - min(directions)
             penalty = min(0.15, spread * 0.1)
+            # Reduce penalty when a strong pattern exists — patterns are
+            # timeframe-specific and shouldn't be penalized by neutral TFs
+            if best_pattern_tf:
+                penalty *= 0.4
             base_confidence = max(0.15, base_confidence - penalty)
+
+        # Pattern-driven confidence floor: strong patterns guarantee minimum confidence
+        if best_pattern_tf and abs(best_pattern_signal) >= 0.6:
+            pattern_floor = 0.45 + abs(best_pattern_signal) * 0.15  # 0.54-0.57 for 0.6-0.8 signals
+            base_confidence = max(base_confidence, pattern_floor)
 
         # Build reasoning
         tf_order = {"1h": 0, "15m": 1, "5m": 2, "3m": 3, "1m": 4}
@@ -311,7 +338,6 @@ class TechnicalAnalyst(IAnalyst):
         for tf, res in sorted(tf_results.items(), key=lambda x: tf_order.get(x[0], 5)):
             arrow = "↑" if res["direction"] > 0.05 else ("↓" if res["direction"] < -0.05 else "→")
             part = f"{tf}:{arrow}{res['direction']:+.2f}"
-            # Add candle pattern info if present
             if res["indicators"].get("candle_pattern"):
                 part += f"({res['indicators']['candle_pattern']})"
             parts.append(part)
@@ -456,9 +482,9 @@ class TechnicalAnalyst(IAnalyst):
             elif volume_trend < -0.2:
                 signals.append(("volume", -0.1, 0.08))
 
-        # 6. Candlestick Pattern (weight 0.20)
+        # 6. Candlestick Pattern (weight 0.30 — primary signal source)
         if candle_pattern is not None:
-            signals.append(("candle_pattern", candle_pattern["signal"], 0.20))
+            signals.append(("candle_pattern", candle_pattern["signal"], 0.30))
             reasons.append(f"Pattern: {candle_pattern['name']}")
 
         if not signals:
@@ -475,7 +501,16 @@ class TechnicalAnalyst(IAnalyst):
         alignment_ratio = agreeing / len(signal_values) if signal_values else 0
 
         confidence = min(0.9, avg_mag * 0.5 + agreement * 0.3 + alignment_ratio * 0.2 + 0.10)
-        if avg_mag < 0.3:
+
+        # Pattern confirmation bonus: strong patterns (|signal| >= 0.6) that align
+        # with the overall direction get a confidence boost
+        if candle_pattern is not None and abs(candle_pattern["signal"]) >= 0.6:
+            pattern_aligns = (candle_pattern["signal"] > 0) == (direction > 0)
+            if pattern_aligns and abs(direction) > 0.05:
+                confidence = min(0.92, confidence + 0.12)
+                reasons.append("Pattern-confirmed")
+
+        if avg_mag < 0.3 and (candle_pattern is None or abs(candle_pattern["signal"]) < 0.6):
             confidence = min(confidence, 0.50)
 
         return direction, confidence, "; ".join(reasons)

@@ -126,18 +126,30 @@ class Header {
     initMenuToggle() {
         const menuBtn = document.getElementById('menu-toggle');
         const sidebar = document.getElementById('nav-sidebar');
+        const overlay = document.getElementById('nav-overlay');
+
+        const closeSidebar = () => {
+            sidebar.classList.remove('open');
+            if (overlay) overlay.classList.remove('visible');
+            store.set('sidebarOpen', false);
+        };
 
         if (menuBtn && sidebar) {
             menuBtn.addEventListener('click', () => {
-                sidebar.classList.toggle('open');
-                store.set('sidebarOpen', sidebar.classList.contains('open'));
+                const isOpen = sidebar.classList.toggle('open');
+                if (overlay) overlay.classList.toggle('visible', isOpen);
+                store.set('sidebarOpen', isOpen);
             });
+
+            // Close on overlay click
+            if (overlay) {
+                overlay.addEventListener('click', closeSidebar);
+            }
 
             // Close on outside click
             document.addEventListener('click', (e) => {
                 if (!sidebar.contains(e.target) && !menuBtn.contains(e.target)) {
-                    sidebar.classList.remove('open');
-                    store.set('sidebarOpen', false);
+                    closeSidebar();
                 }
             });
         }
@@ -169,8 +181,10 @@ class Navigation {
                 const path = item.dataset.path;
                 if (path) {
                     router.navigate(path);
-                    // Close sidebar on mobile
+                    // Close sidebar
                     this.element.classList.remove('open');
+                    const overlay = document.getElementById('nav-overlay');
+                    if (overlay) overlay.classList.remove('visible');
                     store.set('sidebarOpen', false);
                 }
             });
