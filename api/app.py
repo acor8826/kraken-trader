@@ -206,24 +206,27 @@ async def _create_orchestrator(settings: Settings):
     # Memory - Phase 2: PostgreSQL or Phase 1: In-Memory
     cache = None
     if settings.stage.value in ("stage2", "stage3") and settings.features.enable_postgres:
+        # Redis cache (optional — failure doesn't block PostgreSQL)
         try:
-            from memory.postgres import PostgresStore
             from memory.redis_cache import RedisCache
-
-            # Initialize Redis cache (env-driven to avoid Settings schema drift)
             redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
             cache_ttl = int(os.getenv("REDIS_CACHE_TTL_SECONDS", "300"))
             cache = RedisCache(redis_url, default_ttl=cache_ttl)
             await cache.connect()
             logger.info(f"Redis cache connected (TTL={cache_ttl}s)")
+        except Exception as e:
+            logger.warning(f"Redis cache unavailable: {e}")
+            cache = None
 
-            # Initialize PostgreSQL (explicit env first)
+        # PostgreSQL (required for Phase 2)
+        try:
+            from memory.postgres import PostgresStore
             db_url = os.getenv("DATABASE_URL", "postgresql://trader:trader@localhost:5432/trader")
             memory = PostgresStore(db_url)
             await memory.connect()
             logger.info("PostgreSQL storage connected")
         except Exception as e:
-            logger.warning(f"Failed to initialize Phase 2 storage: {e}")
+            logger.warning(f"Failed to initialize PostgreSQL: {e}")
             logger.info("Falling back to in-memory storage")
             memory = InMemoryStore(initial_capital=settings.trading.initial_capital)
     else:
