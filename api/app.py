@@ -79,7 +79,10 @@ def create_app(stage: Stage = None) -> FastAPI:
         
         # Initialize components
         orchestrator = await _create_orchestrator(settings)
-        
+
+        # Run pending database migrations (idempotent, uses IF NOT EXISTS)
+        await _run_migrations_on_startup()
+
         # Start scheduler
         scheduler = AsyncIOScheduler()
         scheduler.add_job(
@@ -584,6 +587,25 @@ async def _create_orchestrator(settings: Settings):
 
     logger.info(f"🚀 Orchestrator initialized ({len(analysts)} analysts)")
     return orch
+
+
+async def _run_migrations_on_startup():
+    """Run pending DB migrations on startup (idempotent)."""
+    if not seed_improver or not hasattr(seed_improver, 'memory'):
+        return
+    memory = seed_improver.memory
+    if not hasattr(memory, '_connection'):
+        return
+    try:
+        migration_dir = Path(__file__).resolve().parents[1] / "migrations"
+        migration_file = migration_dir / "006_dgm_population_archive.sql"
+        if migration_file.exists():
+            sql = migration_file.read_text(encoding='utf-8')
+            async with memory._connection() as conn:
+                await conn.execute(sql)
+            logger.info("Migration 006_dgm_population_archive applied successfully")
+    except Exception as e:
+        logger.warning(f"Migration 006 skipped or already applied: {e}")
 
 
 async def _run_trading_cycle():
