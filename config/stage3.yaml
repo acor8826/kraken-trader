@@ -145,7 +145,7 @@ seed_improver:
   cooldown_hours: 2
   gcs_config_bucket: "cryptotrading-485110-config"
   dgm:
-    enabled: false
+    enabled: true
     evaluation_window_hours: 24
     max_evaluation_hours: 72
     min_trades_for_eval: 3
