@@ -560,7 +560,8 @@ async def _create_orchestrator(settings: Settings):
         # DGM (Darwinian Godel Machine) initialization
         global dgm_service
         dgm_config = auto_apply_config.get("dgm", {})
-        if dgm_config.get("enabled") and hasattr(memory, "pool"):
+        db_pool = getattr(memory, "_pool", None)
+        if dgm_config.get("enabled") and db_pool:
             try:
                 from agents.seed_improver.dgm_service import DGMService as _DGMService
                 from agents.seed_improver.deployer import SelfDeployer
@@ -570,12 +571,12 @@ async def _create_orchestrator(settings: Settings):
                     gcs_bucket=auto_apply_config.get("gcs_config_bucket", ""),
                 )
                 dgm_service = _DGMService(
-                    db_pool=memory.pool,
+                    db_pool=db_pool,
                     seed_improver_service=seed_improver,
                     deployer=deployer,
                     dgm_config=dgm_config,
                 )
-                set_dgm_service(dgm_service, memory.pool)
+                set_dgm_service(dgm_service, db_pool)
                 logger.info("DGM (Darwinian Godel Machine) initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize DGM: {e}")
