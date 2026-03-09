@@ -54,10 +54,25 @@ def _store_run_in_memory(result) -> None:
 
 @router.post("/run")
 async def seed_improver_run(payload: Optional[dict] = None):
-    """Trigger seed improver cycle (scheduled/manual)."""
-    if not _seed_improver:
+    """Trigger seed improver cycle (scheduled/manual).
+
+    When DGM is enabled, runs a full evolutionary cycle instead of the
+    standard linear pipeline.
+    """
+    if not _seed_improver and not _dgm_service:
         raise HTTPException(status_code=503, detail="Seed improver not initialized")
 
+    # DGM mode: run evolutionary cycle
+    if _dgm_service:
+        cycle_result = await _dgm_service.run_cycle()
+        return {
+            "status": "completed",
+            "mode": "dgm",
+            "outcome": cycle_result.get("outcome", "unknown"),
+            "cycle_result": cycle_result,
+        }
+
+    # Legacy mode
     body = payload or {}
     trigger_type = body.get("trigger_type", "manual")
     context = body.get("context", {})
@@ -73,10 +88,25 @@ async def seed_improver_run(payload: Optional[dict] = None):
 
 @router.post("/loss")
 async def seed_improver_loss(payload: Optional[dict] = None):
-    """Event-driven trigger for losing trade analysis."""
-    if not _seed_improver:
+    """Event-driven trigger for losing trade analysis.
+
+    When DGM is enabled, losing trades don't trigger an immediate cycle —
+    they are captured by dgm_variant_id tagging and evaluated at the next
+    scheduled cycle. This avoids reactive churn that undermines evaluation windows.
+    """
+    if not _seed_improver and not _dgm_service:
         raise HTTPException(status_code=503, detail="Seed improver not initialized")
 
+    # DGM mode: losing trades are evaluated within the normal cycle window,
+    # not as reactive triggers (would disrupt evaluation windows)
+    if _dgm_service:
+        return {
+            "status": "acknowledged",
+            "mode": "dgm",
+            "message": "Trade recorded with dgm_variant_id; will be evaluated in next DGM cycle",
+        }
+
+    # Legacy mode
     body = payload or {}
     trade = body.get("trade", body)
     result = await _seed_improver.run("losing_trade", {"trade": trade})
@@ -214,3 +244,140 @@ async def get_run_status(run_id: str) -> Dict[str, Any]:
             return {"id": entry["id"], "status": entry["status"], "summary": entry["summary"]}
 
     raise HTTPException(status_code=404, detail="Run not found")
+
+
+# ── DGM (Darwinian Godel Machine) endpoints ────────────────────
+
+_dgm_service = None
+_dgm_pool = None
+
+
+def set_dgm_service(dgm_svc, pool=None) -> None:
+    """Set the DGM service and DB pool instances."""
+    global _dgm_service, _dgm_pool
+    _dgm_service = dgm_svc
+    _dgm_pool = pool
+
+
+def _serialize_variant(v: dict) -> dict:
+    """Serialize a variant dict for JSON response."""
+    result = {}
+    for k, val in v.items():
+        if isinstance(val, datetime):
+            result[k] = val.isoformat()
+        elif hasattr(val, '__str__') and type(val).__name__ == 'Decimal':
+            result[k] = float(val)
+        else:
+            result[k] = val
+    return result
+
+
+@router.get("/dgm/status")
+async def dgm_status() -> Dict[str, Any]:
+    """Get current DGM system status."""
+    if not _dgm_service:
+        return {"enabled": False, "message": "DGM not initialized"}
+    try:
+        status = await _dgm_service.get_status()
+        if status.get('active_variant'):
+            status['active_variant'] = _serialize_variant(status['active_variant'])
+        if status.get('last_evaluation'):
+            status['last_evaluation'] = _serialize_variant(status['last_evaluation'])
+        return status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dgm/variants")
+async def dgm_list_variants(
+    limit: int = 50, offset: int = 0, status: Optional[str] = None
+) -> Dict[str, Any]:
+    """List all variants in the population archive."""
+    if not _dgm_pool:
+        raise HTTPException(status_code=503, detail="DGM not initialized")
+
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    try:
+        if status:
+            total = await _dgm_pool.fetchval(
+                "SELECT COUNT(*) FROM dgm_variants WHERE status = $1", status
+            )
+            rows = await _dgm_pool.fetch(
+                """SELECT v.*, f.fitness_score
+                   FROM dgm_variants v
+                   LEFT JOIN dgm_fitness_scores f ON f.variant_id = v.id
+                     AND f.id = (SELECT MAX(f2.id) FROM dgm_fitness_scores f2 WHERE f2.variant_id = v.id)
+                   WHERE v.status = $1
+                   ORDER BY v.created_at DESC LIMIT $2 OFFSET $3""",
+                status, limit, offset,
+            )
+        else:
+            total = await _dgm_pool.fetchval("SELECT COUNT(*) FROM dgm_variants")
+            rows = await _dgm_pool.fetch(
+                """SELECT v.*, f.fitness_score
+                   FROM dgm_variants v
+                   LEFT JOIN dgm_fitness_scores f ON f.variant_id = v.id
+                     AND f.id = (SELECT MAX(f2.id) FROM dgm_fitness_scores f2 WHERE f2.variant_id = v.id)
+                   ORDER BY v.created_at DESC LIMIT $1 OFFSET $2""",
+                limit, offset,
+            )
+
+        variants = [_serialize_variant(dict(r)) for r in rows]
+        return {"variants": variants, "total": total}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dgm/fitness/{variant_id}")
+async def dgm_fitness(variant_id: int) -> Dict[str, Any]:
+    """Get fitness scores for a variant."""
+    if not _dgm_pool:
+        raise HTTPException(status_code=503, detail="DGM not initialized")
+
+    try:
+        rows = await _dgm_pool.fetch(
+            """SELECT * FROM dgm_fitness_scores
+               WHERE variant_id = $1 ORDER BY computed_at DESC""",
+            variant_id,
+        )
+        scores = [_serialize_variant(dict(r)) for r in rows]
+        return {
+            "variant_id": variant_id,
+            "fitness_scores": scores,
+            "latest": scores[0] if scores else None,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dgm/lineage/{variant_id}")
+async def dgm_lineage(variant_id: int) -> Dict[str, Any]:
+    """Get full lineage tree for a variant."""
+    if not _dgm_service:
+        raise HTTPException(status_code=503, detail="DGM not initialized")
+
+    try:
+        lineage = await _dgm_service.population.get_lineage(variant_id)
+        children = await _dgm_service.population.get_children(variant_id)
+        return {
+            "variant_id": variant_id,
+            "lineage": [_serialize_variant(v) for v in lineage],
+            "children": [_serialize_variant(c) for c in children],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/dgm/cycle")
+async def dgm_trigger_cycle() -> Dict[str, Any]:
+    """Manually trigger a DGM evolutionary cycle."""
+    if not _dgm_service:
+        raise HTTPException(status_code=503, detail="DGM not initialized")
+
+    try:
+        result = await _dgm_service.run_cycle()
+        return {"status": "completed", "cycle_result": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

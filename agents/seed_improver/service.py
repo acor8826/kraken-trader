@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from .analyzer import SeedImproverAnalyzer
 from .auto_apply import AutoApplyPipeline
 from .deployer import SelfDeployer
@@ -135,6 +137,84 @@ class SeedImproverService:
             logger.exception(err)
             await self._record_run_failed(run_id, err)
             return SeedImproverResult(run_id=run_id, trigger_type=trigger_type, status="failed", summary=err)
+
+    async def run_for_variant(
+        self,
+        parent_variant: Dict[str, Any],
+        lineage_context: Optional[List[Dict[str, Any]]] = None,
+        failed_siblings: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Run Phase 0+1+2 against a specific parent config (for DGM).
+
+        Instead of reading the live config from disk, uses the parent's
+        config_yaml for analysis. Does NOT deploy -- deployment is handled
+        by DGMService.
+
+        Args:
+            parent_variant: Dict with at least 'config_yaml' (str) and 'id' (int).
+            lineage_context: Ancestry chain for enriched LLM prompt.
+            failed_siblings: Failed/rolled-back siblings to avoid repeating.
+
+        Returns:
+            Dict with 'patches' (list of ConfigPatch) and 'new_config_yaml' (str),
+            or None if no actionable patches were produced.
+        """
+        config_yaml = parent_variant.get("config_yaml", "")
+        variant_id = parent_variant.get("id", "?")
+        if not config_yaml:
+            logger.warning("run_for_variant called with empty config_yaml (variant %s)", variant_id)
+            return None
+
+        logger.info("Running seed improver for DGM variant %s", variant_id)
+
+        # Phase 0: observability audit (uses live trade data)
+        audit = await self._phase0_observability_audit()
+
+        # Phase 1: LLM analysis
+        if not self.analyzer:
+            logger.warning("No LLM available, skipping Phase 1 for variant %s", variant_id)
+            return None
+
+        trades = audit.get("trades", [])
+        if not trades:
+            logger.info("No trades available for variant %s analysis", variant_id)
+            return None
+
+        try:
+            stats = await self._gather_stats()
+            known_patterns = await self._load_known_patterns()
+
+            # Use the parent's config instead of live config
+            config_snapshot = yaml.safe_load(config_yaml)
+            config_info = {
+                "pairs": config_snapshot.get("trading", {}).get("pairs", []),
+                "check_interval_minutes": config_snapshot.get("trading", {}).get("check_interval_minutes"),
+                "simulation_mode": config_snapshot.get("features", {}).get("simulation_mode"),
+                "stage": config_snapshot.get("stage", ""),
+                "initial_capital": config_snapshot.get("trading", {}).get("initial_capital"),
+                "target_capital": config_snapshot.get("trading", {}).get("target_capital"),
+            }
+
+            analysis = await self.analyzer.analyze(trades, stats, config_info, known_patterns)
+        except Exception as e:
+            logger.warning("Phase 1 analysis failed for variant %s: %s", variant_id, e)
+            return None
+
+        if not analysis or not analysis.recommendations:
+            logger.info("No recommendations for variant %s", variant_id)
+            return None
+
+        # Phase 2: generate patches and apply to config (no deploy)
+        if not self.auto_apply_pipeline:
+            logger.warning("No auto-apply pipeline for variant %s", variant_id)
+            return None
+
+        try:
+            result = await self.auto_apply_pipeline.apply_to_variant(analysis, config_yaml)
+            return result
+        except Exception as e:
+            logger.warning("Phase 2 apply_to_variant failed for variant %s: %s", variant_id, e)
+            return None
 
     # ------------------------------------------------------------------
     # Phase 0: Observability Audit

@@ -11,6 +11,7 @@ Implements IMemory interface with full database persistence for:
 
 import logging
 import json
+import os
 from typing import Dict, List, Optional
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
@@ -156,6 +157,10 @@ class PostgresStore(IMemory):
             async with self._connection() as conn:
                 async with conn.transaction():
                     # Insert trade
+                    # Read DGM variant ID from environment if set
+                    dgm_variant_raw = os.environ.get('DGM_VARIANT_ID')
+                    dgm_variant_id = int(dgm_variant_raw) if dgm_variant_raw else None
+
                     trade_id = await conn.fetchval("""
                         INSERT INTO trades (
                             pair, action, order_type,
@@ -167,11 +172,12 @@ class PostgresStore(IMemory):
                             fees_quote, realized_pnl_after_fees,
                             decision_timestamp, submitted_timestamp, filled_timestamp,
                             latency_decision_to_submit_ms, latency_submit_to_fill_ms, latency_decision_to_fill_ms,
+                            dgm_variant_id,
                             created_at, updated_at
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                             $11, $12, $13, $14, $15, $16, $17, $18,
-                            $19, $20, $21, $22, $23, $24
+                            $19, $20, $21, $22, $23, $24, $25
                         ) RETURNING id
                     """,
                         trade.pair,
@@ -197,6 +203,7 @@ class PostgresStore(IMemory):
                         trade.latency_decision_to_submit_ms,
                         trade.latency_submit_to_fill_ms,
                         trade.latency_decision_to_fill_ms,
+                        dgm_variant_id,
                         trade.timestamp or datetime.now(timezone.utc),
                         datetime.now(timezone.utc)
                     )

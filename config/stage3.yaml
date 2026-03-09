@@ -21,7 +21,7 @@ risk:
   max_total_exposure_pct: 0.80
   stop_loss_pct: 0.02
   take_profit_multiplier: 2.0
-  min_confidence: 0.50
+  min_confidence: 0.38
   max_daily_trades: 20
   max_daily_loss_pct: 0.08
 
@@ -96,10 +96,10 @@ sentiment:
 # Intelligence Fusion Weights (5 analysts)
 fusion:
   analyst_weights:
-    technical: 0.30
-    sentiment: 0.25
-    onchain: 0.20
-    macro: 0.15
+    technical: 0.40
+    sentiment: 0.20
+    onchain: 0.18
+    macro: 0.12
     orderbook: 0.10
 
 # Circuit Breaker Thresholds
@@ -122,7 +122,7 @@ aggressive_risk:
   max_total_exposure_pct: 0.90
   stop_loss_pct: 0.015
   take_profit_multiplier: 2.0
-  min_confidence: 0.40
+  min_confidence: 0.36
   max_daily_trades: 30
   max_daily_loss_pct: 0.12
 
@@ -144,5 +144,15 @@ seed_improver:
   max_patches_per_run: 3
   cooldown_hours: 2
   gcs_config_bucket: "cryptotrading-485110-config"
+  dgm:
+    enabled: false
+    evaluation_window_hours: 24
+    max_evaluation_hours: 72
+    min_trades_for_eval: 3
+    archive_max_size: 50
+    selection_temperature: 1.0
+    diversity_weight: 0.1
+    rollback_tolerance: 0.05
+    # Fitness = raw PnL after fees. No weighted composite — just profit.
 
 log_level: INFO

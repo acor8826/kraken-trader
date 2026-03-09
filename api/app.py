@@ -27,6 +27,7 @@ scheduler = None
 settings = None
 alert_manager = None
 seed_improver = None
+dgm_service = None
 
 # Portfolio cache (avoid hammering Binance on every dashboard poll)
 _portfolio_cache = None
@@ -552,6 +553,32 @@ async def _create_orchestrator(settings: Settings):
 
         from api.routes.seed_improver import set_seed_improver
         set_seed_improver(seed_improver, memory)
+
+        # DGM (Darwinian Godel Machine) initialization
+        global dgm_service
+        dgm_config = auto_apply_config.get("dgm", {})
+        if dgm_config.get("enabled") and hasattr(memory, "pool"):
+            try:
+                from agents.seed_improver.dgm_service import DGMService as _DGMService
+                from agents.seed_improver.deployer import SelfDeployer
+                from api.routes.seed_improver import set_dgm_service
+
+                deployer = SelfDeployer(
+                    gcs_bucket=auto_apply_config.get("gcs_config_bucket", ""),
+                )
+                dgm_service = _DGMService(
+                    db_pool=memory.pool,
+                    seed_improver_service=seed_improver,
+                    deployer=deployer,
+                    dgm_config=dgm_config,
+                )
+                set_dgm_service(dgm_service, memory.pool)
+                logger.info("DGM (Darwinian Godel Machine) initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize DGM: {e}")
+        elif dgm_config.get("enabled"):
+            logger.warning("DGM enabled but no DB pool available, skipping")
+
     except Exception as e:
         logger.warning(f"Failed to initialize SeedImprover: {e}")
 
@@ -580,12 +607,26 @@ async def _run_meme_cycle():
 
 
 async def _run_seed_improver_daily():
-    """Daily autonomous seed improver run (6:00 PM Australia/Sydney)."""
-    global seed_improver
+    """Daily autonomous seed improver run (6:00 PM Australia/Sydney).
+
+    When DGM is enabled, runs a full evolutionary cycle instead of the
+    standard linear pipeline.
+    """
+    global seed_improver, dgm_service
+
+    # DGM mode: run evolutionary cycle
+    if dgm_service:
+        try:
+            result = await dgm_service.run_cycle()
+            logger.info("DGM cycle completed: %s", result.get("outcome", "unknown"))
+        except Exception as e:
+            logger.error(f"DGM cycle error: {e}", exc_info=True)
+        return
+
+    # Legacy mode: standard seed improver
     if seed_improver:
         try:
             result = await seed_improver.run("scheduled", {"source": "apscheduler"})
-            # Store in the in-memory route log
             from api.routes.seed_improver import _store_run_in_memory
             _store_run_in_memory(result)
         except Exception as e:
@@ -1586,9 +1627,31 @@ def _register_routes(app: FastAPI):
             if intel and intel.signals:
                 for sig in intel.signals:
                     meta = getattr(sig, "metadata", {}) or {}
+
+                    # Check for "patterns" list (structured format)
                     if meta.get("patterns"):
                         for p in meta["patterns"]:
                             patterns.append(p)
+
+                    # Extract from per-timeframe keys: {tf}_candle_pattern / {tf}_candle_signal
+                    seen_tf = set()
+                    for key, val in meta.items():
+                        if key.endswith("_candle_pattern") and val:
+                            tf = key.replace("_candle_pattern", "")
+                            if tf in seen_tf:
+                                continue
+                            seen_tf.add(tf)
+                            signal_val = meta.get(f"{tf}_candle_signal", 0)
+                            patterns.append({
+                                "name": val,
+                                "timeframe": tf,
+                                "signal": signal_val,
+                                "direction": "bullish" if signal_val > 0 else "bearish",
+                                "strength": abs(signal_val),
+                                "timestamp": (intel.timestamp.isoformat()
+                                              if hasattr(intel, "timestamp") and intel.timestamp
+                                              else None),
+                            })
 
         # Also check event bus for pattern events
         from core.events import get_event_bus, EventType
