@@ -327,3 +327,33 @@ async def test_zero_amount_position_is_skipped():
     trades = await sentinel.check_exit_triggers(positions)
 
     assert trades == []
+
+
+@pytest.mark.asyncio
+async def test_trailing_stop_ratchets_peak_upward():
+    """When price rises above peak, trail should ratchet up."""
+    settings = _make_settings(
+        stop_loss_pct=0.025,
+        exit_management=ExitManagementConfig(
+            enable_trailing_stop=True,
+            trailing_stop=TrailingStopConfig(activation_pct=0.01, distance_pct=0.007),
+        ),
+    )
+    sentinel = BasicSentinel(settings=settings)
+    # Trailing already active at peak 101.5, price rises to 102.0
+    # (stays below 5% TP threshold = entry * 1.05 = 105.0)
+    old_trail = round(101.5 * 0.993, 2)
+    positions = {
+        "BTC": Position(
+            symbol="BTC", amount=0.1, entry_price=100.0, current_price=102.0,
+            peak_price=101.5, trailing_stop_active=True,
+            trailing_stop_price=old_trail,
+        )
+    }
+
+    trades = await sentinel.check_exit_triggers(positions)
+
+    assert trades == []  # No exit — price above trail
+    assert positions["BTC"].peak_price == 102.0  # Peak ratcheted
+    expected_trail = round(102.0 * 0.993, 2)
+    assert positions["BTC"].trailing_stop_price == expected_trail  # Trail moved up

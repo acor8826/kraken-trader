@@ -126,7 +126,10 @@ class PostgresStore(IMemory):
                 positions_json[symbol] = {
                     "amount": position.amount,
                     "entry_price": position.entry_price,
-                    "current_price": position.current_price
+                    "current_price": position.current_price,
+                    "peak_price": position.peak_price,
+                    "trailing_stop_active": position.trailing_stop_active,
+                    "trailing_stop_price": position.trailing_stop_price,
                 }
 
             async with self._connection() as conn:

@@ -100,6 +100,11 @@ class Phase3Orchestrator:
         self._latest_intel: Dict[str, MarketIntel] = {}
         self._cycle_metrics: List[Dict] = []
 
+        # Trailing stop state cache — persists across cycles within this instance.
+        # Keys are asset symbols (e.g. "BTC"), values are dicts with:
+        #   peak_price, trailing_stop_active, trailing_stop_price
+        self._exit_state: Dict[str, Dict] = {}
+
         logger.info(
             f"Phase3Orchestrator initialized with {len(analysts)} analysts: "
             f"{list(self._analysts_dict.keys())}"
@@ -179,17 +184,34 @@ class Phase3Orchestrator:
                 results["target_reached"] = True
                 return results
 
-            # 3. Check stop-losses
+            # 3. Check stop-losses and exit triggers (trailing stop, TP, etc.)
             stop_trades = await self.sentinel.check_stop_losses(portfolio.positions)
+
+            # Persist trailing stop state changes made by sentinel back to cache
+            for symbol, position in portfolio.positions.items():
+                self._exit_state[symbol] = {
+                    "peak_price": position.peak_price,
+                    "trailing_stop_active": position.trailing_stop_active,
+                    "trailing_stop_price": position.trailing_stop_price,
+                }
+
             if stop_trades:
-                logger.warning(f"Executing {len(stop_trades)} stop-loss trades")
+                logger.warning(f"Executing {len(stop_trades)} stop-loss/exit trades")
                 await self.executor.execute_stop_loss(stop_trades)
                 for trade in stop_trades:
+                    # Clear exit state for fully exited positions
+                    base = trade.pair.split("/")[0]
                     await self._publish_event(EventType.STOP_LOSS_TRIGGERED, {
                         "pair": trade.pair,
                         "reason": getattr(trade, 'reason', 'stop-loss')
                     })
                 portfolio = await self._get_portfolio_state()
+
+                # Clean up exit state for positions that no longer exist
+                active_symbols = set(portfolio.positions.keys())
+                stale = [s for s in self._exit_state if s not in active_symbols]
+                for s in stale:
+                    del self._exit_state[s]
 
             # 4. Detect market regime
             regime = await self._detect_regime()
@@ -536,12 +558,21 @@ class Phase3Orchestrator:
 
             entry_price = await self.memory.get_entry_price(asset)
 
-            positions[asset] = Position(
+            pos = Position(
                 symbol=asset,
                 amount=amount,
                 entry_price=entry_price,
                 current_price=current_price
             )
+
+            # Restore trailing stop / exit management state from cache
+            if asset in self._exit_state:
+                es = self._exit_state[asset]
+                pos.peak_price = es.get("peak_price")
+                pos.trailing_stop_active = es.get("trailing_stop_active", False)
+                pos.trailing_stop_price = es.get("trailing_stop_price")
+
+            positions[asset] = pos
 
         return Portfolio(
             available_quote=balance.get(qc, 0),
