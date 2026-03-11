@@ -357,3 +357,40 @@ async def test_trailing_stop_ratchets_peak_upward():
     assert positions["BTC"].peak_price == 102.0  # Peak ratcheted
     expected_trail = round(102.0 * 0.993, 2)
     assert positions["BTC"].trailing_stop_price == expected_trail  # Trail moved up
+
+
+# =====================================================================
+# FullSentinel pause-expiry fix (system_healthy must honour timer)
+# =====================================================================
+
+@pytest.mark.asyncio
+async def test_full_sentinel_system_healthy_respects_pause_expiry():
+    """system_healthy() must auto-resume when _pause_until is in the past."""
+    from agents.sentinel.full import FullSentinel
+    from datetime import datetime, timezone, timedelta
+
+    sentinel = FullSentinel()
+    # Simulate a pause that already expired 1 hour ago
+    sentinel._is_paused = True
+    sentinel._pause_reason = "Anomaly: test"
+    sentinel._pause_until = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    result = await sentinel.system_healthy()
+    assert result is True, "system_healthy() should return True when pause has expired"
+    assert sentinel._is_paused is False, "pause flag should be cleared after expiry"
+
+
+@pytest.mark.asyncio
+async def test_full_sentinel_system_healthy_blocks_during_active_pause():
+    """system_healthy() must return False when pause is still active."""
+    from agents.sentinel.full import FullSentinel
+    from datetime import datetime, timezone, timedelta
+
+    sentinel = FullSentinel()
+    sentinel._is_paused = True
+    sentinel._pause_reason = "Anomaly: test"
+    sentinel._pause_until = datetime.now(timezone.utc) + timedelta(hours=1)
+
+    result = await sentinel.system_healthy()
+    assert result is False, "system_healthy() should return False during active pause"
+    assert sentinel._is_paused is True

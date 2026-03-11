@@ -160,14 +160,32 @@ class Phase3Orchestrator:
                 "cycle": self._cycle_count
             })
 
-            # 1. Check system health
+            # 2. Get current portfolio (moved before health check so stop-losses always run)
+            portfolio = await self._get_portfolio_state()
+
+            # 3a. ALWAYS check stop-losses/exits regardless of sentinel pause state
+            # This ensures positions are protected even during anomaly-triggered pauses.
+            early_stop_trades = await self.sentinel.check_stop_losses(portfolio.positions)
+            for symbol, position in portfolio.positions.items():
+                self._exit_state[symbol] = {
+                    "peak_price": position.peak_price,
+                    "trailing_stop_active": position.trailing_stop_active,
+                    "trailing_stop_price": position.trailing_stop_price,
+                }
+            if early_stop_trades:
+                logger.warning(f"[SAFETY] Executing {len(early_stop_trades)} stop-loss/exit trades (pre-health-gate)")
+                await self.executor.execute_stop_loss(early_stop_trades)
+                portfolio = await self._get_portfolio_state()
+                active_symbols = set(portfolio.positions.keys())
+                stale = [s for s in self._exit_state if s not in active_symbols]
+                for s in stale:
+                    del self._exit_state[s]
+
+            # 1. Check system health (new trades/analysis gated here, exits are already handled above)
             if not await self.sentinel.system_healthy():
-                logger.warning("System not healthy - skipping cycle")
+                logger.warning("System not healthy - skipping new-trade analysis (exits already checked)")
                 results["errors"].append("System paused by sentinel")
                 return results
-
-            # 2. Get current portfolio
-            portfolio = await self._get_portfolio_state()
             logger.info(
                 f"Portfolio: ${portfolio.total_value:,.2f} | "
                 f"Positions: {len(portfolio.positions)} | "
