@@ -1,5 +1,51 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-12 19:00 AEST
+
+### Observations
+- **Fear & Greed Index:** 18 (Extreme Fear) — deployment still blocked
+- **System:** Cloud Run auth expired — live endpoints unreachable; git history used for state assessment
+- **Pending deploy:** Branch `improvement/2026-03-11` carries 4 critical fixes (sentinel pause-expiry, trailing stop persistence, sentinel pre-gate stop-loss, FastAPI CVE)
+- **Status:** UNDERPERFORMING (win rate ~4%, profit factor <1.0, realized PnL negative)
+- **Root causes identified this cycle:** (1) `set_entry_price` TypeError silently swallowed → entry prices never saved → core pair PnL shows 0; (2) trades table missing `regime` column → all trades classified "unknown" in analytics
+
+### Implemented Fixes
+
+- [x] **[2026-03-12]** `core/interfaces/__init__.py`, `memory/postgres.py` Fix `set_entry_price` to accept optional `size` parameter.
+  `phase3._process_pair` calls `set_entry_price(symbol, price, size)` but interface/implementation only accepted `(symbol, price)`. TypeError was silently caught, meaning entry prices were never persisted for BUY trades. `entry_price=None` for all core pair positions → realized PnL showed 0 for all 40 trades.
+  Addresses: Core pair PnL not tracking (deferred item #2 from 2026-03-11 19:00).
+  Outcome: Entry prices now saved on each BUY → PnL calculation will work post-deploy.
+  **Committed:** 2026-03-12 19:00 AEST — branch `improvement/2026-03-11` (7b794de)
+  **Deploy blocked:** F&G=18 (Extreme Fear)
+  **Review due: 2026-03-19**
+
+- [x] **[2026-03-12]** `migrations/007_trades_regime.sql`, `memory/postgres.py` Add `regime` column to trades table and propagate `intel.regime.value` into trade INSERT.
+  `record_trade()` never stored regime; trades table had no `regime` column. All trades showed "unknown" in analytics, making regime-based performance analysis impossible.
+  Addresses: All trades classified as "unknown" regime (deferred item #3 from 2026-03-11 and 2026-03-11 19:00).
+  Outcome: Future trades store correct regime; historical trades backfilled from nearest regime_snapshot.
+  **Committed:** 2026-03-12 19:00 AEST — branch `improvement/2026-03-11` (7b794de)
+  **Deploy blocked:** F&G=18 (Extreme Fear)
+  **Review due: 2026-03-19**
+
+- [x] **[2026-03-12]** `tests/unit/test_memory_interface.py` Added 6 new unit tests covering `set_entry_price` 2-arg and 3-arg compatibility + `record_trade` regime propagation with and without intel.
+  **Result:** 6/6 new tests pass; 167 total pass (1 pre-existing unrelated Binance test failure).
+
+### Deferred / Logged for Human Review
+
+| # | Type | Description | Risk | Reason Deferred |
+|---|------|-------------|------|-----------------|
+| 1 | framework | Win rate 4% — evaluate grid/DCA/mean-reversion for ranging Extreme Fear market | medium | Requires backtesting and human approval |
+| 2 | security | API keys as plaintext env vars (use Secret Manager) | high | Infrastructure change, needs human review |
+| 3 | deploy | 4 critical fixes on branch `improvement/2026-03-11` awaiting F&G ≥ 20 | critical | F&G=18, safety rail blocks deploy |
+
+### Next Cycle Actions
+1. **Deploy when F&G ≥ 20** — all 6 fixes on branch `improvement/2026-03-11` are ready
+2. **Refresh gcloud auth** before next deploy attempt
+3. **Post-deploy:** verify BTC trailing stop active, core pair PnL tracking, regime in analytics
+4. **If F&G <20 for 3+ more days:** escalate to Alex — critical fixes accumulating deploy delay risk
+
+---
+
 ## Improvement Cycle 2026-03-11 09:25 AEST
 
 ### Observations
