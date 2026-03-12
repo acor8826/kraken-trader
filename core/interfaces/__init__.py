@@ -112,8 +112,14 @@ class IMemory(ABC):
         pass
     
     @abstractmethod
-    async def set_entry_price(self, symbol: str, price: float) -> None:
-        """Record entry price for a position"""
+    async def set_entry_price(self, symbol: str, price: float, size: Optional[float] = None) -> None:
+        """Record entry price for a position.
+
+        Args:
+            symbol: Asset symbol (e.g. "BTC")
+            price: Entry price per unit in quote currency
+            size: Optional position size in base currency (informational, stored if table supports it)
+        """
         pass
 
 

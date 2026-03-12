@@ -12,6 +12,7 @@ MIGRATION_ORDER = [
     "004_seed_improver_phases.sql",
     "005_seed_improver_autonomous.sql",
     "006_dgm_population_archive.sql",
+    "007_trades_regime.sql",
 ]
 
 

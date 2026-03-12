@@ -164,6 +164,11 @@ class PostgresStore(IMemory):
                     dgm_variant_raw = os.environ.get('DGM_VARIANT_ID')
                     dgm_variant_id = int(dgm_variant_raw) if dgm_variant_raw else None
 
+                    # Extract regime from intel (MarketIntel.regime is a Regime enum)
+                    regime_value: Optional[str] = None
+                    if intel and hasattr(intel, 'regime') and intel.regime is not None:
+                        regime_value = intel.regime.value if hasattr(intel.regime, 'value') else str(intel.regime)
+
                     trade_id = await conn.fetchval("""
                         INSERT INTO trades (
                             pair, action, order_type,
@@ -176,11 +181,13 @@ class PostgresStore(IMemory):
                             decision_timestamp, submitted_timestamp, filled_timestamp,
                             latency_decision_to_submit_ms, latency_submit_to_fill_ms, latency_decision_to_fill_ms,
                             dgm_variant_id,
-                            created_at, updated_at
+                            created_at, updated_at,
+                            regime
                         ) VALUES (
                             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                             $11, $12, $13, $14, $15, $16, $17, $18,
-                            $19, $20, $21, $22, $23, $24, $25, $26
+                            $19, $20, $21, $22, $23, $24, $25, $26,
+                            $27
                         ) RETURNING id
                     """,
                         trade.pair,
@@ -208,7 +215,8 @@ class PostgresStore(IMemory):
                         trade.latency_decision_to_fill_ms,
                         dgm_variant_id,
                         trade.timestamp or datetime.now(timezone.utc),
-                        datetime.now(timezone.utc)
+                        datetime.now(timezone.utc),
+                        regime_value
                     )
 
                     # Insert associated signals if provided
@@ -301,8 +309,14 @@ class PostgresStore(IMemory):
             logger.error(f"Failed to get entry price for {symbol}: {e}")
             raise
 
-    async def set_entry_price(self, symbol: str, price: float) -> None:
-        """Set entry price for position"""
+    async def set_entry_price(self, symbol: str, price: float, size: Optional[float] = None) -> None:
+        """Set entry price for position.
+
+        Args:
+            symbol: Asset symbol (e.g. "BTC")
+            price: Entry price per unit in quote currency
+            size: Optional position size in base currency (accepted for interface compatibility, unused)
+        """
         try:
             async with self._connection() as conn:
                 await conn.execute("""
