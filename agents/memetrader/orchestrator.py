@@ -405,22 +405,79 @@ class MemeOrchestrator:
         last_price: float,
     ) -> Optional[Dict]:
         """Execute a single approved trade signal and manage position state."""
-        from core.models import TradingPlan
+        from core.models import TradingPlan, Trade, TradeStatus
 
-        # Wrap signal in a plan for the executor
-        exec_plan = TradingPlan(
-            signals=[signal],
-            strategy_name="meme_momentum",
-            regime="volatile",
-            overall_confidence=signal.confidence,
-            reasoning=signal.reasoning,
-        )
+        # For SELL orders, if we have a tracked position with a known amount,
+        # bypass the executor's balance lookup (which returns 0 for simulation
+        # meme coins) and call the exchange directly with the exact tracked amount.
+        if signal.action == TradeAction.SELL:
+            tracked = self._positions.get(symbol)
+            if tracked and tracked.amount > 0:
+                sell_amount = tracked.amount * signal.size_pct if signal.size_pct < 1.0 else tracked.amount
+                if sell_amount > 0:
+                    try:
+                        result = await self.exchange.market_sell(pair, sell_amount)
+                        avg_price = (
+                            result.get("price")
+                            or result.get("average")
+                            or last_price
+                        )
+                        if not avg_price or avg_price <= 0:
+                            avg_price = last_price
+                        trade_obj = Trade(
+                            pair=pair,
+                            action=signal.action,
+                            status=TradeStatus.FILLED,
+                            filled_size_base=sell_amount,
+                            average_price=avg_price,
+                            filled_size_quote=sell_amount * avg_price,
+                            signal_confidence=signal.confidence,
+                            reasoning=signal.reasoning,
+                        )
+                        # Build a minimal mock report so the rest of the code path
+                        # (position cleanup, PnL recording) proceeds as normal.
+                        class _MockReport:
+                            successful_trades = [trade_obj]
+                        report = _MockReport()
+                        logger.debug(
+                            "[MEME] Direct sell %s: %.6f @ $%.6f (bypassed executor balance lookup)",
+                            symbol, sell_amount, avg_price,
+                        )
+                    except Exception as e:
+                        logger.error("[MEME] Direct sell failed for %s: %s", symbol, e)
+                        return None
+                else:
+                    logger.warning("[MEME] Tracked position for %s has zero sell amount, skipping", symbol)
+                    return None
+            else:
+                # No tracked position: fall through to executor (may still fail if balance=0)
+                logger.warning("[MEME] No tracked position for %s sell, falling back to executor", symbol)
+                exec_plan = TradingPlan(
+                    signals=[signal],
+                    strategy_name="meme_momentum",
+                    regime="volatile",
+                    overall_confidence=signal.confidence,
+                    reasoning=signal.reasoning,
+                )
+                report = await self.executor.execute(exec_plan)
+                if not report.successful_trades:
+                    logger.info("[MEME] No fills for %s %s (no tracked position)", signal.action.value, symbol)
+                    return None
+        else:
+            # BUY and HOLD: use executor as normal
+            exec_plan = TradingPlan(
+                signals=[signal],
+                strategy_name="meme_momentum",
+                regime="volatile",
+                overall_confidence=signal.confidence,
+                reasoning=signal.reasoning,
+            )
 
-        report = await self.executor.execute(exec_plan)
+            report = await self.executor.execute(exec_plan)
 
-        if not report.successful_trades:
-            logger.info("[MEME] No fills for %s %s", signal.action.value, symbol)
-            return None
+            if not report.successful_trades:
+                logger.info("[MEME] No fills for %s %s", signal.action.value, symbol)
+                return None
 
         trade = report.successful_trades[0]
 
