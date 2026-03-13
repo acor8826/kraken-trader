@@ -1,5 +1,45 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-13 19:00 AEST
+
+### Observations
+- **Fear & Greed Index:** 15 (Extreme Fear) — deployment blocked for 3rd consecutive day
+- **System:** gcloud auth expired — live endpoints unreachable; git history used for state assessment
+- **Pending deploy:** Branch `improvement/2026-03-11` now carries 7 critical fixes (6 prior + 1 new)
+- **Status:** UNDERPERFORMING (win rate ~4%, profit factor <1.0, PnL negative)
+- **Root cause identified this cycle:** `MemeOrchestrator._execute_signal` for SELL delegates to `SimpleExecutor`, which calls `balance.get(base_asset, 0)`. Simulation/testnet meme coin balances are not credited after mock buys → all sell orders return "No fills" → positions held indefinitely
+
+### Implemented Fixes
+
+- [x] **[2026-03-13]** `agents/memetrader/orchestrator.py` Fix meme sell "No fills" by bypassing executor balance lookup for tracked positions.
+  When `signal.action == SELL` and a tracked position exists, the orchestrator now calls `exchange.market_sell(pair, tracked_amount)` directly instead of routing through `SimpleExecutor`. This ensures sell orders use the known position amount rather than the exchange balance (which is 0 in simulation for meme coins). Partial sells (size_pct < 1.0) correctly sell `tracked_amount × size_pct`. Falls back to executor when no position is tracked.
+  Addresses: Meme trader sell failures (PEPE/FLOKI/BONK held indefinitely, deferred item from 2026-03-11 19:00).
+  Outcome: Meme sell orders will complete successfully in simulation.
+  **Committed:** 2026-03-13 19:00 AEST — branch `improvement/2026-03-11` (e76b1b9)
+  **Deploy blocked:** F&G=15 (Extreme Fear)
+  **Review due: 2026-03-20**
+
+- [x] **[2026-03-13]** `tests/unit/test_meme_sell_fix.py` Added 4 unit tests covering: direct sell with tracked position, partial sell size_pct calculation, fallback to executor when no position tracked, BUY path unchanged.
+  **Result:** 4/4 new tests pass; 83 total non-Binance tests pass.
+
+### Deferred / Logged for Human Review
+
+| # | Type | Description | Risk | Reason Deferred |
+|---|------|-------------|------|-----------------|
+| 1 | ops | Refresh gcloud auth (manual action required) | n/a | Needs operator CLI access |
+| 2 | deploy | 7 critical fixes on branch `improvement/2026-03-11` awaiting F&G ≥ 20 | critical | F&G=15, safety rail blocks |
+| 3 | framework | Win rate 4% — evaluate grid/DCA/mean-reversion for ranging Extreme Fear market | medium | Requires backtesting and human approval |
+| 4 | security | API keys as plaintext env vars (use Secret Manager) | high | Infrastructure change, needs human review |
+| 5 | escalation | F&G <20 for 3+ consecutive days — 7 bug fixes accumulating deploy delay | critical | Alex should consider manual override — fixes are safety-critical, not strategy changes |
+
+### Next Cycle Actions
+1. **ESCALATE to Alex:** F&G ≤ 15 for 3 days; 7 critical bug fixes undeployed. Risk of NOT deploying (phantom PnL, unprotected BTC position) may exceed deploy risk
+2. **Deploy when F&G ≥ 20** — all 7 fixes on branch `improvement/2026-03-11` are tested and ready
+3. **Refresh gcloud auth** before next deploy attempt
+4. **Post-deploy:** verify meme sells execute, BTC trailing stop active, sentinel cycling, PnL tracking
+
+---
+
 ## Improvement Cycle 2026-03-12 19:00 AEST
 
 ### Observations
