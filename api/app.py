@@ -654,9 +654,9 @@ async def _run_meme_cycle():
             logger.error(f"Meme trading cycle error: {e}", exc_info=True)
 
 
-_PROFIT_TRACKER_DIR = r"C:\OpenClaw\workspace\memory\daily"
-_PROFIT_STATE_FILE = r"C:\OpenClaw\workspace\memory\daily\profit-state.json"
-_PROFIT_TABLE_FILE = r"C:\OpenClaw\workspace\memory\daily\profit-tracker.md"
+_PROFIT_TRACKER_DIR = os.environ.get("PROFIT_TRACKER_DIR", "/tmp/memory/daily")
+_PROFIT_STATE_FILE = os.path.join(_PROFIT_TRACKER_DIR, "profit-state.json")
+_PROFIT_TABLE_FILE = os.path.join(_PROFIT_TRACKER_DIR, "profit-tracker.md")
 _STAGNANT_THRESHOLD_PCT = 0.10
 
 
@@ -1114,6 +1114,47 @@ def _register_routes(app: FastAPI):
         
         return await orchestrator.memory.get_performance_summary()
     
+    @app.get("/api/profit-tracker")
+    async def get_profit_tracker():
+        """Daily P&L tracker — latest state + recent history rows."""
+        import json as _json, os as _os
+        state: dict = {}
+        table_rows: list = []
+        if _os.path.exists(_PROFIT_STATE_FILE):
+            try:
+                with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
+                    state = _json.load(fh)
+            except Exception:
+                pass
+        if _os.path.exists(_PROFIT_TABLE_FILE):
+            try:
+                lines = open(_PROFIT_TABLE_FILE, encoding="utf-8").readlines()
+                table_rows = [l.strip() for l in lines
+                              if l.startswith("|") and "Date" not in l and "---" not in l][-14:]
+            except Exception:
+                pass
+        return {
+            "today_status": state.get("today_status", "NO_DATA"),
+            "today_pnl": state.get("today_pnl", 0),
+            "today_pnl_pct": state.get("today_pnl_pct", 0),
+            "stagnant_streak": state.get("stagnant_streak", False),
+            "consecutive_losses": state.get("consecutive_losses", 0),
+            "last_snapshot_date": state.get("last_snapshot_date"),
+            "portfolio_value": state.get("last_snapshot_value", 0),
+            "total_pnl": state.get("total_pnl", 0),
+            "total_pnl_pct": state.get("total_pnl_pct", 0),
+            "recent_daily_results": state.get("recent_daily_results", []),
+            "table_rows": table_rows,
+        }
+
+    @app.post("/api/profit-tracker/snapshot")
+    async def trigger_profit_snapshot():
+        """Manually trigger the 5:59 PM profit snapshot."""
+        result = await _run_daily_profit_snapshot()
+        return {"status": "ok", "today_status": result.get("today_status"),
+                "today_pnl": result.get("today_pnl"),
+                "stagnant_streak": result.get("stagnant_streak")}
+
     @app.post("/trigger")
     async def trigger_cycle():
         """Manually trigger a trading cycle"""
@@ -1893,6 +1934,57 @@ def _register_routes(app: FastAPI):
             logger.error(f"Error fetching OHLCV for {pair}: {e}")
             return {"candles": [], "pair": pair, "error": str(e)}
 
+    @app.get("/api/profit-tracker")
+    async def get_profit_tracker():
+        """Daily profit tracking: latest snapshot state + recent table rows.
+        Used by the Kraken Expander at 7 PM to assess profit/stagnation."""
+        import json as _json
+        state: dict = {}
+        table_rows: list = []
+        if os.path.exists(_PROFIT_STATE_FILE):
+            try:
+                with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
+                    state = _json.load(fh)
+            except Exception as exc:
+                logger.warning("/api/profit-tracker state read error: %s", exc)
+        if os.path.exists(_PROFIT_TABLE_FILE):
+            try:
+                with open(_PROFIT_TABLE_FILE, "r", encoding="utf-8") as fh:
+                    lines = fh.readlines()
+                table_rows = [
+                    l.strip() for l in lines
+                    if l.startswith("|") and "Date" not in l and "---" not in l
+                ][-14:]
+            except Exception as exc:
+                logger.warning("/api/profit-tracker table read error: %s", exc)
+        return {
+            "today_status": state.get("today_status", "NO_DATA"),
+            "today_pnl": state.get("today_pnl", 0),
+            "today_pnl_pct": state.get("today_pnl_pct", 0),
+            "stagnant_streak": state.get("stagnant_streak", False),
+            "consecutive_losses": state.get("consecutive_losses", 0),
+            "last_snapshot_date": state.get("last_snapshot_date"),
+            "last_snapshot_ts": state.get("last_snapshot_ts"),
+            "portfolio_value": state.get("last_snapshot_value", 0),
+            "total_pnl": state.get("total_pnl", 0),
+            "total_pnl_pct": state.get("total_pnl_pct", 0),
+            "recent_daily_results": state.get("recent_daily_results", []),
+            "table_rows": table_rows,
+        }
+
+    @app.post("/api/profit-tracker/snapshot")
+    async def trigger_profit_snapshot():
+        """Manually trigger the 5:59 PM profit snapshot (testing / backfill)."""
+        result = await _run_daily_profit_snapshot()
+        return {
+            "status": "ok",
+            "today_status": result.get("today_status"),
+            "today_pnl": result.get("today_pnl"),
+            "today_pnl_pct": result.get("today_pnl_pct"),
+            "stagnant_streak": result.get("stagnant_streak"),
+            "consecutive_losses": result.get("consecutive_losses"),
+        }
+
     # Cache-control: prevent stale JS/CSS/HTML
     @app.middleware("http")
     async def add_cache_headers(request: Request, call_next):
@@ -1909,3 +2001,4 @@ def _register_routes(app: FastAPI):
 
 # Create default app instance
 app = create_app()
+
