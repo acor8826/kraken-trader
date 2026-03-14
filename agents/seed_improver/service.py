@@ -104,7 +104,7 @@ class SeedImproverService:
             # Phase 1: LLM analysis (skipped if no LLM)
             analysis = None
             if self.analyzer:
-                analysis = await self._phase1_analysis(run_id, audit)
+                analysis = await self._phase1_analysis(run_id, audit, context.get("daily_profit"))
                 if analysis:
                     summary += f" | Phase1: {len(analysis.recommendations)} recommendations"
 
@@ -253,7 +253,7 @@ class SeedImproverService:
     # Phase 1: LLM Analysis
     # ------------------------------------------------------------------
 
-    async def _phase1_analysis(self, run_id: str, audit: Dict[str, Any]) -> Optional[AnalysisResult]:
+    async def _phase1_analysis(self, run_id: str, audit: Dict[str, Any], daily_profit: Optional[Dict[str, Any]] = None) -> Optional[AnalysisResult]:
         """Run LLM analysis on trade data and store recommendations."""
         trades = audit.get("trades", [])
         if not trades:
@@ -262,6 +262,19 @@ class SeedImproverService:
 
         try:
             stats = await self._gather_stats()
+            # Inject daily profit context into stats so LLM sees it
+            if daily_profit:
+                stats["daily_profit_context"] = daily_profit
+                if daily_profit.get("daily_status") in ("LOSS", "STAGNANT"):
+                    stats["PRIORITY_OBJECTIVE"] = (
+                        "The primary objective is DAILY PROFIT. Today was a "
+                        f"{daily_profit.get('daily_status')} day "
+                        f"(P&L: ${daily_profit.get('daily_pnl', 0):+.4f}). "
+                        "Focus recommendations on changes that will generate a positive "
+                        "daily P&L tomorrow. Consider: entry/exit timing, position sizing, "
+                        "stop-loss tightening, confidence thresholds, pair selection, and "
+                        "meme coin strategy."
+                    )
             config = self._gather_config()
             known_patterns = await self._load_known_patterns()
 

@@ -203,6 +203,7 @@ async function registerPages() {
         PairsPage,
         TradesPage,
         PnLPage,
+        DailyProfitPage,
         AgentsPage,
         AgentDetailPage,
         MetricsPage,
@@ -216,6 +217,7 @@ async function registerPages() {
         import('./pages/pairs.js').then(m => m.default).catch(() => createPlaceholderPage('Trading Pairs')),
         import('./pages/trades.js').then(m => m.default).catch(() => createPlaceholderPage('Trade History')),
         import('./pages/pnl.js').then(m => m.default).catch(() => createPlaceholderPage('P&L Breakdown')),
+        import('./pages/daily-profit.js').then(m => m.default).catch(() => createPlaceholderPage('Daily Profit')),
         import('./pages/agents.js').then(m => m.default).catch(() => createPlaceholderPage('Agents')),
         import('./pages/agent-detail.js').then(m => m.default).catch(() => createPlaceholderPage('Agent Detail')),
         import('./pages/metrics.js').then(m => m.default).catch(() => createPlaceholderPage('Metrics')),
@@ -231,6 +233,7 @@ async function registerPages() {
     router.register('/pairs', PairsPage);
     router.register('/trades', TradesPage);
     router.register('/pnl', PnLPage);
+    router.register('/daily-profit', DailyProfitPage);
     router.register('/agents', AgentsPage);
     router.register('/agents/:name', AgentDetailPage);
     router.register('/metrics', MetricsPage);

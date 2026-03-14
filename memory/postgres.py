@@ -416,6 +416,161 @@ class PostgresStore(IMemory):
             logger.error(f"Failed to update analyst performance: {e}")
             # Don't raise - performance tracking should not break main flow
 
+    # =========================================================================
+    # Daily Portfolio Ledger
+    # =========================================================================
+
+    async def save_daily_ledger_entry(self, entry: Dict) -> None:
+        """Save or update a daily portfolio ledger entry."""
+        try:
+            async with self._connection() as conn:
+                await conn.execute("""
+                    INSERT INTO daily_portfolio_ledger (
+                        date, start_value, end_value, daily_pnl, daily_pnl_pct,
+                        realized_pnl, unrealized_pnl, total_trades, wins, losses,
+                        win_rate, main_pnl, meme_pnl, fees_total, status,
+                        improvement_action, improvement_result
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                        $11, $12, $13, $14, $15, $16, $17
+                    )
+                    ON CONFLICT (date) DO UPDATE SET
+                        end_value = $3, daily_pnl = $4, daily_pnl_pct = $5,
+                        realized_pnl = $6, unrealized_pnl = $7,
+                        total_trades = $8, wins = $9, losses = $10,
+                        win_rate = $11, main_pnl = $12, meme_pnl = $13,
+                        fees_total = $14, status = $15,
+                        improvement_action = COALESCE($16, daily_portfolio_ledger.improvement_action),
+                        improvement_result = COALESCE($17, daily_portfolio_ledger.improvement_result)
+                """,
+                    entry["date"],
+                    entry.get("start_value", 0),
+                    entry.get("end_value", 0),
+                    entry.get("daily_pnl", 0),
+                    entry.get("daily_pnl_pct", 0),
+                    entry.get("realized_pnl", 0),
+                    entry.get("unrealized_pnl", 0),
+                    entry.get("total_trades", 0),
+                    entry.get("wins", 0),
+                    entry.get("losses", 0),
+                    entry.get("win_rate", 0),
+                    entry.get("main_pnl", 0),
+                    entry.get("meme_pnl", 0),
+                    entry.get("fees_total", 0),
+                    entry.get("status", "NO_DATA"),
+                    entry.get("improvement_action"),
+                    entry.get("improvement_result"),
+                )
+            logger.info("Saved daily ledger entry for %s: %s", entry["date"], entry.get("status"))
+        except Exception as e:
+            logger.error("Failed to save daily ledger entry: %s", e)
+            raise
+
+    async def get_daily_ledger(self, days: int = 30) -> List[Dict]:
+        """Get recent daily portfolio ledger entries."""
+        try:
+            async with self._connection() as conn:
+                rows = await conn.fetch("""
+                    SELECT * FROM daily_portfolio_ledger
+                    ORDER BY date DESC
+                    LIMIT $1
+                """, days)
+                return [dict(r) for r in rows]
+        except Exception as e:
+            logger.error("Failed to get daily ledger: %s", e)
+            return []
+
+    async def get_daily_ledger_entry(self, date) -> Optional[Dict]:
+        """Get a specific daily ledger entry by date."""
+        try:
+            async with self._connection() as conn:
+                row = await conn.fetchrow("""
+                    SELECT * FROM daily_portfolio_ledger WHERE date = $1
+                """, date)
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error("Failed to get daily ledger entry for %s: %s", date, e)
+            return None
+
+    async def get_previous_day_end_value(self, today) -> Optional[float]:
+        """Get the end_value from the most recent ledger entry before today."""
+        try:
+            async with self._connection() as conn:
+                val = await conn.fetchval("""
+                    SELECT end_value FROM daily_portfolio_ledger
+                    WHERE date < $1
+                    ORDER BY date DESC LIMIT 1
+                """, today)
+                return float(val) if val is not None else None
+        except Exception as e:
+            logger.error("Failed to get previous day end value: %s", e)
+            return None
+
+    async def update_daily_ledger_improvement(self, date, action: str, result: str) -> None:
+        """Update the improvement action/result for a daily ledger entry."""
+        try:
+            async with self._connection() as conn:
+                await conn.execute("""
+                    UPDATE daily_portfolio_ledger
+                    SET improvement_action = $2, improvement_result = $3
+                    WHERE date = $1
+                """, date, action, result)
+            logger.info("Updated improvement info for %s", date)
+        except Exception as e:
+            logger.error("Failed to update improvement for %s: %s", date, e)
+
+    async def get_daily_profit_streak(self) -> Dict:
+        """Get current profit/loss streak and summary stats."""
+        try:
+            async with self._connection() as conn:
+                rows = await conn.fetch("""
+                    SELECT date, daily_pnl, status FROM daily_portfolio_ledger
+                    ORDER BY date DESC LIMIT 14
+                """)
+                if not rows:
+                    return {"streak_type": "none", "streak_days": 0, "total_days": 0,
+                            "profit_days": 0, "loss_days": 0, "stagnant_days": 0}
+
+                streak_type = rows[0]["status"]
+                streak_days = 0
+                for r in rows:
+                    if r["status"] == streak_type:
+                        streak_days += 1
+                    else:
+                        break
+
+                profit_days = sum(1 for r in rows if r["status"] == "PROFIT")
+                loss_days = sum(1 for r in rows if r["status"] == "LOSS")
+                stagnant_days = sum(1 for r in rows if r["status"] == "STAGNANT")
+
+                return {
+                    "streak_type": streak_type,
+                    "streak_days": streak_days,
+                    "total_days": len(rows),
+                    "profit_days": profit_days,
+                    "loss_days": loss_days,
+                    "stagnant_days": stagnant_days,
+                }
+        except Exception as e:
+            logger.error("Failed to get daily profit streak: %s", e)
+            return {"streak_type": "none", "streak_days": 0, "total_days": 0,
+                    "profit_days": 0, "loss_days": 0, "stagnant_days": 0}
+
+    async def get_daily_fees_today(self) -> float:
+        """Get total fees paid today."""
+        try:
+            async with self._connection() as conn:
+                val = await conn.fetchval("""
+                    SELECT COALESCE(SUM(fees_quote), 0)
+                    FROM trades
+                    WHERE DATE(created_at) = CURRENT_DATE
+                    AND fees_quote IS NOT NULL
+                """)
+                return float(val) if val else 0.0
+        except Exception as e:
+            logger.error("Failed to get daily fees: %s", e)
+            return 0.0
+
     async def get_performance_summary(self) -> dict:
         """Return a performance summary dict used by /performance endpoint and daily profit review."""
         try:

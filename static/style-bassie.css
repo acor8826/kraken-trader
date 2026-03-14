@@ -11317,3 +11317,224 @@ html {
         display: none;
     }
 }
+
+/* =============================================================================
+   DAILY PROFIT PAGE
+   ============================================================================= */
+
+.daily-profit-page {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+/* Today Hero Card */
+.daily-hero {
+    margin-bottom: 24px;
+}
+
+.today-card {
+    background: var(--bg-elevated);
+    border: 1px solid rgba(0, 212, 255, 0.15);
+    border-radius: 12px;
+    padding: 24px 32px;
+    position: relative;
+    overflow: hidden;
+}
+
+.today-card[data-status="profit"] {
+    border-color: rgba(0, 255, 136, 0.3);
+    box-shadow: 0 0 20px rgba(0, 255, 136, 0.05);
+}
+.today-card[data-status="loss"] {
+    border-color: rgba(255, 71, 87, 0.3);
+    box-shadow: 0 0 20px rgba(255, 71, 87, 0.05);
+}
+.today-card[data-status="stagnant"] {
+    border-color: rgba(255, 170, 0, 0.3);
+}
+.today-card[data-status="live"] {
+    border-color: rgba(0, 212, 255, 0.3);
+}
+
+.today-status-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    margin: 16px 0;
+    flex-wrap: wrap;
+}
+
+.today-metric {
+    text-align: center;
+}
+
+.today-metric-label {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+
+.today-metric-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.today-pnl-metric .today-metric-value {
+    font-size: 28px;
+}
+
+.today-metric-pct {
+    display: block;
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-top: 2px;
+}
+
+.today-arrow {
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+.today-arrow svg {
+    width: 20px;
+    height: 20px;
+}
+
+.today-status-badge {
+    text-align: center;
+    margin-top: 8px;
+}
+
+.today-status-badge span {
+    display: inline-block;
+    padding: 4px 16px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 500;
+    background: rgba(0, 212, 255, 0.08);
+    color: var(--text-secondary);
+    border: 1px solid rgba(0, 212, 255, 0.12);
+}
+
+/* Summary Cards Grid */
+.daily-summary-cards {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.streak-card .card-value {
+    font-size: 20px;
+}
+
+/* Ledger Table Styles */
+.daily-ledger-table th,
+.daily-ledger-table td {
+    font-size: 12px;
+    padding: 8px 10px;
+    white-space: nowrap;
+}
+
+.ledger-row.profit {
+    border-left: 3px solid var(--success);
+}
+.ledger-row.loss {
+    border-left: 3px solid var(--danger);
+}
+.ledger-row.neutral {
+    border-left: 3px solid var(--warning);
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.status-badge.profit {
+    background: rgba(0, 255, 136, 0.12);
+    color: var(--success);
+}
+.status-badge.loss {
+    background: rgba(255, 71, 87, 0.12);
+    color: var(--danger);
+}
+.status-badge.neutral {
+    background: rgba(255, 170, 0, 0.12);
+    color: var(--warning);
+}
+
+.improvement-cell {
+    max-width: 180px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.improvement-tag {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    background: rgba(168, 85, 247, 0.1);
+    color: var(--accent-purple);
+    border: 1px solid rgba(168, 85, 247, 0.2);
+    cursor: help;
+}
+
+.no-action {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+/* Chart Container */
+.daily-profit-page .chart-container {
+    background: var(--bg-elevated);
+    border: 1px solid rgba(0, 212, 255, 0.08);
+    border-radius: 8px;
+    padding: 16px;
+}
+
+/* Responsive */
+@media (max-width: 1024px) {
+    .daily-summary-cards {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    .today-status-row {
+        gap: 12px;
+    }
+    .today-metric-value {
+        font-size: 18px;
+    }
+    .today-pnl-metric .today-metric-value {
+        font-size: 22px;
+    }
+}
+
+@media (max-width: 600px) {
+    .daily-summary-cards {
+        grid-template-columns: 1fr;
+    }
+    .today-status-row {
+        flex-direction: column;
+        gap: 8px;
+    }
+    .today-arrow {
+        transform: rotate(90deg);
+    }
+    .daily-ledger-table {
+        font-size: 10px;
+    }
+    .daily-ledger-table th:nth-child(n+7),
+    .daily-ledger-table td:nth-child(n+7) {
+        display: none;
+    }
+}

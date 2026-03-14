@@ -433,6 +433,22 @@ class ApiClient {
         });
     }
 
+    // ========================================
+    // Daily Profit Endpoints
+    // ========================================
+
+    async getDailyProfit(days = 30) {
+        return this.get('/api/daily-profit', { days });
+    }
+
+    async getDailyProfitToday() {
+        return this.get('/api/daily-profit/today');
+    }
+
+    async getProfitTracker() {
+        return this.get('/api/profit-tracker');
+    }
+
     /**
      * Load P&L page data
      */

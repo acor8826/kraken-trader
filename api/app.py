@@ -105,23 +105,24 @@ def create_app(stage: Stage = None) -> FastAPI:
             )
             logger.info(f"Meme scheduler started: every {meme_config.cycle_interval_seconds}s")
 
-        # Daily profit snapshot: 5:59 PM — captures P&L before improvement cycle
+        # Daily profit snapshot: 5:30 PM AEST — captures portfolio value for daily P&L
         scheduler.add_job(
             _run_daily_profit_snapshot,
             'cron',
             hour=17,
-            minute=59,
+            minute=30,
             timezone='Australia/Sydney',
             id='daily_profit_snapshot',
             replace_existing=True,
         )
 
-        # Seed improver + profit review: 6:00 PM Australia/Sydney
+        # Seed improver + daily profit review: 5:45 PM Australia/Sydney
+        # Runs after snapshot so it can evaluate today's P&L and optimise
         scheduler.add_job(
             _run_seed_improver_daily,
             'cron',
-            hour=18,
-            minute=0,
+            hour=17,
+            minute=45,
             timezone='Australia/Sydney',
             id='seed_improver_daily',
             replace_existing=True,
@@ -623,16 +624,22 @@ async def _run_migrations_on_startup():
     memory = seed_improver.memory
     if not hasattr(memory, '_connection'):
         return
-    try:
-        migration_dir = Path(__file__).resolve().parents[1] / "migrations"
-        migration_file = migration_dir / "006_dgm_population_archive.sql"
-        if migration_file.exists():
-            sql = migration_file.read_text(encoding='utf-8')
-            async with memory._connection() as conn:
-                await conn.execute(sql)
-            logger.info("Migration 006_dgm_population_archive applied successfully")
-    except Exception as e:
-        logger.warning(f"Migration 006 skipped or already applied: {e}")
+
+    migration_dir = Path(__file__).resolve().parents[1] / "migrations"
+    migration_files = [
+        "006_dgm_population_archive.sql",
+        "008_daily_portfolio_ledger.sql",
+    ]
+    for filename in migration_files:
+        try:
+            migration_file = migration_dir / filename
+            if migration_file.exists():
+                sql = migration_file.read_text(encoding='utf-8')
+                async with memory._connection() as conn:
+                    await conn.execute(sql)
+                logger.info("Migration %s applied successfully", filename)
+        except Exception as e:
+            logger.warning("Migration %s skipped or already applied: %s", filename, e)
 
 
 async def _run_trading_cycle():
@@ -663,36 +670,53 @@ _STAGNANT_THRESHOLD_PCT = 0.10
 
 
 async def _run_daily_profit_snapshot() -> dict:
-    """5:59 PM AEST — capture daily P&L vs yesterday, detect stagnation."""
+    """5:30 PM AEST — capture daily P&L vs yesterday, save to DB ledger."""
     global orchestrator
     import json as _json
     import os as _os
     from datetime import date as _date, datetime as _dt, timezone as _tz
 
-    logger.info("[PROFIT_SNAPSHOT] 5:59 PM snapshot starting")
+    logger.info("[PROFIT_SNAPSHOT] 5:30 PM snapshot starting")
     _os.makedirs(_PROFIT_TRACKER_DIR, exist_ok=True)
 
-    today = _date.today().isoformat()
+    today = _date.today()
+    today_iso = today.isoformat()
     now_ts = _dt.now(_tz.utc).isoformat()
     portfolio_value = 0.0
     total_trades = 0
+    wins = 0
+    losses = 0
     win_rate = 0.0
     main_pnl = 0.0
     meme_pnl = 0.0
+    realized_pnl = 0.0
+    unrealized_pnl = 0.0
+    fees_total = 0.0
 
     if orchestrator:
         try:
             pf = await orchestrator._get_portfolio_state()
             portfolio_value = pf.total_value
+            # Calculate unrealized P&L from open positions
+            for pos in pf.positions.values():
+                if pos.entry_price and pos.current_price and pos.amount:
+                    unrealized_pnl += (pos.current_price - pos.entry_price) * pos.amount
         except Exception as exc:
             logger.error("[PROFIT_SNAPSHOT] Portfolio fetch failed: %s", exc)
         try:
             perf = await orchestrator.memory.get_performance_summary()
             total_trades = perf.get("total_trades", 0)
+            wins = perf.get("wins_7d", 0)
+            losses = perf.get("losses_7d", 0)
             win_rate = perf.get("win_rate", 0.0)
             main_pnl = perf.get("total_pnl", 0.0)
+            realized_pnl = main_pnl
         except Exception as exc:
             logger.warning("[PROFIT_SNAPSHOT] Trade stats failed: %s", exc)
+        try:
+            fees_total = await orchestrator.memory.get_daily_fees_today()
+        except Exception as exc:
+            logger.warning("[PROFIT_SNAPSHOT] Fee fetch failed: %s", exc)
 
     if (orchestrator and hasattr(orchestrator, "_meme_orchestrator")
             and orchestrator._meme_orchestrator):
@@ -703,32 +727,67 @@ async def _run_daily_profit_snapshot() -> dict:
             if entry and current and qty:
                 meme_pnl += (current - entry) * qty
 
-    state: dict = {}
-    if _os.path.exists(_PROFIT_STATE_FILE):
+    # Determine start value: previous day's end_value from DB, else flat file, else current
+    start_value = portfolio_value
+    if orchestrator and hasattr(orchestrator.memory, "get_previous_day_end_value"):
         try:
-            with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
-                state = _json.load(fh)
+            prev = await orchestrator.memory.get_previous_day_end_value(today)
+            if prev is not None:
+                start_value = prev
         except Exception:
             pass
 
-    yesterday_value = state.get("last_snapshot_value", portfolio_value)
-    baseline_value = state.get("baseline_value", portfolio_value)
-    daily_pnl = portfolio_value - yesterday_value
-    daily_pnl_pct = (daily_pnl / yesterday_value * 100) if yesterday_value > 0 else 0.0
+    # Fallback to flat file state if no DB entry yet
+    state: dict = {}
+    if start_value == portfolio_value and _os.path.exists(_PROFIT_STATE_FILE):
+        try:
+            with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
+                state = _json.load(fh)
+            start_value = state.get("last_snapshot_value", portfolio_value)
+        except Exception:
+            pass
+
+    baseline_value = state.get("baseline_value", start_value)
+    daily_pnl = portfolio_value - start_value
+    daily_pnl_pct = (daily_pnl / start_value * 100) if start_value > 0 else 0.0
     total_pnl = portfolio_value - baseline_value
     total_pnl_pct = (total_pnl / baseline_value * 100) if baseline_value > 0 else 0.0
 
     if abs(daily_pnl_pct) < _STAGNANT_THRESHOLD_PCT:
-        day_status = "🟡 STAGNANT"
+        day_status = "STAGNANT"
     elif daily_pnl > 0:
-        day_status = "✅ PROFIT"
+        day_status = "PROFIT"
     else:
-        day_status = "🔴 LOSS"
+        day_status = "LOSS"
 
-    win_pct_str = f"{win_rate * 100:.0f}%" if total_trades > 0 else "—"
+    # Save to database ledger
+    if orchestrator and hasattr(orchestrator.memory, "save_daily_ledger_entry"):
+        try:
+            await orchestrator.memory.save_daily_ledger_entry({
+                "date": today,
+                "start_value": start_value,
+                "end_value": portfolio_value,
+                "daily_pnl": daily_pnl,
+                "daily_pnl_pct": daily_pnl_pct,
+                "realized_pnl": realized_pnl,
+                "unrealized_pnl": unrealized_pnl,
+                "total_trades": total_trades,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": win_rate / 100 if win_rate > 1 else win_rate,
+                "main_pnl": main_pnl,
+                "meme_pnl": meme_pnl,
+                "fees_total": fees_total,
+                "status": day_status,
+            })
+        except Exception as exc:
+            logger.error("[PROFIT_SNAPSHOT] DB ledger save failed: %s", exc)
+
+    # Also write flat file state for backward compatibility
+    win_pct_str = f"{win_rate:.0f}%" if total_trades > 0 else "—"
     recent = state.get("recent_daily_results", [])
-    recent = [r for r in recent if r.get("date") != today]
-    recent.append({"date": today, "pnl": daily_pnl, "pnl_pct": daily_pnl_pct})
+    recent = [r for r in recent if r.get("date") != today_iso]
+    recent.append({"date": today_iso, "pnl": daily_pnl, "pnl_pct": daily_pnl_pct})
     recent = recent[-7:]
 
     last_3 = recent[-3:]
@@ -741,14 +800,16 @@ async def _run_daily_profit_snapshot() -> dict:
         else:
             break
 
+    # Flat file table (kept for compatibility)
     table_header = (
         "# Daily Profit Tracker\n\n"
         "| Date | Start $ | End $ | Daily P&L | Daily % | Trades | Win% | Main PnL | Meme PnL | Status |\n"
         "|------|---------|-------|-----------|---------|--------|------|----------|----------|--------|\n"
     )
-    row = (f"| {today} | ${yesterday_value:,.2f} | ${portfolio_value:,.2f} | "
+    day_status_emoji = {"PROFIT": "✅ PROFIT", "LOSS": "🔴 LOSS", "STAGNANT": "🟡 STAGNANT"}.get(day_status, day_status)
+    row = (f"| {today_iso} | ${start_value:,.2f} | ${portfolio_value:,.2f} | "
            f"${daily_pnl:+,.2f} | {daily_pnl_pct:+.2f}% | {total_trades} | {win_pct_str} | "
-           f"${main_pnl:+.2f} | ${meme_pnl:+.2f} | {day_status} |\n")
+           f"${main_pnl:+.2f} | ${meme_pnl:+.2f} | {day_status_emoji} |\n")
 
     if not _os.path.exists(_PROFIT_TABLE_FILE):
         with open(_PROFIT_TABLE_FILE, "w", encoding="utf-8") as fh:
@@ -757,7 +818,7 @@ async def _run_daily_profit_snapshot() -> dict:
         fh.write(row)
 
     new_state = {
-        "last_snapshot_date": today, "last_snapshot_ts": now_ts,
+        "last_snapshot_date": today_iso, "last_snapshot_ts": now_ts,
         "last_snapshot_value": portfolio_value, "baseline_value": baseline_value,
         "recent_daily_results": recent, "today_pnl": daily_pnl,
         "today_pnl_pct": daily_pnl_pct, "today_status": day_status,
@@ -770,7 +831,7 @@ async def _run_daily_profit_snapshot() -> dict:
         _json.dump(new_state, fh, indent=2)
 
     logger.info("[PROFIT_SNAPSHOT] %s | $%.2f→$%.2f | %s | stagnant=%s | losses=%d",
-                today, yesterday_value, portfolio_value, day_status, stagnant_streak, consecutive_losses)
+                today_iso, start_value, portfolio_value, day_status, stagnant_streak, consecutive_losses)
     return new_state
 
 
@@ -817,30 +878,125 @@ async def _run_meme_daily_review():
 
 
 async def _run_seed_improver_daily():
-    """Daily autonomous seed improver run (6:00 PM Australia/Sydney).
+    """Daily autonomous seed improver run (5:45 PM Australia/Sydney).
 
-    When DGM is enabled, runs a full evolutionary cycle instead of the
-    standard linear pipeline.
+    Evaluates today's daily P&L from the ledger. If the day was a loss or
+    stagnant, runs an aggressive improvement cycle targeting the specific
+    issues. When DGM is enabled, runs a full evolutionary cycle.
     """
-    global seed_improver, dgm_service
+    global seed_improver, dgm_service, orchestrator
+    from datetime import date as _date
 
-    # DGM mode: run evolutionary cycle
+    today = _date.today()
+    daily_context = {}
+
+    # Pull today's daily ledger entry to inform the improvement cycle
+    if orchestrator and hasattr(orchestrator.memory, "get_daily_ledger_entry"):
+        try:
+            entry = await orchestrator.memory.get_daily_ledger_entry(today)
+            if entry:
+                daily_context = {
+                    "daily_pnl": float(entry.get("daily_pnl", 0)),
+                    "daily_pnl_pct": float(entry.get("daily_pnl_pct", 0)),
+                    "daily_status": entry.get("status", "NO_DATA"),
+                    "start_value": float(entry.get("start_value", 0)),
+                    "end_value": float(entry.get("end_value", 0)),
+                    "total_trades": entry.get("total_trades", 0),
+                    "wins": entry.get("wins", 0),
+                    "losses": entry.get("losses", 0),
+                    "win_rate": float(entry.get("win_rate", 0)),
+                    "main_pnl": float(entry.get("main_pnl", 0)),
+                    "meme_pnl": float(entry.get("meme_pnl", 0)),
+                    "fees_total": float(entry.get("fees_total", 0)),
+                }
+                logger.info("[IMPROVER] Today's P&L: $%.4f (%s)", daily_context["daily_pnl"], daily_context["daily_status"])
+        except Exception as exc:
+            logger.warning("[IMPROVER] Failed to read daily ledger: %s", exc)
+
+    # Also pull streak data
+    if orchestrator and hasattr(orchestrator.memory, "get_daily_profit_streak"):
+        try:
+            streak = await orchestrator.memory.get_daily_profit_streak()
+            daily_context["streak_type"] = streak.get("streak_type", "none")
+            daily_context["streak_days"] = streak.get("streak_days", 0)
+            daily_context["profit_days_14d"] = streak.get("profit_days", 0)
+            daily_context["loss_days_14d"] = streak.get("loss_days", 0)
+        except Exception:
+            pass
+
+    improvement_action = "scheduled_review"
+    is_loss_day = daily_context.get("daily_status") in ("LOSS", "STAGNANT")
+
+    if is_loss_day:
+        improvement_action = "loss_recovery_optimization"
+        logger.info("[IMPROVER] LOSS/STAGNANT day detected — running aggressive optimization")
+
+    # DGM mode: run evolutionary cycle with daily profit context
     if dgm_service:
         try:
             result = await dgm_service.run_cycle()
-            logger.info("DGM cycle completed: %s", result.get("outcome", "unknown"))
+            outcome = result.get("outcome", "unknown")
+            logger.info("DGM cycle completed: %s", outcome)
+
+            # Record improvement action in ledger
+            if orchestrator and hasattr(orchestrator.memory, "update_daily_ledger_improvement"):
+                action_desc = f"DGM {improvement_action}: {outcome}"
+                result_desc = _summarize_dgm_result(result)
+                try:
+                    await orchestrator.memory.update_daily_ledger_improvement(today, action_desc, result_desc)
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"DGM cycle error: {e}", exc_info=True)
         return
 
-    # Legacy mode: standard seed improver
+    # Legacy mode: standard seed improver with daily profit context
     if seed_improver:
         try:
-            result = await seed_improver.run("scheduled", {"source": "apscheduler"})
+            context = {"source": "apscheduler", "daily_profit": daily_context}
+            if is_loss_day:
+                context["priority"] = "high"
+                context["focus"] = "daily_profit_recovery"
+                context["instruction"] = (
+                    f"TODAY WAS A {daily_context.get('daily_status', 'LOSS')} DAY. "
+                    f"Portfolio went from ${daily_context.get('start_value', 0):.2f} to "
+                    f"${daily_context.get('end_value', 0):.2f} "
+                    f"(P&L: ${daily_context.get('daily_pnl', 0):+.4f}). "
+                    f"Analyse ALL trading strategies (main pairs, meme coins, charts) and "
+                    f"recommend specific config changes to return a daily profit tomorrow. "
+                    f"Focus on: entry/exit timing, position sizing, stop-loss levels, "
+                    f"confidence thresholds, and pair selection."
+                )
+            result = await seed_improver.run("scheduled", context)
             from api.routes.seed_improver import _store_run_in_memory
             _store_run_in_memory(result)
+
+            # Record improvement action in ledger
+            if orchestrator and hasattr(orchestrator.memory, "update_daily_ledger_improvement"):
+                action_desc = f"seed_improver {improvement_action}"
+                result_desc = getattr(result, "summary", str(result)) if result else "no result"
+                try:
+                    await orchestrator.memory.update_daily_ledger_improvement(today, action_desc, result_desc[:500])
+                except Exception:
+                    pass
         except Exception as e:
             logger.error(f"Seed improver daily run error: {e}", exc_info=True)
+
+
+def _summarize_dgm_result(result: dict) -> str:
+    """Create a short summary of a DGM cycle result for the ledger."""
+    parts = [f"outcome={result.get('outcome', '?')}"]
+    phases = result.get("phases", {})
+    if "evaluate" in phases:
+        ev = phases["evaluate"]
+        parts.append(f"eval={ev.get('verdict', ev.get('status', '?'))}")
+    if "mutate" in phases:
+        mt = phases["mutate"]
+        parts.append(f"patches={mt.get('patches_count', 0)}")
+    if "deploy" in phases:
+        dp = phases["deploy"]
+        parts.append(f"deploy={dp.get('status', '?')}")
+    return " | ".join(parts)
 
 
 def _register_routes(app: FastAPI):
@@ -1116,47 +1272,6 @@ def _register_routes(app: FastAPI):
         
         return await orchestrator.memory.get_performance_summary()
     
-    @app.get("/api/profit-tracker")
-    async def get_profit_tracker():
-        """Daily P&L tracker — latest state + recent history rows."""
-        import json as _json, os as _os
-        state: dict = {}
-        table_rows: list = []
-        if _os.path.exists(_PROFIT_STATE_FILE):
-            try:
-                with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
-                    state = _json.load(fh)
-            except Exception:
-                pass
-        if _os.path.exists(_PROFIT_TABLE_FILE):
-            try:
-                lines = open(_PROFIT_TABLE_FILE, encoding="utf-8").readlines()
-                table_rows = [l.strip() for l in lines
-                              if l.startswith("|") and "Date" not in l and "---" not in l][-14:]
-            except Exception:
-                pass
-        return {
-            "today_status": state.get("today_status", "NO_DATA"),
-            "today_pnl": state.get("today_pnl", 0),
-            "today_pnl_pct": state.get("today_pnl_pct", 0),
-            "stagnant_streak": state.get("stagnant_streak", False),
-            "consecutive_losses": state.get("consecutive_losses", 0),
-            "last_snapshot_date": state.get("last_snapshot_date"),
-            "portfolio_value": state.get("last_snapshot_value", 0),
-            "total_pnl": state.get("total_pnl", 0),
-            "total_pnl_pct": state.get("total_pnl_pct", 0),
-            "recent_daily_results": state.get("recent_daily_results", []),
-            "table_rows": table_rows,
-        }
-
-    @app.post("/api/profit-tracker/snapshot")
-    async def trigger_profit_snapshot():
-        """Manually trigger the 5:59 PM profit snapshot."""
-        result = await _run_daily_profit_snapshot()
-        return {"status": "ok", "today_status": result.get("today_status"),
-                "today_pnl": result.get("today_pnl"),
-                "stagnant_streak": result.get("stagnant_streak")}
-
     @app.post("/trigger")
     async def trigger_cycle():
         """Manually trigger a trading cycle"""
@@ -1985,6 +2100,125 @@ def _register_routes(app: FastAPI):
             "today_pnl_pct": result.get("today_pnl_pct"),
             "stagnant_streak": result.get("stagnant_streak"),
             "consecutive_losses": result.get("consecutive_losses"),
+        }
+
+    # =========================================================================
+    # Daily Profit Ledger Endpoints
+    # =========================================================================
+
+    @app.get("/api/daily-profit")
+    async def get_daily_profit(days: int = 30):
+        """Daily profit ledger — portfolio start/end values and P&L for each day."""
+        from datetime import date as _date
+
+        entries = []
+        streak = {"streak_type": "none", "streak_days": 0, "profit_days": 0, "loss_days": 0}
+
+        if orchestrator and hasattr(orchestrator.memory, "get_daily_ledger"):
+            try:
+                rows = await orchestrator.memory.get_daily_ledger(days)
+                for r in rows:
+                    entries.append({
+                        "date": r["date"].isoformat() if hasattr(r["date"], "isoformat") else str(r["date"]),
+                        "start_value": float(r.get("start_value", 0)),
+                        "end_value": float(r.get("end_value", 0)),
+                        "daily_pnl": float(r.get("daily_pnl", 0)),
+                        "daily_pnl_pct": float(r.get("daily_pnl_pct", 0)),
+                        "realized_pnl": float(r.get("realized_pnl", 0)),
+                        "unrealized_pnl": float(r.get("unrealized_pnl", 0)),
+                        "total_trades": r.get("total_trades", 0),
+                        "wins": r.get("wins", 0),
+                        "losses": r.get("losses", 0),
+                        "win_rate": float(r.get("win_rate", 0)),
+                        "main_pnl": float(r.get("main_pnl", 0)),
+                        "meme_pnl": float(r.get("meme_pnl", 0)),
+                        "fees_total": float(r.get("fees_total", 0)),
+                        "status": r.get("status", "NO_DATA"),
+                        "improvement_action": r.get("improvement_action"),
+                        "improvement_result": r.get("improvement_result"),
+                    })
+            except Exception as exc:
+                logger.warning("/api/daily-profit ledger read error: %s", exc)
+
+        if orchestrator and hasattr(orchestrator.memory, "get_daily_profit_streak"):
+            try:
+                streak = await orchestrator.memory.get_daily_profit_streak()
+            except Exception:
+                pass
+
+        # Calculate cumulative P&L from entries
+        cumulative_pnl = 0.0
+        for entry in reversed(entries):
+            cumulative_pnl += entry["daily_pnl"]
+            entry["cumulative_pnl"] = round(cumulative_pnl, 8)
+
+        return {
+            "entries": entries,
+            "streak": streak,
+            "total_days": len(entries),
+            "profit_days": sum(1 for e in entries if e["status"] == "PROFIT"),
+            "loss_days": sum(1 for e in entries if e["status"] == "LOSS"),
+            "stagnant_days": sum(1 for e in entries if e["status"] == "STAGNANT"),
+            "cumulative_pnl": cumulative_pnl,
+        }
+
+    @app.get("/api/daily-profit/today")
+    async def get_daily_profit_today():
+        """Today's daily profit status — real-time before snapshot."""
+        from datetime import date as _date
+        today = _date.today()
+
+        # Check if snapshot already taken
+        entry = None
+        if orchestrator and hasattr(orchestrator.memory, "get_daily_ledger_entry"):
+            try:
+                entry = await orchestrator.memory.get_daily_ledger_entry(today)
+            except Exception:
+                pass
+
+        if entry:
+            return {
+                "snapshot_taken": True,
+                "date": today.isoformat(),
+                "start_value": float(entry.get("start_value", 0)),
+                "end_value": float(entry.get("end_value", 0)),
+                "daily_pnl": float(entry.get("daily_pnl", 0)),
+                "daily_pnl_pct": float(entry.get("daily_pnl_pct", 0)),
+                "status": entry.get("status", "NO_DATA"),
+                "total_trades": entry.get("total_trades", 0),
+                "improvement_action": entry.get("improvement_action"),
+            }
+
+        # No snapshot yet — provide a live estimate
+        portfolio_value = 0.0
+        start_value = 0.0
+        if orchestrator:
+            try:
+                pf = await orchestrator._get_portfolio_state()
+                portfolio_value = pf.total_value
+            except Exception:
+                pass
+            if hasattr(orchestrator.memory, "get_previous_day_end_value"):
+                try:
+                    prev = await orchestrator.memory.get_previous_day_end_value(today)
+                    if prev is not None:
+                        start_value = prev
+                except Exception:
+                    pass
+            if start_value == 0:
+                start_value = portfolio_value
+
+        live_pnl = portfolio_value - start_value
+        live_pnl_pct = (live_pnl / start_value * 100) if start_value > 0 else 0.0
+
+        return {
+            "snapshot_taken": False,
+            "date": today.isoformat(),
+            "start_value": start_value,
+            "current_value": portfolio_value,
+            "live_pnl": live_pnl,
+            "live_pnl_pct": live_pnl_pct,
+            "status": "LIVE",
         }
 
     # Cache-control: prevent stale JS/CSS/HTML
