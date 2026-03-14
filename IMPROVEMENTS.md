@@ -1,5 +1,45 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-14 19:00 AEST
+
+### Observations
+- **System:** Healthy, revision `kraken-trader-00222-ped`, deployed ~13:50 AEST today
+- **Pairs:** BTC/AUD, ETH/AUD, SOL/AUD, DOGE/AUD, WIF/AUD (AUD pairs confirmed ✅)
+- **Simulation mode:** True ✅
+- **Portfolio:** $995.38 (-0.46%) — legacy positions open (AVAX/DOT/MEME/BONK/NEIRO)
+- **Profit tracker:** First row today — STAGNANT ($0 PnL, 0 trades in first 5 hours)
+- **Win rate:** N/A (0 closed trades under new revision)
+- **Meme bot:** 44 cycles, 0 active positions, circuit breaker healthy, Twitter budget OK
+- **Fear & Greed Index:** 16 (Extreme Fear) — deployment blocked
+- **Critical bug found:** `/performance` endpoint returning 500 — `get_performance_summary()` missing from `PostgresStore`
+
+### Implemented Fixes
+
+- [x] **[2026-03-14]** `memory/postgres.py` Add `get_performance_summary()` to `PostgresStore`.
+  `AttributeError: 'PostgresStore' object has no attribute 'get_performance_summary'` caused `/performance` to 500 on every request. Also silently broke the 6 PM daily profit review — `profit_context` injected into seed improver was always empty. Implemented SQL-based summary: win_rate (7d/30d), profit_factor, net_pnl, trade counts, lifecycle_completeness_pct, and `underperforming` boolean. Graceful fallback (never raises) returns zero-value dict on DB error.
+  Addresses: `/performance` 500 (since first deployment), silent failure in seed improver daily profit review.
+  **Committed:** 2026-03-14 19:00 AEST — main `d973db4`
+  **Deploy blocked:** F&G=16 (Extreme Fear), safety rail blocks deploy
+  **Tests:** 171 passed / 1 pre-existing Binance failure (unchanged)
+  **Review due: 2026-03-21**
+
+### Deferred / Logged for Human Review
+
+| # | Type | Description | Risk | Reason Deferred |
+|---|------|-------------|------|-----------------|
+| 1 | deploy | `get_performance_summary()` fix committed, awaiting F&G ≥ 20 | low | F&G=16, safety rail |
+| 2 | bugfix | `/api/analytics` 404 — analytics endpoint not wired in app.py | low | Time budget; next cycle |
+| 3 | monitor | AVAX/DOT legacy positions (null entry_price) still open after pair switch | medium | Needs manual review by Alex |
+| 4 | security | API keys as plaintext env vars (use Secret Manager) | high | Infrastructure change, needs Alex |
+
+### Next Cycle Actions
+1. **Deploy `d973db4` when F&G ≥ 20** — fixes /performance and daily profit review chain
+2. **Investigate /api/analytics 404** — wire analytics endpoint for MACD+BB accuracy
+3. **Monitor first trades** — AUD pairs expected to generate signals within 24-48h
+4. **Review legacy open positions** — AVAX/DOT may need manual close (null entry_price)
+
+---
+
 ## Improvement Cycle 2026-03-13 19:00 AEST
 
 ### Observations
