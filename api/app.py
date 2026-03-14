@@ -655,9 +655,10 @@ async def _run_meme_cycle():
             logger.error(f"Meme trading cycle error: {e}", exc_info=True)
 
 
-_PROFIT_TRACKER_DIR = os.environ.get("PROFIT_TRACKER_DIR", "/tmp/memory/daily")
-_PROFIT_STATE_FILE = os.path.join(_PROFIT_TRACKER_DIR, "profit-state.json")
-_PROFIT_TABLE_FILE = os.path.join(_PROFIT_TRACKER_DIR, "profit-tracker.md")
+# Profit tracker paths — override with PROFIT_TRACKER_DIR env var at runtime
+_PROFIT_TRACKER_DIR = "/tmp/memory/daily"
+_PROFIT_STATE_FILE = _PROFIT_TRACKER_DIR + "/profit-state.json"
+_PROFIT_TABLE_FILE = _PROFIT_TRACKER_DIR + "/profit-tracker.md"
 _STAGNANT_THRESHOLD_PCT = 0.10
 
 
