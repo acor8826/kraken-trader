@@ -160,7 +160,13 @@ class FullSentinel(ISentinel):
     async def system_healthy(self) -> bool:
         """Check if system is healthy enough to trade"""
         if self._is_paused:
-            return False
+            # Check if the timed pause has expired before returning unhealthy
+            if self._check_pause_expired():
+                self._is_paused = False
+                self._pause_reason = None
+                logger.info("Trading pause expired in system_healthy(), resuming")
+            else:
+                return False
 
         can_trade, _ = self.circuit_breakers.check_all(portfolio_value=0)
         if not can_trade:

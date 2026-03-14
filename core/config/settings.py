@@ -487,11 +487,20 @@ class Settings:
         adaptive_data = data.get("adaptive_risk", {})
         enable_adaptive = adaptive_data.get("enabled", False) or os.getenv("ENABLE_ADAPTIVE_RISK", "false").lower() == "true"
 
+        # Build features — SIMULATION_MODE env var always overrides yaml
+        # (prevents silent switch to live trading when yaml says false)
+        features_data = data.get("features", {})
+        env_simulation = os.getenv("SIMULATION_MODE")
+        if env_simulation is not None:
+            features_data["simulation_mode"] = env_simulation.lower() in ("1", "true", "yes")
+            logger.info(f"SIMULATION_MODE env override: {features_data['simulation_mode']}")
+        features = FeatureFlags(**features_data)
+
         return cls(
             stage=stage,
             trading=TradingConfig(**data.get("trading", {})),
             risk=RiskConfig(**data.get("risk", {})),
-            features=FeatureFlags(**data.get("features", {})),
+            features=features,
             exchange=ExchangeConfig.from_env(),  # Always from env for security
             llm=LLMConfig.from_env(),
             cost_optimization=cost_optimization,

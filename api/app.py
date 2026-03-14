@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
 import logging
+import os
 import time
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -104,7 +105,18 @@ def create_app(stage: Stage = None) -> FastAPI:
             )
             logger.info(f"Meme scheduler started: every {meme_config.cycle_interval_seconds}s")
 
-        # Seed improver daily review: 6:00 PM Australia/Sydney
+        # Daily profit snapshot: 5:59 PM — captures P&L before improvement cycle
+        scheduler.add_job(
+            _run_daily_profit_snapshot,
+            'cron',
+            hour=17,
+            minute=59,
+            timezone='Australia/Sydney',
+            id='daily_profit_snapshot',
+            replace_existing=True,
+        )
+
+        # Seed improver + profit review: 6:00 PM Australia/Sydney
         scheduler.add_job(
             _run_seed_improver_daily,
             'cron',
@@ -112,6 +124,17 @@ def create_app(stage: Stage = None) -> FastAPI:
             minute=0,
             timezone='Australia/Sydney',
             id='seed_improver_daily',
+            replace_existing=True,
+        )
+
+        # Meme bot daily review: 6:15 PM Australia/Sydney
+        scheduler.add_job(
+            _run_meme_daily_review,
+            'cron',
+            hour=18,
+            minute=15,
+            timezone='Australia/Sydney',
+            id='meme_daily_review',
             replace_existing=True,
         )
 
@@ -632,6 +655,167 @@ async def _run_meme_cycle():
             logger.error(f"Meme trading cycle error: {e}", exc_info=True)
 
 
+# Profit tracker paths — override with PROFIT_TRACKER_DIR env var at runtime
+_PROFIT_TRACKER_DIR = "/tmp/memory/daily"
+_PROFIT_STATE_FILE = _PROFIT_TRACKER_DIR + "/profit-state.json"
+_PROFIT_TABLE_FILE = _PROFIT_TRACKER_DIR + "/profit-tracker.md"
+_STAGNANT_THRESHOLD_PCT = 0.10
+
+
+async def _run_daily_profit_snapshot() -> dict:
+    """5:59 PM AEST — capture daily P&L vs yesterday, detect stagnation."""
+    global orchestrator
+    import json as _json
+    import os as _os
+    from datetime import date as _date, datetime as _dt, timezone as _tz
+
+    logger.info("[PROFIT_SNAPSHOT] 5:59 PM snapshot starting")
+    _os.makedirs(_PROFIT_TRACKER_DIR, exist_ok=True)
+
+    today = _date.today().isoformat()
+    now_ts = _dt.now(_tz.utc).isoformat()
+    portfolio_value = 0.0
+    total_trades = 0
+    win_rate = 0.0
+    main_pnl = 0.0
+    meme_pnl = 0.0
+
+    if orchestrator:
+        try:
+            pf = await orchestrator._get_portfolio_state()
+            portfolio_value = pf.total_value
+        except Exception as exc:
+            logger.error("[PROFIT_SNAPSHOT] Portfolio fetch failed: %s", exc)
+        try:
+            perf = await orchestrator.memory.get_performance_summary()
+            total_trades = perf.get("total_trades", 0)
+            win_rate = perf.get("win_rate", 0.0)
+            main_pnl = perf.get("total_pnl", 0.0)
+        except Exception as exc:
+            logger.warning("[PROFIT_SNAPSHOT] Trade stats failed: %s", exc)
+
+    if (orchestrator and hasattr(orchestrator, "_meme_orchestrator")
+            and orchestrator._meme_orchestrator):
+        for pos in getattr(orchestrator._meme_orchestrator, "_positions", {}).values():
+            entry = getattr(pos, "entry_price", None)
+            current = getattr(pos, "_current_price", None) or getattr(pos, "current_price", None)
+            qty = getattr(pos, "amount", None) or getattr(pos, "quantity", None)
+            if entry and current and qty:
+                meme_pnl += (current - entry) * qty
+
+    state: dict = {}
+    if _os.path.exists(_PROFIT_STATE_FILE):
+        try:
+            with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
+                state = _json.load(fh)
+        except Exception:
+            pass
+
+    yesterday_value = state.get("last_snapshot_value", portfolio_value)
+    baseline_value = state.get("baseline_value", portfolio_value)
+    daily_pnl = portfolio_value - yesterday_value
+    daily_pnl_pct = (daily_pnl / yesterday_value * 100) if yesterday_value > 0 else 0.0
+    total_pnl = portfolio_value - baseline_value
+    total_pnl_pct = (total_pnl / baseline_value * 100) if baseline_value > 0 else 0.0
+
+    if abs(daily_pnl_pct) < _STAGNANT_THRESHOLD_PCT:
+        day_status = "🟡 STAGNANT"
+    elif daily_pnl > 0:
+        day_status = "✅ PROFIT"
+    else:
+        day_status = "🔴 LOSS"
+
+    win_pct_str = f"{win_rate * 100:.0f}%" if total_trades > 0 else "—"
+    recent = state.get("recent_daily_results", [])
+    recent = [r for r in recent if r.get("date") != today]
+    recent.append({"date": today, "pnl": daily_pnl, "pnl_pct": daily_pnl_pct})
+    recent = recent[-7:]
+
+    last_3 = recent[-3:]
+    stagnant_streak = (len(last_3) >= 3
+                       and all(abs(r["pnl_pct"]) < _STAGNANT_THRESHOLD_PCT for r in last_3))
+    consecutive_losses = 0
+    for r in reversed(recent):
+        if r["pnl"] < 0:
+            consecutive_losses += 1
+        else:
+            break
+
+    table_header = (
+        "# Daily Profit Tracker\n\n"
+        "| Date | Start $ | End $ | Daily P&L | Daily % | Trades | Win% | Main PnL | Meme PnL | Status |\n"
+        "|------|---------|-------|-----------|---------|--------|------|----------|----------|--------|\n"
+    )
+    row = (f"| {today} | ${yesterday_value:,.2f} | ${portfolio_value:,.2f} | "
+           f"${daily_pnl:+,.2f} | {daily_pnl_pct:+.2f}% | {total_trades} | {win_pct_str} | "
+           f"${main_pnl:+.2f} | ${meme_pnl:+.2f} | {day_status} |\n")
+
+    if not _os.path.exists(_PROFIT_TABLE_FILE):
+        with open(_PROFIT_TABLE_FILE, "w", encoding="utf-8") as fh:
+            fh.write(table_header)
+    with open(_PROFIT_TABLE_FILE, "a", encoding="utf-8") as fh:
+        fh.write(row)
+
+    new_state = {
+        "last_snapshot_date": today, "last_snapshot_ts": now_ts,
+        "last_snapshot_value": portfolio_value, "baseline_value": baseline_value,
+        "recent_daily_results": recent, "today_pnl": daily_pnl,
+        "today_pnl_pct": daily_pnl_pct, "today_status": day_status,
+        "today_trades": total_trades, "today_win_rate": win_rate,
+        "today_main_pnl": main_pnl, "today_meme_pnl": meme_pnl,
+        "stagnant_streak": stagnant_streak, "consecutive_losses": consecutive_losses,
+        "total_pnl": total_pnl, "total_pnl_pct": total_pnl_pct,
+    }
+    with open(_PROFIT_STATE_FILE, "w", encoding="utf-8") as fh:
+        _json.dump(new_state, fh, indent=2)
+
+    logger.info("[PROFIT_SNAPSHOT] %s | $%.2f→$%.2f | %s | stagnant=%s | losses=%d",
+                today, yesterday_value, portfolio_value, day_status, stagnant_streak, consecutive_losses)
+    return new_state
+
+
+async def _run_meme_daily_review():
+    """6:15 PM AEST — log meme bot positions + circuit breaker state."""
+    global orchestrator
+    if not (orchestrator and hasattr(orchestrator, "_meme_orchestrator")
+            and orchestrator._meme_orchestrator):
+        logger.info("[MEME_REVIEW] Meme orchestrator inactive")
+        return
+    try:
+        import os as _os
+        from datetime import date as _date
+        meme_orch = orchestrator._meme_orchestrator
+        positions = getattr(meme_orch, "_positions", {})
+        cycle_count = getattr(meme_orch, "_cycle_count", 0)
+        sentinel = getattr(meme_orch, "sentinel", None)
+        cb_active = getattr(sentinel, "_circuit_breaker_active", False) if sentinel else False
+
+        open_pnl = 0.0
+        pos_lines = []
+        for symbol, pos in positions.items():
+            entry = getattr(pos, "entry_price", None)
+            current = getattr(pos, "_current_price", None) or getattr(pos, "current_price", None)
+            qty = getattr(pos, "amount", None)
+            if entry and current and qty:
+                p = (current - entry) * qty
+                open_pnl += p
+                pos_lines.append(f"  - {symbol}: ${p:+.2f}")
+
+        _os.makedirs(_PROFIT_TRACKER_DIR, exist_ok=True)
+        today = _date.today().isoformat()
+        log_path = _os.path.join(_PROFIT_TRACKER_DIR, f"{today}.md")
+        pos_section = "\n".join(pos_lines) if pos_lines else "  - No open positions"
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write(f"\n### Meme Bot Daily Review — {today} 18:15 AEST\n"
+                     f"- Positions: {len(positions)} | Open P&L: ${open_pnl:+.2f}\n"
+                     f"- Circuit breaker: {'🔴 ACTIVE' if cb_active else '🟢 OFF'}\n"
+                     f"- Cycles today: {cycle_count}\n{pos_section}\n")
+        logger.info("[MEME_REVIEW] Review written — positions=%d open_pnl=$%.2f cb=%s",
+                    len(positions), open_pnl, cb_active)
+    except Exception as exc:
+        logger.error("[MEME_REVIEW] Error: %s", exc, exc_info=True)
+
+
 async def _run_seed_improver_daily():
     """Daily autonomous seed improver run (6:00 PM Australia/Sydney).
 
@@ -932,6 +1116,47 @@ def _register_routes(app: FastAPI):
         
         return await orchestrator.memory.get_performance_summary()
     
+    @app.get("/api/profit-tracker")
+    async def get_profit_tracker():
+        """Daily P&L tracker — latest state + recent history rows."""
+        import json as _json, os as _os
+        state: dict = {}
+        table_rows: list = []
+        if _os.path.exists(_PROFIT_STATE_FILE):
+            try:
+                with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
+                    state = _json.load(fh)
+            except Exception:
+                pass
+        if _os.path.exists(_PROFIT_TABLE_FILE):
+            try:
+                lines = open(_PROFIT_TABLE_FILE, encoding="utf-8").readlines()
+                table_rows = [l.strip() for l in lines
+                              if l.startswith("|") and "Date" not in l and "---" not in l][-14:]
+            except Exception:
+                pass
+        return {
+            "today_status": state.get("today_status", "NO_DATA"),
+            "today_pnl": state.get("today_pnl", 0),
+            "today_pnl_pct": state.get("today_pnl_pct", 0),
+            "stagnant_streak": state.get("stagnant_streak", False),
+            "consecutive_losses": state.get("consecutive_losses", 0),
+            "last_snapshot_date": state.get("last_snapshot_date"),
+            "portfolio_value": state.get("last_snapshot_value", 0),
+            "total_pnl": state.get("total_pnl", 0),
+            "total_pnl_pct": state.get("total_pnl_pct", 0),
+            "recent_daily_results": state.get("recent_daily_results", []),
+            "table_rows": table_rows,
+        }
+
+    @app.post("/api/profit-tracker/snapshot")
+    async def trigger_profit_snapshot():
+        """Manually trigger the 5:59 PM profit snapshot."""
+        result = await _run_daily_profit_snapshot()
+        return {"status": "ok", "today_status": result.get("today_status"),
+                "today_pnl": result.get("today_pnl"),
+                "stagnant_streak": result.get("stagnant_streak")}
+
     @app.post("/trigger")
     async def trigger_cycle():
         """Manually trigger a trading cycle"""
@@ -1711,6 +1936,57 @@ def _register_routes(app: FastAPI):
             logger.error(f"Error fetching OHLCV for {pair}: {e}")
             return {"candles": [], "pair": pair, "error": str(e)}
 
+    @app.get("/api/profit-tracker")
+    async def get_profit_tracker():
+        """Daily profit tracking: latest snapshot state + recent table rows.
+        Used by the Kraken Expander at 7 PM to assess profit/stagnation."""
+        import json as _json
+        state: dict = {}
+        table_rows: list = []
+        if os.path.exists(_PROFIT_STATE_FILE):
+            try:
+                with open(_PROFIT_STATE_FILE, "r", encoding="utf-8") as fh:
+                    state = _json.load(fh)
+            except Exception as exc:
+                logger.warning("/api/profit-tracker state read error: %s", exc)
+        if os.path.exists(_PROFIT_TABLE_FILE):
+            try:
+                with open(_PROFIT_TABLE_FILE, "r", encoding="utf-8") as fh:
+                    lines = fh.readlines()
+                table_rows = [
+                    l.strip() for l in lines
+                    if l.startswith("|") and "Date" not in l and "---" not in l
+                ][-14:]
+            except Exception as exc:
+                logger.warning("/api/profit-tracker table read error: %s", exc)
+        return {
+            "today_status": state.get("today_status", "NO_DATA"),
+            "today_pnl": state.get("today_pnl", 0),
+            "today_pnl_pct": state.get("today_pnl_pct", 0),
+            "stagnant_streak": state.get("stagnant_streak", False),
+            "consecutive_losses": state.get("consecutive_losses", 0),
+            "last_snapshot_date": state.get("last_snapshot_date"),
+            "last_snapshot_ts": state.get("last_snapshot_ts"),
+            "portfolio_value": state.get("last_snapshot_value", 0),
+            "total_pnl": state.get("total_pnl", 0),
+            "total_pnl_pct": state.get("total_pnl_pct", 0),
+            "recent_daily_results": state.get("recent_daily_results", []),
+            "table_rows": table_rows,
+        }
+
+    @app.post("/api/profit-tracker/snapshot")
+    async def trigger_profit_snapshot():
+        """Manually trigger the 5:59 PM profit snapshot (testing / backfill)."""
+        result = await _run_daily_profit_snapshot()
+        return {
+            "status": "ok",
+            "today_status": result.get("today_status"),
+            "today_pnl": result.get("today_pnl"),
+            "today_pnl_pct": result.get("today_pnl_pct"),
+            "stagnant_streak": result.get("stagnant_streak"),
+            "consecutive_losses": result.get("consecutive_losses"),
+        }
+
     # Cache-control: prevent stale JS/CSS/HTML
     @app.middleware("http")
     async def add_cache_headers(request: Request, call_next):
@@ -1727,3 +2003,4 @@ def _register_routes(app: FastAPI):
 
 # Create default app instance
 app = create_app()
+

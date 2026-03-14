@@ -262,6 +262,17 @@ class BasicSentinel(ISentinel):
 
             # --- 1. TRAILING STOP (if active) ---
             if self._trailing_enabled and position.trailing_stop_active:
+                # Ratchet peak price upward and update trailing stop accordingly
+                if position.current_price > (position.peak_price or 0):
+                    position.peak_price = position.current_price
+                    position.trailing_stop_price = round(
+                        position.current_price * (1 - self._trailing_distance), 2
+                    )
+                    logger.debug(
+                        f"[SENTINEL] Trailing stop ratcheted for {symbol}: "
+                        f"new peak=${position.peak_price:,.2f}, "
+                        f"trail=${position.trailing_stop_price:,.2f}")
+
                 if position.trailing_stop_price and position.current_price <= position.trailing_stop_price:
                     logger.warning(
                         f"TRAILING-STOP triggered for {symbol}: "
