@@ -415,3 +415,90 @@ class PostgresStore(IMemory):
         except Exception as e:
             logger.error(f"Failed to update analyst performance: {e}")
             # Don't raise - performance tracking should not break main flow
+
+    async def get_performance_summary(self) -> dict:
+        """Return a performance summary dict used by /performance endpoint and daily profit review."""
+        try:
+            async with self._connection() as conn:
+                # 7-day window
+                row_7d = await conn.fetchrow("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE action = 'SELL' AND realized_pnl IS NOT NULL) AS closed_trades,
+                        COUNT(*) FILTER (WHERE action = 'SELL' AND realized_pnl > 0) AS wins,
+                        COUNT(*) FILTER (WHERE action = 'SELL' AND realized_pnl < 0) AS losses,
+                        COALESCE(SUM(realized_pnl) FILTER (WHERE action = 'SELL' AND realized_pnl > 0), 0) AS gross_wins,
+                        COALESCE(ABS(SUM(realized_pnl)) FILTER (WHERE action = 'SELL' AND realized_pnl < 0), 0) AS gross_losses,
+                        COALESCE(SUM(realized_pnl) FILTER (WHERE action = 'SELL' AND realized_pnl IS NOT NULL), 0) AS net_pnl,
+                        COUNT(*) AS total_actions
+                    FROM trades
+                    WHERE created_at >= NOW() - INTERVAL '7 days'
+                """)
+                # 30-day window
+                row_30d = await conn.fetchrow("""
+                    SELECT
+                        COUNT(*) FILTER (WHERE action = 'SELL' AND realized_pnl IS NOT NULL) AS closed_trades,
+                        COUNT(*) FILTER (WHERE action = 'SELL' AND realized_pnl > 0) AS wins,
+                        COALESCE(SUM(realized_pnl) FILTER (WHERE action = 'SELL' AND realized_pnl IS NOT NULL), 0) AS net_pnl
+                    FROM trades
+                    WHERE created_at >= NOW() - INTERVAL '30 days'
+                """)
+                # lifecycle completeness (all time)
+                lc_row = await conn.fetchrow("""
+                    SELECT
+                        COUNT(*) AS total_sell,
+                        COUNT(*) FILTER (
+                            WHERE entry_price IS NOT NULL AND exit_price IS NOT NULL AND realized_pnl IS NOT NULL
+                        ) AS complete_lifecycle
+                    FROM trades WHERE action = 'SELL'
+                """)
+
+            closed_7d = int(row_7d["closed_trades"] or 0)
+            wins_7d = int(row_7d["wins"] or 0)
+            losses_7d = int(row_7d["losses"] or 0)
+            gross_wins_7d = float(row_7d["gross_wins"] or 0)
+            gross_losses_7d = float(row_7d["gross_losses"] or 0)
+            net_pnl_7d = float(row_7d["net_pnl"] or 0)
+            total_actions_7d = int(row_7d["total_actions"] or 0)
+
+            win_rate_7d = (wins_7d / closed_7d * 100) if closed_7d > 0 else 0.0
+            profit_factor_7d = (gross_wins_7d / gross_losses_7d) if gross_losses_7d > 0 else (float("inf") if gross_wins_7d > 0 else 0.0)
+
+            closed_30d = int(row_30d["closed_trades"] or 0)
+            wins_30d = int(row_30d["wins"] or 0)
+            net_pnl_30d = float(row_30d["net_pnl"] or 0)
+            win_rate_30d = (wins_30d / closed_30d * 100) if closed_30d > 0 else 0.0
+
+            total_sell = int(lc_row["total_sell"] or 0)
+            complete_lc = int(lc_row["complete_lifecycle"] or 0)
+            lifecycle_pct = (complete_lc / total_sell * 100) if total_sell > 0 else 0.0
+
+            return {
+                "win_rate": round(win_rate_7d, 2),
+                "win_rate_7d": round(win_rate_7d, 2),
+                "win_rate_30d": round(win_rate_30d, 2),
+                "profit_factor": round(profit_factor_7d, 4),
+                "total_pnl": round(net_pnl_7d, 6),
+                "total_pnl_7d": round(net_pnl_7d, 6),
+                "total_pnl_30d": round(net_pnl_30d, 6),
+                "total_trades": total_actions_7d,
+                "closed_trades_7d": closed_7d,
+                "wins_7d": wins_7d,
+                "losses_7d": losses_7d,
+                "gross_wins_7d": round(gross_wins_7d, 6),
+                "gross_losses_7d": round(gross_losses_7d, 6),
+                "lifecycle_completeness_pct": round(lifecycle_pct, 2),
+                "lifecycle_complete": complete_lc,
+                "lifecycle_total": total_sell,
+                "underperforming": (
+                    win_rate_7d < 35 or profit_factor_7d < 1.0 or net_pnl_7d < 0
+                ) if closed_7d > 0 else False,
+            }
+        except Exception as e:
+            logger.error(f"Failed to get performance summary: {e}")
+            return {
+                "win_rate": 0.0, "win_rate_7d": 0.0, "win_rate_30d": 0.0,
+                "profit_factor": 0.0, "total_pnl": 0.0, "total_trades": 0,
+                "closed_trades_7d": 0, "wins_7d": 0, "losses_7d": 0,
+                "lifecycle_completeness_pct": 0.0, "underperforming": False,
+                "error": str(e),
+            }
