@@ -29,6 +29,7 @@ settings = None
 alert_manager = None
 seed_improver = None
 dgm_service = None
+autoresearch_service = None
 
 # Portfolio cache (avoid hammering Binance on every dashboard poll)
 _portfolio_cache = None
@@ -136,6 +137,28 @@ def create_app(stage: Stage = None) -> FastAPI:
             minute=15,
             timezone='Australia/Sydney',
             id='meme_daily_review',
+            replace_existing=True,
+        )
+
+        # Autoresearch code improvement: 6:30 PM Australia/Sydney
+        scheduler.add_job(
+            _run_autoresearch_daily,
+            'cron',
+            hour=18,
+            minute=30,
+            timezone='Australia/Sydney',
+            id='autoresearch_daily',
+            replace_existing=True,
+        )
+
+        # Autoresearch next-day evaluation: 10:00 AM Australia/Sydney
+        scheduler.add_job(
+            _evaluate_autoresearch_experiments,
+            'cron',
+            hour=10,
+            minute=0,
+            timezone='Australia/Sydney',
+            id='autoresearch_evaluation',
             replace_existing=True,
         )
 
@@ -613,6 +636,19 @@ async def _create_orchestrator(settings: Settings):
     except Exception as e:
         logger.warning(f"Failed to initialize SeedImprover: {e}")
 
+    # Autoresearch service — LLM-powered code improvement
+    global autoresearch_service
+    try:
+        from agents.autoresearch.service import AutoresearchService
+
+        autoresearch_service = AutoresearchService(
+            store=memory,
+            llm=llm,
+        )
+        logger.info("Autoresearch service initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Autoresearch: {e}")
+
     logger.info(f"🚀 Orchestrator initialized ({len(analysts)} analysts)")
     return orch
 
@@ -629,6 +665,7 @@ async def _run_migrations_on_startup():
     migration_files = [
         "006_dgm_population_archive.sql",
         "008_daily_portfolio_ledger.sql",
+        "009_autoresearch_experiments.sql",
     ]
     for filename in migration_files:
         try:
@@ -999,6 +1036,59 @@ def _summarize_dgm_result(result: dict) -> str:
     return " | ".join(parts)
 
 
+async def _run_autoresearch_daily():
+    """6:30 PM AEST — run autoresearch code improvement session."""
+    global autoresearch_service, orchestrator
+    if not autoresearch_service:
+        logger.info("[AUTORESEARCH] Service not initialized")
+        return
+
+    from datetime import date as _date
+
+    today = _date.today()
+    daily_context = {}
+
+    if orchestrator and hasattr(orchestrator.memory, "get_daily_ledger_entry"):
+        try:
+            entry = await orchestrator.memory.get_daily_ledger_entry(today)
+            if entry:
+                daily_context = {
+                    "daily_pnl": float(entry.get("daily_pnl", 0)),
+                    "daily_pnl_pct": float(entry.get("daily_pnl_pct", 0)),
+                    "daily_status": entry.get("status", "NO_DATA"),
+                    "total_trades": entry.get("total_trades", 0),
+                    "wins": entry.get("wins", 0),
+                    "losses": entry.get("losses", 0),
+                    "win_rate": float(entry.get("win_rate", 0)),
+                }
+        except Exception as exc:
+            logger.warning("[AUTORESEARCH] Failed to read daily ledger: %s", exc)
+
+    try:
+        result = await autoresearch_service.run(daily_context)
+        n_exp = len(result.get("experiments", []))
+        n_eval = len(result.get("evaluations", []))
+        logger.info(
+            "[AUTORESEARCH] Session complete: %d experiments, %d evaluations",
+            n_exp, n_eval,
+        )
+    except Exception as e:
+        logger.error("[AUTORESEARCH] Session error: %s", e, exc_info=True)
+
+
+async def _evaluate_autoresearch_experiments():
+    """10:00 AM AEST — evaluate yesterday's autoresearch experiments."""
+    global autoresearch_service
+    if not autoresearch_service:
+        return
+
+    try:
+        evals = await autoresearch_service._evaluate_pending_experiments()
+        logger.info("[AUTORESEARCH] Morning evaluation: %d experiments evaluated", len(evals))
+    except Exception as e:
+        logger.error("[AUTORESEARCH] Evaluation error: %s", e, exc_info=True)
+
+
 def _register_routes(app: FastAPI):
     """Register API routes"""
 
@@ -1025,6 +1115,43 @@ def _register_routes(app: FastAPI):
     # Register seed improver router
     from api.routes.seed_improver import router as seed_improver_router
     app.include_router(seed_improver_router)
+
+    # Autoresearch API endpoints
+    @app.get("/api/autoresearch/experiments")
+    async def get_autoresearch_experiments(days: int = 30):
+        """Get recent autoresearch experiments."""
+        if not autoresearch_service:
+            return {"experiments": [], "error": "Autoresearch service not initialized"}
+        experiments = await autoresearch_service.get_experiments(days)
+        return {"experiments": experiments}
+
+    @app.get("/api/autoresearch/latest")
+    async def get_autoresearch_latest():
+        """Get the most recent autoresearch experiment."""
+        if not autoresearch_service:
+            return {"experiment": None, "error": "Autoresearch service not initialized"}
+        experiment = await autoresearch_service.get_latest_experiment()
+        return {"experiment": experiment}
+
+    @app.post("/api/autoresearch/trigger")
+    async def trigger_autoresearch():
+        """Manually trigger an autoresearch session."""
+        if not autoresearch_service:
+            raise HTTPException(status_code=503, detail="Autoresearch service not initialized")
+        from datetime import date as _date
+        daily_context = {}
+        if orchestrator and hasattr(orchestrator.memory, "get_daily_ledger_entry"):
+            try:
+                entry = await orchestrator.memory.get_daily_ledger_entry(_date.today())
+                if entry:
+                    daily_context = {
+                        "daily_pnl": float(entry.get("daily_pnl", 0)),
+                        "daily_status": entry.get("status", "NO_DATA"),
+                    }
+            except Exception:
+                pass
+        result = await autoresearch_service.run(daily_context)
+        return result
 
     @app.get("/")
     async def root():

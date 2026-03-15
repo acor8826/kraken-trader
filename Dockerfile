@@ -49,8 +49,13 @@ WORKDIR /app
 # Install runtime dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
+
+# Configure git for autoresearch commits
+RUN git config --global user.name "autoresearch-bot" && \
+    git config --global user.email "autoresearch@trader.local"
 
 # Copy virtual environment from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -59,6 +64,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy application code (cache bust via build arg)
 ARG CACHEBUST=1
 COPY . .
+
+# Initialize git repo for autoresearch commits (if not already a repo)
+RUN git init -b main 2>/dev/null || true && \
+    git add -A && git commit -m "initial" --allow-empty 2>/dev/null || true
 
 # Create necessary directories and set ownership
 RUN mkdir -p /app/output /app/logs /app/data/cache /tmp/prometheus && \
