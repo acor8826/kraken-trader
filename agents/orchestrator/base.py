@@ -227,6 +227,19 @@ class Orchestrator:
 
                 stop_loss_price = round(entry_price * (1 - sl_pct), 2)
                 take_profit_price = round(entry_price * (1 + tp_pct), 2)
+            elif current_price and current_price > 0:
+                # Fallback for legacy positions with null entry_price:
+                # apply a conservative stop-loss from current price to prevent runaway losses
+                sl_pct = default_sl_pct
+                if hasattr(self.sentinel, '_get_stop_loss_for_pair'):
+                    sl_pct = self.sentinel._get_stop_loss_for_pair(pair)
+                stop_loss_price = round(current_price * (1 - sl_pct), 2)
+                # No take-profit for legacy positions (we don't know original entry)
+                take_profit_price = None
+                logger.warning(
+                    f"Position {pair} has null entry_price — applying fallback stop-loss "
+                    f"at {stop_loss_price} ({sl_pct*100:.1f}% below current {current_price:.4f})"
+                )
 
                 # Track peak price for trailing stop
                 if hasattr(self.memory, 'get_peak_price'):

@@ -582,7 +582,7 @@ class PostgresStore(IMemory):
                         COUNT(*) FILTER (WHERE action = 'SELL' AND realized_pnl > 0) AS wins,
                         COUNT(*) FILTER (WHERE action = 'SELL' AND realized_pnl < 0) AS losses,
                         COALESCE(SUM(realized_pnl) FILTER (WHERE action = 'SELL' AND realized_pnl > 0), 0) AS gross_wins,
-                        COALESCE(ABS(SUM(realized_pnl)) FILTER (WHERE action = 'SELL' AND realized_pnl < 0), 0) AS gross_losses,
+                        COALESCE(ABS(SUM(realized_pnl) FILTER (WHERE action = 'SELL' AND realized_pnl < 0)), 0) AS gross_losses,
                         COALESCE(SUM(realized_pnl) FILTER (WHERE action = 'SELL' AND realized_pnl IS NOT NULL), 0) AS net_pnl,
                         COUNT(*) AS total_actions
                     FROM trades
