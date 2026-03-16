@@ -25,7 +25,7 @@ async def test_stop_loss_trigger_creates_sell_trade():
     trades = await sentinel.check_exit_triggers(positions)
 
     assert len(trades) == 1
-    assert trades[0].pair.endswith("/USDT")
+    assert trades[0].pair.startswith("BTC/")  # quote currency varies by deployment (AUD/USDT)
     assert trades[0].order_type == OrderType.STOP_LOSS
     assert trades[0].requested_size_base == 0.1
 
@@ -55,7 +55,7 @@ async def test_take_profit_trigger_creates_sell_trade():
     trades = await sentinel.check_exit_triggers(positions)
 
     assert len(trades) == 1
-    assert trades[0].pair.endswith("/USDT")
+    assert trades[0].pair.startswith("ETH/")  # quote currency varies by deployment (AUD/USDT)
     assert trades[0].order_type == OrderType.TAKE_PROFIT
     assert trades[0].requested_size_base == 1.5
 
