@@ -2146,8 +2146,11 @@ def _register_routes(app: FastAPI):
         patterns = []
 
         # Pull pattern data from latest intel signals
+        # Phase3Orchestrator stores per-pair intel in _latest_intel (dict)
+        # Base Orchestrator stores it in _latest_fusions_by_pair (dict)
         if orchestrator:
-            latest = getattr(orchestrator, "_latest_fusions_by_pair", {})
+            latest = getattr(orchestrator, "_latest_fusions_by_pair", None) \
+                or getattr(orchestrator, "_latest_intel", {}) or {}
             intel = latest.get(pair)
             if intel and intel.signals:
                 for sig in intel.signals:

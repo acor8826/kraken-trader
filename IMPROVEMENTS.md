@@ -37,19 +37,29 @@
   **Deployed:** 2026-03-16 19:12 AEST — revision `kraken-trader-00242-sog`
   **Review due: 2026-03-23**
 
+- [x] **[2026-03-16]** `tests/unit/test_sentinel_exits.py` Fix 2 stale test assertions after USDT→AUD pair switch.
+  Two tests (`test_stop_loss_trigger_creates_sell_trade`, `test_take_profit_trigger_creates_sell_trade`) asserted `pair.endswith("/USDT")` — broken since the pair migration. Changed to `startswith("BTC/")` / `startswith("ETH/")` to be quote-currency-agnostic. Test suite now **171/171 passing** (excl. 1 pre-existing Binance test).
+  Addresses: Stale test failures blocking clean CI baseline.
+  Outcome: Clean test suite; future changes can rely on passing baseline.
+  **Committed:** 2026-03-16 19:10 AEST — `974d6e1`
+  **Deployed:** 2026-03-16 19:15 AEST — revision `kraken-trader-00244-cag` (promoted to 100%)
+  **Review due: 2026-03-23**
+
+> **Note:** Revision 00241 failed (startup crash from Stage import bug, caught and fixed by DGM during cycle). Revision 00242 was DGM-only (0% traffic). Final revision serving 100% traffic: **`kraken-trader-00244-cag`** (commit `99e8e61`, includes all 3 fixes above + test fix).
+
 ### Deferred / Logged for Human Review
 
 | # | Type | Description | Risk | Reason Deferred |
 |---|------|-------------|------|-----------------|
 | 1 | bugfix | Binance 400 errors in logs — unused Binance integration present | low | Non-blocking; cleanup next cycle |
 | 2 | security | API keys as plaintext env vars (use Secret Manager) | high | Needs Alex approval |
-| 3 | test | 2 pre-existing test failures (USDT→AUD pair suffix mismatch in sentinel tests) | low | Update tests next cycle |
+| 3 | framework | Meme entry_cms=0.65 threshold → 0 entries even with positive Twitter signal | low | Evaluate lowering threshold next cycle |
 
 ### Next Cycle Actions
-1. Monitor `kraken-trader-00242-sog` for first AUD-pair trades (expected within 24-48h)
+1. Monitor `kraken-trader-00244-cag` for first AUD-pair trades (expected within 24-48h)
 2. Confirm DGM ledger writes succeeding (no more `AttributeError` in 06:45 UTC log slot)
 3. Confirm no `UnboundLocalError` in new revision logs
-4. Update sentinel exit tests to use `/AUD` pair suffix (pre-existing test failures)
+4. Evaluate meme CMS entry threshold — 0.65 may be too conservative for current Extreme Fear conditions
 
 ---
 

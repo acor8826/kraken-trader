@@ -163,8 +163,8 @@ class AdvancedStrategist(IStrategist):
             "min_confidence": self.settings.risk.min_confidence
         }
 
-        # Select strategy based on regime
-        strategy = self._select_strategy(intel)
+        # Select strategy based on regime (portfolio used for contrarian override)
+        strategy = self._select_strategy(intel, portfolio)
         strategy_config = STRATEGY_LIBRARY[strategy]
 
         logger.info(f"[{intel.pair}] Regime: {intel.regime.value} → Strategy: {strategy.value}")
@@ -197,7 +197,7 @@ class AdvancedStrategist(IStrategist):
 
         return self._build_plan(intel, decision, strategy_config, risk)
 
-    def _select_strategy(self, intel: MarketIntel) -> Strategy:
+    def _select_strategy(self, intel: MarketIntel, portfolio: Portfolio = None) -> Strategy:
         """Select the best strategy for current conditions"""
         regime = intel.regime
 
@@ -222,6 +222,22 @@ class AdvancedStrategist(IStrategist):
         elif intel.disagreement > 0.5:
             # High analyst disagreement = uncertainty
             best_strategy = Strategy.RISK_OFF
+
+        # Contrarian override: in bearish markets with few/no positions, switch
+        # from TREND_FOLLOW/RISK_OFF to ACCUMULATE so the bot deploys capital
+        # instead of sitting 100% cash indefinitely.
+        if best_strategy in (Strategy.TREND_FOLLOW, Strategy.RISK_OFF):
+            if regime in (Regime.TRENDING_DOWN, Regime.UNKNOWN):
+                has_positions = (
+                    portfolio and portfolio.positions and len(portfolio.positions) > 0
+                ) if portfolio else False
+                # Only switch to ACCUMULATE when mostly in cash
+                if not has_positions and intel.fused_direction > -0.5:
+                    logger.info(
+                        f"[{intel.pair}] Contrarian override: {best_strategy.value} → accumulate "
+                        f"(no positions, direction={intel.fused_direction:+.2f})"
+                    )
+                    best_strategy = Strategy.ACCUMULATE
 
         self._last_strategy = best_strategy
         return best_strategy
@@ -369,11 +385,28 @@ Generate your decision as JSON."""
                 size_pct = risk["max_position_pct"] * 0.4
 
         elif strategy == Strategy.ACCUMULATE:
-            dir_threshold = buy_direction_threshold if pair_rank and pair_rank <= 2 else 0.10
-            if intel.fused_direction > dir_threshold and intel.fused_confidence > 0.40:
+            # In bearish/fearful markets, allow contrarian accumulation:
+            # - Top 2 pairs: buy even at direction -0.20 (oversold dip buying)
+            # - Other pairs: buy at direction -0.10 (mild contrarian)
+            # - Normal bull market: original threshold 0.10
+            if pair_rank and pair_rank <= 2:
+                dir_threshold = -0.20
+            elif intel.fused_direction < -0.1:
+                # Bearish market — contrarian accumulate with lower bar
+                dir_threshold = -0.10
+            else:
+                dir_threshold = buy_direction_threshold if pair_rank and pair_rank <= 2 else 0.05
+            if intel.fused_direction > dir_threshold and intel.fused_confidence > 0.38:
                 action = "BUY"
-                confidence = intel.fused_confidence * 0.8
-                size_pct = risk["max_position_pct"] * 0.25
+                # Scale confidence and size down for contrarian entries
+                if intel.fused_direction < 0:
+                    # Contrarian entry — smaller size, lower confidence
+                    confidence = intel.fused_confidence * 0.7
+                    size_pct = risk["max_position_pct"] * 0.15
+                    logger.info(f"[{intel.pair}] Contrarian accumulate: dir={intel.fused_direction:+.2f}")
+                else:
+                    confidence = intel.fused_confidence * 0.8
+                    size_pct = risk["max_position_pct"] * 0.25
 
         elif strategy == Strategy.RISK_OFF:
             if intel.fused_direction < -0.15:
@@ -445,6 +478,21 @@ Generate your decision as JSON."""
         if action == "BUY" and pair_rank is not None and pair_rank <= 2:
             if strategy in (Strategy.ACCUMULATE, Strategy.TREND_FOLLOW):
                 size_pct = max(size_pct, risk["max_position_pct"] * 0.35)
+
+        # ─── Idle capital trigger ─────────────────────────────────
+        # If still HOLD and this is a top-ranked pair, force a small
+        # accumulation buy to prevent sitting 100% cash indefinitely.
+        # Only applies when direction isn't catastrophically bearish.
+        if action == "HOLD" and pair_rank is not None and pair_rank <= 2:
+            if intel.fused_direction > -0.35 and intel.fused_confidence > 0.30:
+                action = "BUY"
+                confidence = max(0.42, intel.fused_confidence * 0.6)
+                size_pct = risk["max_position_pct"] * 0.10  # Very small position
+                stop_distance = risk["stop_loss_pct"] * 1.5  # Wider stop for low-conviction
+                logger.info(
+                    f"[{intel.pair}] Idle capital trigger: forced small accumulate "
+                    f"(rank={pair_rank}, dir={intel.fused_direction:+.2f}, conf={confidence:.2f})"
+                )
 
         reasoning = f"{strategy.value}: {config.description}. "
         if action != "HOLD":

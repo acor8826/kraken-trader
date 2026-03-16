@@ -91,10 +91,18 @@ class MemeStrategist(IStrategist):
             min_vol_z = self.config.min_volume_z_score         # 1.5
         else:
             # Volume-only mode: CMS is capped at ~0.45 (volume weight),
-            # so use achievable thresholds based on volume signal alone
-            entry_threshold = 0.25
-            ambiguous_lower = 0.15
-            min_vol_z = 1.0
+            # so use achievable thresholds based on volume signal alone.
+            # In fearful markets (strongly negative CMS), lower thresholds
+            # further to catch early recovery momentum.
+            if cms < -0.1:
+                # Extreme fear / bearish — very low bar for volume spikes
+                entry_threshold = 0.10
+                ambiguous_lower = 0.05
+                min_vol_z = 0.8
+            else:
+                entry_threshold = 0.25
+                ambiguous_lower = 0.15
+                min_vol_z = 1.0
 
         # --- SCALED TAKE-PROFIT (partial sells) ---
         if position and self.config.take_profit_targets:
