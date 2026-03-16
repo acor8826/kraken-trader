@@ -973,7 +973,32 @@ async def _run_seed_improver_daily():
         try:
             result = await dgm_service.run_cycle()
             outcome = result.get("outcome", "unknown")
-            logger.info("DGM cycle completed: %s", outcome)
+            logger.info("[IMPROVER] DGM cycle completed: %s", outcome)
+
+            # Store DGM run in the in-memory log so /runs endpoint shows it
+            try:
+                from api.routes.seed_improver import _run_log, _MAX_RUN_LOG
+                dgm_entry = {
+                    "id": f"dgm-{today.isoformat()}",
+                    "trigger_type": "scheduled_dgm",
+                    "status": "completed",
+                    "summary": _summarize_dgm_result(result),
+                    "recommendations_count": result.get("phases", {}).get("mutate", {}).get("patches_count", 0),
+                    "recommendations": [],
+                    "patterns_detected": [],
+                    "analysis_summary": None,
+                    "model_used": None,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "mode": "dgm",
+                    "outcome": outcome,
+                    "cycle_result": result,
+                }
+                _run_log.insert(0, dgm_entry)
+                if len(_run_log) > _MAX_RUN_LOG:
+                    _run_log.pop()
+            except Exception:
+                pass
 
             # Record improvement action in ledger
             if orchestrator and hasattr(orchestrator.memory, "update_daily_ledger_improvement"):

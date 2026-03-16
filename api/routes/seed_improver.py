@@ -65,10 +65,33 @@ async def seed_improver_run(payload: Optional[dict] = None):
     # DGM mode: run evolutionary cycle
     if _dgm_service:
         cycle_result = await _dgm_service.run_cycle()
+        outcome = cycle_result.get("outcome", "unknown")
+
+        # Log the DGM run so /runs endpoint shows it
+        dgm_entry = {
+            "id": f"dgm-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}",
+            "trigger_type": "api_dgm",
+            "status": "completed",
+            "summary": f"DGM cycle: {outcome}",
+            "recommendations_count": cycle_result.get("phases", {}).get("mutate", {}).get("patches_count", 0),
+            "recommendations": [],
+            "patterns_detected": [],
+            "analysis_summary": None,
+            "model_used": None,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "mode": "dgm",
+            "outcome": outcome,
+            "cycle_result": cycle_result,
+        }
+        _run_log.insert(0, dgm_entry)
+        if len(_run_log) > _MAX_RUN_LOG:
+            _run_log.pop()
+
         return {
             "status": "completed",
             "mode": "dgm",
-            "outcome": cycle_result.get("outcome", "unknown"),
+            "outcome": outcome,
             "cycle_result": cycle_result,
         }
 
