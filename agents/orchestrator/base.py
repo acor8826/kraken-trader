@@ -241,23 +241,22 @@ class Orchestrator:
                     f"at {stop_loss_price} ({sl_pct*100:.1f}% below current {current_price:.4f})"
                 )
 
-                # Track peak price for trailing stop
+            # Track peak price for trailing stop (runs for ALL positions)
+            if entry_price and entry_price > 0 and current_price and current_price > 0:
                 if hasattr(self.memory, 'get_peak_price'):
                     stored_peak = await self.memory.get_peak_price(asset)
                     if stored_peak is None:
-                        # Initialize peak to entry price
                         peak_price = current_price if current_price > 0 else entry_price
                         await self.memory.set_peak_price(asset, peak_price)
                     else:
                         peak_price = stored_peak
-                        # Update peak if current price is higher
                         if current_price > peak_price:
                             peak_price = current_price
                             await self.memory.set_peak_price(asset, peak_price)
 
                     # Compute trailing stop state
                     exit_cfg = self.settings.exit_management
-                    if exit_cfg.enable_trailing_stop and current_price > 0:
+                    if exit_cfg.enable_trailing_stop:
                         gain_pct = (current_price - entry_price) / entry_price
                         if gain_pct >= exit_cfg.trailing_stop.activation_pct:
                             trailing_stop_active = True
@@ -265,7 +264,7 @@ class Orchestrator:
                                 peak_price * (1 - exit_cfg.trailing_stop.distance_pct), 2
                             )
                             # Trailing stop overrides fixed stop when it's higher
-                            if trailing_stop_price > stop_loss_price:
+                            if stop_loss_price and trailing_stop_price > stop_loss_price:
                                 stop_loss_price = trailing_stop_price
 
                 # Estimate sell date using ATR
@@ -571,7 +570,10 @@ class Orchestrator:
         # 3. Fuse intelligence — only average analysts that returned data
         from core.models import MarketIntel, Regime
 
-        active_signals = [s for s in signals if s.confidence > 0.01]
+        # Only include analysts with meaningful data (confidence > 0.30)
+        active_signals = [s for s in signals if s.confidence > 0.30]
+        if not active_signals:
+            active_signals = [s for s in signals if s.confidence > 0.01]
         if not active_signals:
             active_signals = signals
 
@@ -584,8 +586,16 @@ class Orchestrator:
                 regime=Regime.UNKNOWN
             )
         else:
-            direction = sum(s.direction for s in active_signals) / len(active_signals)
-            confidence = sum(s.confidence for s in active_signals) / len(active_signals)
+            # Confidence-weighted fusion: higher-confidence analysts have more influence
+            total_weight = sum(s.confidence for s in active_signals)
+            if total_weight > 0:
+                direction = sum(s.direction * s.confidence for s in active_signals) / total_weight
+                # Use max confidence rather than average — prevents low-quality analysts
+                # from dragging down a strong signal from a reliable analyst
+                confidence = max(s.confidence for s in active_signals)
+            else:
+                direction = sum(s.direction for s in active_signals) / len(active_signals)
+                confidence = sum(s.confidence for s in active_signals) / len(active_signals)
             intel = MarketIntel(
                 pair=pair,
                 signals=signals,

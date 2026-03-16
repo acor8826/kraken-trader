@@ -97,8 +97,8 @@ class BasicSentinel(ISentinel):
                 signal.approve()
                 continue
             
-            # Check confidence threshold
-            if signal.confidence < self.min_confidence:
+            # Check confidence threshold (only for BUY — exits should be less restrictive)
+            if signal.action == TradeAction.BUY and signal.confidence < self.min_confidence:
                 signal.reject(f"Confidence {signal.confidence:.2f} below threshold {self.min_confidence:.2f}")
                 logger.info(f"[SENTINEL] {signal.pair}: REJECTED - confidence {signal.confidence:.3f} < "
                            f"threshold {self.min_confidence:.3f}")

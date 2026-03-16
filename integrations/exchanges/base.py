@@ -151,8 +151,15 @@ class MockExchange(IExchange):
     async def market_sell(self, pair: str, amount_base: float) -> Dict:
         """Simulate market sell"""
         base = pair.split("/")[0]
-        price = self._prices.get(base, 1000)
-        
+
+        # Always fetch fresh price before selling to avoid stale/zero exits
+        ticker = await self.get_ticker(pair)
+        price = ticker.get("price", self._prices.get(base, 1000))
+
+        if price <= 0:
+            logger.error(f"[MOCK] Cannot sell {base}: price is {price}")
+            return {"error": f"Invalid price {price} for {base}"}
+
         # Check position
         position = self._positions.get(base, 0)
         if amount_base > position:

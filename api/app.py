@@ -510,7 +510,10 @@ async def _create_orchestrator(settings: Settings):
     # Meme Trading Module (behind feature flag)
     # =========================================================================
     import os
-    enable_meme = os.getenv("ENABLE_MEME_TRADING", "false").lower() == "true"
+    # Default to enabled for stage3 (meme trading is a core feature of that stage)
+    from core.config.settings import Stage
+    meme_default = "true" if settings.stage == Stage.STAGE_3_FULL else "false"
+    enable_meme = os.getenv("ENABLE_MEME_TRADING", meme_default).lower() == "true"
 
     if enable_meme:
         try:

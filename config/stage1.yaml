@@ -18,7 +18,7 @@ risk:
   max_total_exposure_pct: 0.80
   stop_loss_pct: 0.025
   take_profit_multiplier: 2.0
-  min_confidence: 0.65
+  min_confidence: 0.50
   max_daily_trades: 6
   max_daily_loss_pct: 0.10
 

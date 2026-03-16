@@ -18,7 +18,7 @@ risk:
   max_total_exposure_pct: 0.80
   stop_loss_pct: 0.025
   take_profit_multiplier: 2.0
-  min_confidence: 0.65  # Slightly lower with more signals
+  min_confidence: 0.50  # Matches realistic analyst output range
   max_daily_trades: 15
   max_daily_loss_pct: 0.10
 
