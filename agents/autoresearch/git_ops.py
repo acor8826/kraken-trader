@@ -12,6 +12,44 @@ logger = logging.getLogger(__name__)
 _TIMEOUT = 30  # seconds
 
 
+def _ensure_repo(repo_root: Path) -> bool:
+    """Ensure a git repo exists at repo_root. Initialises one if needed."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT,
+        )
+        if result.returncode == 0:
+            return True
+        # No repo — initialise
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=str(repo_root),
+            capture_output=True,
+            timeout=_TIMEOUT,
+        )
+        subprocess.run(
+            ["git", "add", "-A"],
+            cwd=str(repo_root),
+            capture_output=True,
+            timeout=_TIMEOUT,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "initial", "--allow-empty"],
+            cwd=str(repo_root),
+            capture_output=True,
+            timeout=_TIMEOUT,
+        )
+        logger.info("Initialised git repo at %s", repo_root)
+        return True
+    except Exception as e:
+        logger.error("Failed to ensure git repo: %s", e)
+        return False
+
+
 def commit_experiment(
     file_path: str,
     message: str,
@@ -23,6 +61,8 @@ def commit_experiment(
         (success, commit_hash or None)
     """
     try:
+        _ensure_repo(repo_root)
+
         # Stage the file
         result = subprocess.run(
             ["git", "add", file_path],

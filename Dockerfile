@@ -65,10 +65,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 ARG CACHEBUST=1
 COPY . .
 
-# Initialize git repo for autoresearch commits (if not already a repo)
-RUN git init -b main 2>/dev/null || true && \
-    git add -A && git commit -m "initial" --allow-empty 2>/dev/null || true
-
 # Create necessary directories and set ownership
 RUN mkdir -p /app/output /app/logs /app/data/cache /tmp/prometheus && \
     chown -R trader:trader /app /tmp/prometheus
