@@ -59,7 +59,7 @@ def main():
     stage = Stage(stage_name)
     
     logger.info(f"=" * 60)
-    exchange_name = os.getenv("EXCHANGE", "binance").capitalize()
+    exchange_name = os.getenv("EXCHANGE", "kraken").capitalize()
     logger.info(f"{exchange_name} Trading Agent")
     logger.info(f"Stage: {stage.value}")
     logger.info(f"Simulation: {os.getenv('SIMULATION_MODE', 'false')}")
@@ -67,7 +67,7 @@ def main():
     
     # Check required credentials
     if not os.getenv("SIMULATION_MODE", "").lower() == "true":
-        exchange = os.getenv("EXCHANGE", "binance")
+        exchange = os.getenv("EXCHANGE", "kraken")
         if exchange == "binance":
             testnet = os.getenv("BINANCE_TESTNET", "").lower() in ("1", "true", "yes")
             if testnet:

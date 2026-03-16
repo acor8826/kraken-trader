@@ -123,7 +123,7 @@ class ExchangeConfig:
 
     @classmethod
     def from_env(cls) -> "ExchangeConfig":
-        exchange_name = os.getenv("EXCHANGE", "binance")
+        exchange_name = os.getenv("EXCHANGE", "kraken")
         if exchange_name == "kraken":
             return cls(
                 name="kraken",
