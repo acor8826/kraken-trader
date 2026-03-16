@@ -5,10 +5,10 @@ stage: stage2
 
 trading:
   pairs:
-    - BTC/USDT
-    - ETH/USDT
-    - SOL/USDT
-  quote_currency: USDT
+    - BTC/AUD
+    - ETH/AUD
+    - SOL/AUD
+  quote_currency: AUD
   initial_capital: 1000.0
   target_capital: 5000.0
   check_interval_minutes: 30  # More frequent checks
