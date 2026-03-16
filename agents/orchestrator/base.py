@@ -49,6 +49,7 @@ class Orchestrator:
         self._running = False
         self._cycle_count = 0
         self._latest_fusion = None  # Store latest fusion for dashboard
+        self._latest_fusions_by_pair = {}  # Per-pair intel for pattern API
         self._alert_manager = None  # Set by app.py
         self._risk_manager = None  # Adaptive risk manager (set by app.py)
         self._last_milestone_pct = 0  # Track portfolio milestones
@@ -491,6 +492,8 @@ class Orchestrator:
         # Store latest fusion for dashboard
         if intel_list:
             self._latest_fusion = intel_list[-1]
+            for intel in intel_list:
+                self._latest_fusions_by_pair[intel.pair] = intel
 
         # 3. Validate through sentinel
         validated_plan = await self.sentinel.validate_plan(plan, portfolio)
@@ -609,6 +612,7 @@ class Orchestrator:
 
         # Store latest fusion for dashboard API
         self._latest_fusion = intel
+        self._latest_fusions_by_pair[intel.pair] = intel
 
         # 4. Get trading plan from strategist
         plan = await self.strategist.create_plan(intel, portfolio)

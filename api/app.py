@@ -2143,7 +2143,7 @@ def _register_routes(app: FastAPI):
 
         # Pull pattern data from latest intel signals
         if orchestrator:
-            latest = getattr(orchestrator, "_latest_intel", {})
+            latest = getattr(orchestrator, "_latest_fusions_by_pair", {})
             intel = latest.get(pair)
             if intel and intel.signals:
                 for sig in intel.signals:
