@@ -1,5 +1,58 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-16 19:00 AEST
+
+### Observations
+- **System:** Healthy, `kraken-trader-00225-wlg` at cycle start → promoted `kraken-trader-00242-sog`
+- **Portfolio:** $997.10 (-0.29%) — 0 open positions, 0 closed trades (fresh revision)
+- **Profit tracker:** ✅ PROFIT today (+$16.80, +1.71%)
+- **Meme bot:** 102 cycles, PEPE/DOGE warm, circuit breaker healthy, 0 active positions
+- **Fear & Greed Index:** 23 (Extreme Fear, but ≥ 20 → deployment UNBLOCKED for first time since 2026-03-11)
+- **Status:** NOT UNDERPERFORMING — profit today, no accumulated losses
+
+### Implemented Fixes
+
+- [x] **[2026-03-16]** `api/app.py` Remove duplicate inline `Stage` import causing `UnboundLocalError` on startup.
+  `_create_orchestrator()` had `from core.config.settings import Stage` ~220 lines into the function. Python's scoping rules treated `Stage` as a local variable throughout the function, causing `UnboundLocalError` at line 290 (before the inline import). This would crash every new revision on startup — the running `00225-wlg` was built before this bug was introduced. Fix: remove the redundant inline import; rely on the module-level import.
+  Addresses: Startup crash blocking all new deployments.
+  Outcome: New revisions now start successfully.
+  **Committed:** 2026-03-16 19:00 AEST — `99e8e61`
+  **Deployed:** 2026-03-16 19:12 AEST — revision `kraken-trader-00242-sog`
+  **Verified:** 2026-03-16 19:12 AEST — `/health` healthy, scheduler running ✅
+  **Review due: 2026-03-23**
+
+- [x] **[2026-03-16]** `api/app.py` Guard `None` phase values in `_summarize_dgm_result`.
+  `AttributeError: 'NoneType' object has no attribute 'get'` in `_summarize_dgm_result()` when DGM phase dicts have `None` values. Broke the seed improver daily ledger write at 06:45 UTC. Added `if ev is not None:` guards before all `.get()` calls on phase values.
+  Addresses: Silent daily seed improver ledger write failures.
+  Outcome: DGM cycle results now correctly logged to daily ledger.
+  **Committed:** 2026-03-16 19:00 AEST — `0dec7ea`
+  **Deployed:** 2026-03-16 19:12 AEST — revision `kraken-trader-00242-sog`
+  **Review due: 2026-03-23**
+
+- [x] **[2026-03-16]** `memory/postgres.py` Make `get_entry_price` return `None` on error instead of raising.
+  `get_entry_price()` re-raised asyncpg exceptions, causing Phase3 `run_cycle()` to abort when the `entry_prices` table query failed (e.g. missing table, bind_execute error). Changed `raise` to `return None` for graceful degradation; successful queries unchanged.
+  Addresses: Orchestrator cycle aborts on transient DB errors in `get_entry_price`.
+  Outcome: Trading cycles continue on DB query failures; positions tracked without entry prices until DB stabilises.
+  **Committed:** 2026-03-16 19:00 AEST — `0dec7ea`
+  **Deployed:** 2026-03-16 19:12 AEST — revision `kraken-trader-00242-sog`
+  **Review due: 2026-03-23**
+
+### Deferred / Logged for Human Review
+
+| # | Type | Description | Risk | Reason Deferred |
+|---|------|-------------|------|-----------------|
+| 1 | bugfix | Binance 400 errors in logs — unused Binance integration present | low | Non-blocking; cleanup next cycle |
+| 2 | security | API keys as plaintext env vars (use Secret Manager) | high | Needs Alex approval |
+| 3 | test | 2 pre-existing test failures (USDT→AUD pair suffix mismatch in sentinel tests) | low | Update tests next cycle |
+
+### Next Cycle Actions
+1. Monitor `kraken-trader-00242-sog` for first AUD-pair trades (expected within 24-48h)
+2. Confirm DGM ledger writes succeeding (no more `AttributeError` in 06:45 UTC log slot)
+3. Confirm no `UnboundLocalError` in new revision logs
+4. Update sentinel exit tests to use `/AUD` pair suffix (pre-existing test failures)
+
+---
+
 ## Improvement Cycle 2026-03-14 19:00 AEST
 
 ### Observations
