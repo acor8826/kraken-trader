@@ -1054,13 +1054,16 @@ def _summarize_dgm_result(result: dict) -> str:
     phases = result.get("phases", {})
     if "evaluate" in phases:
         ev = phases["evaluate"]
-        parts.append(f"eval={ev.get('verdict', ev.get('status', '?'))}")
+        if ev is not None:
+            parts.append(f"eval={ev.get('verdict', ev.get('status', '?'))}")
     if "mutate" in phases:
         mt = phases["mutate"]
-        parts.append(f"patches={mt.get('patches_count', 0)}")
+        if mt is not None:
+            parts.append(f"patches={mt.get('patches_count', 0)}")
     if "deploy" in phases:
         dp = phases["deploy"]
-        parts.append(f"deploy={dp.get('status', '?')}")
+        if dp is not None:
+            parts.append(f"deploy={dp.get('status', '?')}")
     return " | ".join(parts)
 
 

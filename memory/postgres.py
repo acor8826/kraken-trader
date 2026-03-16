@@ -307,7 +307,7 @@ class PostgresStore(IMemory):
 
         except Exception as e:
             logger.error(f"Failed to get entry price for {symbol}: {e}")
-            raise
+            return None
 
     async def set_entry_price(self, symbol: str, price: float, size: Optional[float] = None) -> None:
         """Set entry price for position.
