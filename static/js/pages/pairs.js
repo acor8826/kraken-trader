@@ -81,7 +81,7 @@ const PairsPage = {
                 const posObj = portfolio.positions;
                 pairs = Object.entries(posObj).map(([symbol, pos]) => ({
                     symbol,
-                    pair: `${symbol}/${portfolio.quote_currency || 'USDT'}`,
+                    pair: `${symbol}/${portfolio.quote_currency || 'AUD'}`,
                     amount: pos.amount,
                     entry_price: pos.entry_price,
                     current_price: pos.current_price,
@@ -132,9 +132,9 @@ const PairsPage = {
      * Render individual pair card
      */
     renderPairCard(pair, index) {
-        const symbol = pair.symbol || pair.pair || 'UNKNOWN';
+        const symbol = pair.pair || pair.symbol || 'UNKNOWN';
         const base = symbol.split('/')[0] || symbol;
-        const quote = symbol.split('/')[1] || 'USDT';
+        const quote = symbol.split('/')[1] || 'AUD';
         const amount = pair.amount || pair.quantity || 0;
         const currentPrice = pair.current_price || pair.price || 0;
         const entryPrice = pair.entry_price || pair.avg_price || currentPrice;
@@ -142,7 +142,7 @@ const PairsPage = {
         const pnl = pair.pnl || pair.unrealized_pnl || 0;
         const pnlPct = pair.pnl_percent || (entryPrice > 0 ? ((currentPrice - entryPrice) / entryPrice) : 0);
         const pnlClass = getPnLClass(pnl);
-        const direction = pair.direction || (pnl >= 0 ? 'long' : 'short');
+        const direction = pair.direction || 'long';
 
         return `
             <div class="pair-card" data-pair="${escapeHTML(symbol)}" style="animation-delay: ${index * 50}ms">

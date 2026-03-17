@@ -216,7 +216,7 @@ export function getBaseCurrency(pair) {
  * @returns {string} - Quote currency
  */
 export function getQuoteCurrency(pair) {
-    return pair?.split('/')[1] || 'USDT';
+    return pair?.split('/')[1] || 'AUD';
 }
 
 // ========================================

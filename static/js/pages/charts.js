@@ -530,9 +530,9 @@ const ChartsPage = {
     async loadPairs() {
         try {
             const status = await api.get('/api/status');
-            this.pairs = status?.pairs || ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+            this.pairs = status?.pairs || ['BTC/AUD', 'ETH/AUD', 'SOL/AUD', 'DOT/AUD'];
         } catch {
-            this.pairs = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+            this.pairs = ['BTC/AUD', 'ETH/AUD', 'SOL/AUD', 'DOT/AUD'];
         }
     },
 
