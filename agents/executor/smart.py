@@ -110,8 +110,6 @@ class SmartExecutor(IExecutor):
 
         # Get actual available balance
         balance = await self.exchange.get_balance()
-        quote_currency = "USDT"
-        available_quote = balance.get(quote_currency, 0)
 
         for signal in plan.signals:
             if signal.action == TradeAction.HOLD:
@@ -120,6 +118,10 @@ class SmartExecutor(IExecutor):
             try:
                 ticker = await self.exchange.get_ticker(signal.pair)
                 current_price = ticker["price"]
+
+                # Derive quote currency from pair (e.g., BTC/AUD → AUD)
+                quote_currency = signal.pair.split("/")[1] if "/" in signal.pair else "AUD"
+                available_quote = balance.get(quote_currency, 0)
 
                 # Calculate real order value from available balance
                 order_value = signal.size_pct * available_quote
@@ -166,9 +168,9 @@ class SmartExecutor(IExecutor):
                 )
                 trades.append(trade)
 
-                # Update available balance for subsequent signals
+                # Update cached balance for subsequent signals
                 if trade.is_successful and signal.action == TradeAction.BUY:
-                    available_quote -= fill_quote
+                    balance[quote_currency] = balance.get(quote_currency, 0) - fill_quote
 
             except Exception as e:
                 logger.error(f"Execution failed for {signal.pair}: {e}")

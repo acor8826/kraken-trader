@@ -592,7 +592,7 @@ class MemeOrchestrator:
         """Build a Portfolio object from exchange balance."""
         try:
             balance = await self.exchange.get_balance()
-            qc = getattr(self.exchange, '_quote', 'USDT')
+            qc = getattr(self.exchange, '_quote', 'AUD')
             available = float(balance.get(qc, 0))
             portfolio = Portfolio(
                 available_quote=available,
@@ -601,13 +601,13 @@ class MemeOrchestrator:
             return portfolio
         except Exception as e:
             logger.warning("[MEME] Failed to get balance: %s", e)
-            return Portfolio(available_quote=0.0, quote_currency="USDT")
+            return Portfolio(available_quote=0.0, quote_currency="AUD")
 
     async def _update_sentinel_context(self) -> None:
         """Update sentinel with current portfolio context."""
         try:
             balance = await self.exchange.get_balance()
-            qc = getattr(self.exchange, '_quote', 'USDT')
+            qc = getattr(self.exchange, '_quote', 'AUD')
             total_quote = float(balance.get(qc, 0))
         except Exception:
             total_quote = 0.0
