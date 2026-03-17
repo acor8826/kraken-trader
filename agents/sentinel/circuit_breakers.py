@@ -169,7 +169,8 @@ class CircuitBreakers:
                     self._trip_breaker(
                         "consecutive_loss",
                         f"{self._consecutive_losses} consecutive losing trades",
-                        reset_on_win=True
+                        reset_on_win=True,
+                        reset_hours=4  # Fallback: auto-reset after 4h to prevent deadlock
                     )
             else:
                 # Winning trade - reset counter

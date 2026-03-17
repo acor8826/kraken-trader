@@ -417,6 +417,13 @@ class MemeOrchestrator:
                 if sell_amount > 0:
                     try:
                         result = await self.exchange.market_sell(pair, sell_amount)
+                        # Check if the exchange rejected the sell (e.g. sim has no balance)
+                        if result.get("error"):
+                            logger.warning(
+                                "[MEME] Direct sell rejected for %s: %s",
+                                symbol, result["error"],
+                            )
+                            return None
                         avg_price = (
                             result.get("price")
                             or result.get("average")
