@@ -1,5 +1,60 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-17 19:00 AEST
+
+### Observations
+- **System:** Healthy, scheduler running, sentinel not paused, cycle #16
+- **Active revision:** `kraken-trader-frontend-fix` (deployed 05:22 UTC today)
+- **Portfolio:** $1,357.42 (+35.74% unrealized) — but 266% exposure (14 open positions, -$2,256 AUD available)
+- **Win rate:** 0% (0 closed trades in 7d) — **UNDERPERFORMING**
+- **Profit factor:** 0.0 — **UNDERPERFORMING**
+- **Lifecycle completeness:** 0% (0/2) — **UNDERPERFORMING**
+- **Profit tracker:** Empty table — no daily rows being written
+- **Meme bot:** 34 cycles, DOGE position (trailing stop active), daily PnL +$0.75
+- **Fear & Greed Index:** 28 (Fear) — deployment UNBLOCKED
+- **Main bot:** Permanently stuck in "System not healthy" — new trades blocked, only pre-gate exits running
+
+### Root Cause Analysis
+1. **Consecutive loss circuit breaker deadlock:** 3+ consecutive losses trip the breaker with `reset_on_win=True` but NO time-based fallback. Since the breaker blocks all trading, no winning trade can ever clear it → permanent deadlock.
+2. **Meme sell phantom trades:** `market_sell()` returns `{"error": "No position"}` but orchestrator ignores the error key, recording phantom PnL and "closing" positions that never actually sold.
+
+### Implemented Fixes
+
+- [x] **[2026-03-17]** `agents/sentinel/circuit_breakers.py` Add 4h time-based fallback to consecutive_loss circuit breaker.
+  `_trip_breaker("consecutive_loss", ..., reset_on_win=True)` set no `reset_at`, so `check_all()` never auto-reset it. Added `reset_hours=4` as fallback. Breaker now clears after 4 hours OR on a winning trade, whichever comes first.
+  Addresses: Main bot permanently stuck in "System not healthy" after 3 consecutive losses.
+  Outcome: Trading will auto-resume within 4 hours of breaker trip.
+  **Committed:** 2026-03-17 19:00 AEST — `5753706`
+  **Tests:** 151/151 passed (excl. 1 pre-existing Binance test)
+  **Review due: 2026-03-24**
+
+- [x] **[2026-03-17]** `agents/memetrader/orchestrator.py` Check `market_sell()` error response before recording trade.
+  `_execute_signal()` direct sell path called `exchange.market_sell()` but never checked for `{"error": ...}` response. When sim exchange had no balance, it returned error but orchestrator proceeded to record phantom PnL. Now checks `result.get("error")` and returns None if truthy.
+  Addresses: Meme positions appearing to close but never actually selling (phantom PnL ~$40).
+  Outcome: Failed sells are correctly detected; no phantom trade recording.
+  **Committed:** 2026-03-17 19:00 AEST — `5753706`
+  **Tests:** 151/151 passed (excl. 1 pre-existing Binance test)
+  **Review due: 2026-03-24**
+
+### Deferred / Logged for Human Review
+
+| # | Type | Description | Risk | Reason Deferred |
+|---|------|-------------|------|-----------------|
+| 1 | monitor | Profit tracker table empty — 5:59 PM snapshot not writing rows | medium | Needs investigation |
+| 2 | monitor | 266% exposure / 14 positions — massive overexposure | high | Should self-correct with breaker fix |
+| 3 | bugfix | Sim exchange doesn't credit meme buys → direct sells have no balance | medium | Deeper architecture issue |
+| 4 | security | API keys as plaintext env vars (use Secret Manager) | high | Needs Alex approval |
+| 5 | framework | NEIRO -31%, DOT -13% — candidates for pair rotation | medium | Needs analysis + human approval |
+
+### Next Cycle Actions
+1. Verify breaker deadlock resolved — main bot should resume trading within 4h
+2. Monitor first completed trade lifecycle (win/loss recording)
+3. Investigate empty profit tracker table
+4. Review 14-position overexposure as exits start executing
+5. Evaluate NEIRO/DOT for pair rotation
+
+---
+
 ## Improvement Cycle 2026-03-16 19:00 AEST
 
 ### Observations
