@@ -668,6 +668,7 @@ async def _run_migrations_on_startup():
     migration_dir = Path(__file__).resolve().parents[1] / "migrations"
     migration_files = [
         "006_dgm_population_archive.sql",
+        "007_trades_regime.sql",
         "008_daily_portfolio_ledger.sql",
         "009_autoresearch_experiments.sql",
     ]
