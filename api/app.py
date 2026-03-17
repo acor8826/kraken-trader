@@ -37,6 +37,53 @@ _portfolio_cache_ts = 0.0
 _PORTFOLIO_CACHE_TTL = 30  # seconds
 
 
+async def _reconstruct_positions_from_db() -> dict:
+    """Reconstruct active positions from trade history in PostgreSQL.
+
+    Survives container restarts / deploys where the sim exchange resets.
+    Returns {symbol: {amount, avg_entry_price, total_cost}} for net-long positions.
+    """
+    if not orchestrator or not hasattr(orchestrator.memory, '_connection'):
+        return {}
+    try:
+        async with orchestrator.memory._connection() as conn:
+            rows = await conn.fetch("""
+                SELECT pair, action,
+                       SUM(filled_size_base)  AS total_base,
+                       SUM(filled_size_quote) AS total_quote
+                FROM trades
+                WHERE status = 'filled'
+                GROUP BY pair, action
+            """)
+        # Aggregate net positions per pair
+        agg: dict = {}
+        for row in rows:
+            pair = row["pair"]
+            if pair not in agg:
+                agg[pair] = {"buy_base": 0, "buy_quote": 0, "sell_base": 0, "sell_quote": 0}
+            if row["action"] == "BUY":
+                agg[pair]["buy_base"] += float(row["total_base"])
+                agg[pair]["buy_quote"] += float(row["total_quote"])
+            else:
+                agg[pair]["sell_base"] += float(row["total_base"])
+                agg[pair]["sell_quote"] += float(row["total_quote"])
+
+        positions = {}
+        for pair, data in agg.items():
+            net = data["buy_base"] - data["sell_base"]
+            if net > 1e-9:
+                avg_entry = data["buy_quote"] / data["buy_base"] if data["buy_base"] > 0 else 0
+                positions[pair] = {
+                    "amount": net,
+                    "avg_entry_price": avg_entry,
+                    "total_cost": data["buy_quote"] - data["sell_quote"],
+                }
+        return positions
+    except Exception as e:
+        logger.debug("Position reconstruction failed: %s", e)
+        return {}
+
+
 async def _get_cached_portfolio() -> dict | None:
     """Return cached portfolio dict, refreshing from exchange if stale.
 
@@ -53,7 +100,54 @@ async def _get_cached_portfolio() -> dict | None:
 
     try:
         portfolio = await orchestrator._get_portfolio_state()
-        _portfolio_cache = portfolio.to_dict()
+        result = portfolio.to_dict()
+
+        # If exchange shows no positions (fresh deploy), reconstruct from DB
+        if not result.get("positions"):
+            db_positions = await _reconstruct_positions_from_db()
+            if db_positions:
+                quote = settings.trading.quote_currency if settings else "AUD"
+                positions_value = 0
+                pos_dict = {}
+                for pair, pdata in db_positions.items():
+                    symbol = pair.split("/")[0]
+                    try:
+                        ticker = await orchestrator.exchange.get_ticker(pair)
+                        current_price = ticker.get("price", pdata["avg_entry_price"])
+                    except Exception:
+                        current_price = pdata["avg_entry_price"]
+                    value = pdata["amount"] * current_price
+                    positions_value += value
+                    unrealized_pnl = value - (pdata["amount"] * pdata["avg_entry_price"])
+                    pnl_pct = (unrealized_pnl / (pdata["amount"] * pdata["avg_entry_price"]) * 100) if pdata["avg_entry_price"] > 0 else 0
+                    pos_dict[symbol] = {
+                        "amount": pdata["amount"],
+                        "entry_price": pdata["avg_entry_price"],
+                        "current_price": current_price,
+                        "unrealized_pnl": round(unrealized_pnl, 2),
+                        "unrealized_pnl_pct": round(pnl_pct, 2),
+                    }
+
+                initial_capital = settings.trading.initial_capital if settings else 1000
+                spent = sum(p["total_cost"] for p in db_positions.values())
+                available = initial_capital - spent
+                total_value = available + positions_value
+                total_pnl = total_value - initial_capital
+
+                result["positions"] = pos_dict
+                result["positions_value"] = round(positions_value, 2)
+                result["available_quote"] = round(available, 2)
+                result["total_value"] = round(total_value, 2)
+                result["total_pnl"] = round(total_pnl, 2)
+                result["total_pnl_pct"] = round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0
+                result["quote_currency"] = quote
+                result["exposure_pct"] = round((positions_value / total_value) * 100, 2) if total_value > 0 else 0
+
+        # Ensure quote_currency is correct
+        if settings and result.get("quote_currency") != settings.trading.quote_currency:
+            result["quote_currency"] = settings.trading.quote_currency
+
+        _portfolio_cache = result
         _portfolio_cache_ts = now
         return _portfolio_cache
     except Exception as e:
@@ -1881,6 +1975,38 @@ def _register_routes(app: FastAPI):
                     "unrealized_pnl_pct": position.unrealized_pnl_pct,
                     "value_quote": position.amount * position.current_price if position.current_price else 0
                 })
+
+            # If no positions from memory (fresh deploy), reconstruct from DB
+            if not positions:
+                db_positions = await _reconstruct_positions_from_db()
+                effective_risk = settings.get_effective_risk()
+                stop_loss_pct = effective_risk.stop_loss_pct if effective_risk else 0.05
+
+                for pair, pdata in db_positions.items():
+                    symbol = pair.split("/")[0]
+                    try:
+                        ticker = await orchestrator.exchange.get_ticker(pair)
+                        current_price = ticker.get("price", pdata["avg_entry_price"])
+                    except Exception:
+                        current_price = pdata["avg_entry_price"]
+
+                    entry_price = pdata["avg_entry_price"]
+                    unrealized_pnl = (current_price - entry_price) * pdata["amount"] if entry_price else 0
+                    pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price and entry_price > 0 else 0
+                    stop_price = entry_price * (1 - stop_loss_pct) if entry_price else None
+
+                    positions.append({
+                        "symbol": symbol,
+                        "pair": pair,
+                        "amount": pdata["amount"],
+                        "entry_price": round(entry_price, 6),
+                        "current_price": round(current_price, 6),
+                        "stop_loss_price": round(stop_price, 6) if stop_price else None,
+                        "stop_loss_pct": round(stop_loss_pct * 100, 2),
+                        "unrealized_pnl": round(unrealized_pnl, 2),
+                        "unrealized_pnl_pct": round(pnl_pct, 2),
+                        "value_quote": round(pdata["amount"] * current_price, 2)
+                    })
 
             return {
                 "positions": positions,
