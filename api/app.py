@@ -5,7 +5,7 @@ HTTP interface for the trading agent.
 """
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import logging
 import os
@@ -41,10 +41,14 @@ async def _reconstruct_positions_from_db() -> dict:
     """Reconstruct active positions from trade history in PostgreSQL.
 
     Survives container restarts / deploys where the sim exchange resets.
-    Returns {symbol: {amount, avg_entry_price, total_cost}} for net-long positions.
+    Returns {
+        "positions": {pair: {amount, avg_entry_price, total_cost}},
+        "total_bought": float,   # total AUD spent on all buys (including closed)
+        "total_sold": float,     # total AUD received from all sells (including closed)
+    }
     """
     if not orchestrator or not hasattr(orchestrator.memory, '_connection'):
-        return {}
+        return {"positions": {}, "total_bought": 0, "total_sold": 0}
     try:
         async with orchestrator.memory._connection() as conn:
             rows = await conn.fetch("""
@@ -57,6 +61,8 @@ async def _reconstruct_positions_from_db() -> dict:
             """)
         # Aggregate net positions per pair
         agg: dict = {}
+        total_bought = 0.0
+        total_sold = 0.0
         for row in rows:
             pair = row["pair"]
             if pair not in agg:
@@ -64,9 +70,11 @@ async def _reconstruct_positions_from_db() -> dict:
             if row["action"] == "BUY":
                 agg[pair]["buy_base"] += float(row["total_base"])
                 agg[pair]["buy_quote"] += float(row["total_quote"])
+                total_bought += float(row["total_quote"])
             else:
                 agg[pair]["sell_base"] += float(row["total_base"])
                 agg[pair]["sell_quote"] += float(row["total_quote"])
+                total_sold += float(row["total_quote"])
 
         positions = {}
         for pair, data in agg.items():
@@ -78,15 +86,17 @@ async def _reconstruct_positions_from_db() -> dict:
                     "avg_entry_price": avg_entry,
                     "total_cost": data["buy_quote"] - data["sell_quote"],
                 }
-        return positions
+        return {"positions": positions, "total_bought": total_bought, "total_sold": total_sold}
     except Exception as e:
         logger.debug("Position reconstruction failed: %s", e)
-        return {}
+        return {"positions": {}, "total_bought": 0, "total_sold": 0}
 
 
 async def _get_cached_portfolio() -> dict | None:
     """Return cached portfolio dict, refreshing from exchange if stale.
 
+    Always uses DB trade history as the authoritative source for portfolio
+    values, since the simulation exchange resets on every Cloud Run deploy.
     Returns None when orchestrator is not initialised and no cache exists.
     """
     global _portfolio_cache, _portfolio_cache_ts
@@ -99,49 +109,62 @@ async def _get_cached_portfolio() -> dict | None:
         return _portfolio_cache  # may be None
 
     try:
-        portfolio = await orchestrator._get_portfolio_state()
-        result = portfolio.to_dict()
+        quote = settings.trading.quote_currency if settings else "AUD"
+        initial_capital = settings.trading.initial_capital if settings else 1000
 
-        # If exchange shows no positions (fresh deploy), reconstruct from DB
-        if not result.get("positions"):
-            db_positions = await _reconstruct_positions_from_db()
-            if db_positions:
-                quote = settings.trading.quote_currency if settings else "AUD"
-                positions_value = 0
-                pos_dict = {}
-                for pair, pdata in db_positions.items():
-                    symbol = pair.split("/")[0]
-                    try:
-                        ticker = await orchestrator.exchange.get_ticker(pair)
-                        current_price = ticker.get("price", pdata["avg_entry_price"])
-                    except Exception:
-                        current_price = pdata["avg_entry_price"]
-                    value = pdata["amount"] * current_price
-                    positions_value += value
-                    unrealized_pnl = value - (pdata["amount"] * pdata["avg_entry_price"])
-                    pnl_pct = (unrealized_pnl / (pdata["amount"] * pdata["avg_entry_price"]) * 100) if pdata["avg_entry_price"] > 0 else 0
-                    pos_dict[symbol] = {
-                        "amount": pdata["amount"],
-                        "entry_price": pdata["avg_entry_price"],
-                        "current_price": current_price,
-                        "unrealized_pnl": round(unrealized_pnl, 2),
-                        "unrealized_pnl_pct": round(pnl_pct, 2),
-                    }
+        # Always reconstruct from DB — the authoritative source that
+        # survives Cloud Run deploys (sim exchange resets to $1,000).
+        db_result = await _reconstruct_positions_from_db()
+        db_positions = db_result.get("positions", {})
+        total_bought = db_result.get("total_bought", 0)
+        total_sold = db_result.get("total_sold", 0)
 
-                initial_capital = settings.trading.initial_capital if settings else 1000
-                spent = sum(p["total_cost"] for p in db_positions.values())
-                available = initial_capital - spent
-                total_value = available + positions_value
-                total_pnl = total_value - initial_capital
+        if db_positions:
+            positions_value = 0
+            pos_dict = {}
+            for pair, pdata in db_positions.items():
+                symbol = pair.split("/")[0]
+                try:
+                    ticker = await orchestrator.exchange.get_ticker(pair)
+                    current_price = ticker.get("price", pdata["avg_entry_price"])
+                except Exception:
+                    current_price = pdata["avg_entry_price"]
+                value = pdata["amount"] * current_price
+                positions_value += value
+                unrealized_pnl = value - (pdata["amount"] * pdata["avg_entry_price"])
+                pnl_pct = (unrealized_pnl / (pdata["amount"] * pdata["avg_entry_price"]) * 100) if pdata["avg_entry_price"] > 0 else 0
+                pos_dict[symbol] = {
+                    "amount": pdata["amount"],
+                    "entry_price": pdata["avg_entry_price"],
+                    "current_price": current_price,
+                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "unrealized_pnl_pct": round(pnl_pct, 2),
+                }
 
-                result["positions"] = pos_dict
-                result["positions_value"] = round(positions_value, 2)
-                result["available_quote"] = round(available, 2)
-                result["total_value"] = round(total_value, 2)
-                result["total_pnl"] = round(total_pnl, 2)
-                result["total_pnl_pct"] = round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0
-                result["quote_currency"] = quote
-                result["exposure_pct"] = round((positions_value / total_value) * 100, 2) if total_value > 0 else 0
+            # Available = initial capital + total sell proceeds - total buy costs
+            # This correctly accounts for profits from fully-closed positions
+            available = initial_capital - total_bought + total_sold
+            total_value = available + positions_value
+            total_pnl = total_value - initial_capital
+
+            result = {
+                "quote_currency": quote,
+                "positions": pos_dict,
+                "positions_value": round(positions_value, 2),
+                "available_quote": round(available, 2),
+                "total_value": round(total_value, 2),
+                "total_pnl": round(total_pnl, 2),
+                "total_pnl_pct": round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0,
+                "exposure_pct": round((positions_value / total_value) * 100, 2) if total_value > 0 else 0,
+                "progress_to_target": round(
+                    (total_value - initial_capital) / (settings.trading.target_capital - initial_capital) * 100, 2
+                ) if settings else 0,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        else:
+            # No DB data — fall back to exchange state
+            portfolio = await orchestrator._get_portfolio_state()
+            result = portfolio.to_dict()
 
         # Ensure quote_currency is correct
         if settings and result.get("quote_currency") != settings.trading.quote_currency:
@@ -1433,7 +1456,12 @@ def _register_routes(app: FastAPI):
     
     @app.get("/api/portfolio/history")
     async def get_portfolio_history(range: str = "7D"):
-        """Get portfolio value history for charting"""
+        """Get portfolio value history for charting.
+
+        Builds chart from trade history (cumulative realized PnL) instead of
+        portfolio_snapshots, because the sim exchange resets on each deploy
+        and those snapshots contain wrong ~$1,000 values.
+        """
         if not orchestrator:
             return {"snapshots": [], "range": range, "count": 0}
 
@@ -1442,36 +1470,46 @@ def _register_routes(app: FastAPI):
 
         try:
             db = orchestrator.memory
-            # Try PostgreSQL first
+            initial_capital = settings.trading.initial_capital if settings else 1000
+
+            # Build chart from trade history — authoritative source that
+            # survives Cloud Run deploys (unlike sim exchange snapshots).
             if hasattr(db, '_connection'):
                 async with db._connection() as conn:
-                    rows = await conn.fetch("""
-                        SELECT total_value, created_at
-                        FROM portfolio_snapshots
-                        WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+                    trade_rows = await conn.fetch("""
+                        SELECT realized_pnl, fees_quote, created_at
+                        FROM trades
+                        WHERE status = 'filled' AND action = 'SELL'
+                          AND realized_pnl IS NOT NULL
+                          AND created_at >= NOW() - ($1 || ' days')::INTERVAL
                         ORDER BY created_at ASC
                     """, str(int(days) if days >= 1 else 1))
 
-                snapshots = [
-                    {"timestamp": row["created_at"].isoformat(), "total_value": float(row["total_value"])}
-                    for row in rows
-                ]
+                    # Get the cumulative PnL at the start of the window
+                    prior_pnl = await conn.fetchval("""
+                        SELECT COALESCE(SUM(realized_pnl), 0)
+                        FROM trades
+                        WHERE status = 'filled' AND action = 'SELL'
+                          AND realized_pnl IS NOT NULL
+                          AND created_at < NOW() - ($1 || ' days')::INTERVAL
+                    """, str(int(days) if days >= 1 else 1))
+
+                running_value = initial_capital + float(prior_pnl or 0)
+                snapshots = [{"timestamp": (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(),
+                              "total_value": round(running_value, 2)}]
+                for row in trade_rows:
+                    pnl = float(row["realized_pnl"] or 0)
+                    running_value += pnl
+                    snapshots.append({
+                        "timestamp": row["created_at"].isoformat(),
+                        "total_value": round(running_value, 2),
+                    })
             else:
                 # In-memory fallback: build from trade history
                 snapshots = []
                 trades = await orchestrator.memory.get_trade_history(1000)
-                initial_capital = settings.trading.initial_capital
-
-                # Get current portfolio value safely
-                try:
-                    portfolio = await orchestrator._get_portfolio_state()
-                    current_value = portfolio.total_value
-                except Exception:
-                    p = await orchestrator.memory.get_portfolio()
-                    current_value = p.total_value if p else initial_capital
 
                 if trades:
-                    # Create snapshots from trade timestamps
                     running_value = initial_capital
                     for trade in reversed(trades):
                         pnl = getattr(trade, 'realized_pnl', 0) or 0
@@ -1486,11 +1524,13 @@ def _register_routes(app: FastAPI):
                         "total_value": initial_capital
                     })
 
-                # Always add current value as latest point
-                snapshots.append({
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "total_value": round(current_value, 2)
-                })
+            # Always add current DB-reconstructed value as the latest point
+            cached = await _get_cached_portfolio()
+            current_value = cached.get("total_value", initial_capital) if cached else initial_capital
+            snapshots.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "total_value": round(current_value, 2)
+            })
 
             return {"snapshots": snapshots, "range": range, "count": len(snapshots)}
         except Exception as e:
@@ -1981,7 +2021,8 @@ def _register_routes(app: FastAPI):
 
             # If no positions from memory (fresh deploy), reconstruct from DB
             if not positions:
-                db_positions = await _reconstruct_positions_from_db()
+                db_result = await _reconstruct_positions_from_db()
+                db_positions = db_result.get("positions", {})
                 effective_risk = settings.get_effective_risk()
                 stop_loss_pct = effective_risk.stop_loss_pct if effective_risk else 0.05
 

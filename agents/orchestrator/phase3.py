@@ -325,8 +325,10 @@ class Phase3Orchestrator:
                     logger.error(f"Error processing {pair}: {e}", exc_info=True)
                     results["errors"].append(f"{pair}: {str(e)}")
 
-            # 6. Save portfolio state
-            await self.memory.save_portfolio(portfolio)
+            # 6. Save portfolio state — use DB-reconstructed value so
+            # portfolio_snapshots reflect correct totals after Cloud Run deploys
+            # (the sim exchange resets to $1,000 but trade history is preserved).
+            await self._save_portfolio_with_db_value(portfolio)
 
             # 7. Broadcast WebSocket update
             await self._broadcast_portfolio_update(portfolio)
@@ -681,6 +683,53 @@ class Phase3Orchestrator:
             )
         except Exception as e:
             logger.debug(f"WebSocket broadcast skipped: {e}")
+
+    async def _save_portfolio_with_db_value(self, portfolio: Portfolio) -> None:
+        """Save portfolio snapshot using DB-reconstructed total value.
+
+        The sim exchange resets to $1,000 on every Cloud Run deploy, but
+        trade history in PostgreSQL is the authoritative source. We query
+        total buys/sells across all history and combine with live position
+        prices to get the correct total_value for the snapshot.
+        """
+        try:
+            if not hasattr(self.memory, '_connection'):
+                await self.memory.save_portfolio(portfolio)
+                return
+
+            async with self.memory._connection() as conn:
+                rows = await conn.fetch("""
+                    SELECT action,
+                           SUM(filled_size_quote) AS total_quote
+                    FROM trades
+                    WHERE status = 'filled'
+                    GROUP BY action
+                """)
+
+            total_bought = 0.0
+            total_sold = 0.0
+            for row in rows:
+                if row["action"] == "BUY":
+                    total_bought = float(row["total_quote"] or 0)
+                else:
+                    total_sold = float(row["total_quote"] or 0)
+
+            initial_capital = self.settings.trading.initial_capital
+            available = initial_capital - total_bought + total_sold
+            db_total = available + portfolio.positions_value
+
+            # Only override if DB total is meaningfully different (deploy reset)
+            if abs(db_total - portfolio.total_value) > 50:
+                portfolio.available_quote = available
+                logger.debug(
+                    "Portfolio snapshot corrected: sim=$%.0f → db=$%.0f",
+                    portfolio.total_value, db_total,
+                )
+
+            await self.memory.save_portfolio(portfolio)
+        except Exception as e:
+            logger.debug("DB-corrected portfolio save failed, saving raw: %s", e)
+            await self.memory.save_portfolio(portfolio)
 
     async def _persist_exit_states(self) -> None:
         """Save current exit state cache to DB and clean up closed positions."""
