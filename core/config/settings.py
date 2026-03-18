@@ -288,6 +288,15 @@ class ExitManagementConfig:
 
 
 @dataclass
+class PortfolioProtectionConfig:
+    """Portfolio-level profit protection settings."""
+    enable_hwm: bool = True
+    hwm_drawdown_pct: float = 0.03          # 3% drawdown tightens all stops
+    hwm_critical_drawdown_pct: float = 0.06  # 6% drawdown forces worst position sale
+    hwm_tighten_trail_pct: float = 0.005    # Tighten trails to 0.5% when triggered
+
+
+@dataclass
 class AggressiveRiskConfig:
     """
     Aggressive risk parameters for small portfolios seeking higher returns.
@@ -338,6 +347,9 @@ class Settings:
 
     # Exit management (trailing stop, breakeven stop)
     exit_management: ExitManagementConfig = field(default_factory=ExitManagementConfig)
+
+    # Portfolio-level profit protection
+    portfolio_protection: PortfolioProtectionConfig = field(default_factory=PortfolioProtectionConfig)
 
     # Aggressive risk profile (optional, overrides risk when enabled)
     aggressive_risk: Optional[AggressiveRiskConfig] = None
@@ -483,6 +495,15 @@ class Settings:
             max_hold_hours=exit_data.get("max_hold_hours"),
         )
 
+        # Parse portfolio protection config
+        pp_data = data.get("portfolio_protection", {})
+        portfolio_protection = PortfolioProtectionConfig(
+            enable_hwm=pp_data.get("enable_hwm", True),
+            hwm_drawdown_pct=pp_data.get("hwm_drawdown_pct", 0.03),
+            hwm_critical_drawdown_pct=pp_data.get("hwm_critical_drawdown_pct", 0.06),
+            hwm_tighten_trail_pct=pp_data.get("hwm_tighten_trail_pct", 0.005),
+        )
+
         # Parse adaptive risk config
         adaptive_data = data.get("adaptive_risk", {})
         enable_adaptive = adaptive_data.get("enabled", False) or os.getenv("ENABLE_ADAPTIVE_RISK", "false").lower() == "true"
@@ -506,6 +527,7 @@ class Settings:
             cost_optimization=cost_optimization,
             alerts=alerts,
             exit_management=exit_management,
+            portfolio_protection=portfolio_protection,
             aggressive_risk=aggressive_risk,
             risk_profile=risk_profile,
             enable_adaptive_risk=enable_adaptive,

@@ -556,6 +556,68 @@ class PostgresStore(IMemory):
             return {"streak_type": "none", "streak_days": 0, "total_days": 0,
                     "profit_days": 0, "loss_days": 0, "stagnant_days": 0}
 
+    # =========================================================================
+    # Exit State Persistence (trailing stops survive deploys)
+    # =========================================================================
+
+    async def save_exit_state(self, symbol: str, pair: str, state: Dict) -> None:
+        """Persist exit state for a position (trailing stop, peak price, TP hits)."""
+        try:
+            tp_hits = json.dumps(list(state.get("tp_targets_hit", [])))
+            async with self._connection() as conn:
+                await conn.execute("""
+                    INSERT INTO exit_state
+                        (symbol, pair, peak_price, trailing_stop_active,
+                         trailing_stop_price, tp_targets_hit, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+                    ON CONFLICT (symbol) DO UPDATE SET
+                        pair = $2,
+                        peak_price = $3,
+                        trailing_stop_active = $4,
+                        trailing_stop_price = $5,
+                        tp_targets_hit = $6::jsonb,
+                        updated_at = $7
+                """,
+                    symbol, pair,
+                    float(state.get("peak_price", 0)),
+                    bool(state.get("trailing_stop_active", False)),
+                    float(state.get("trailing_stop_price", 0)) if state.get("trailing_stop_price") else None,
+                    tp_hits,
+                    datetime.now(timezone.utc),
+                )
+        except Exception as e:
+            logger.warning("Failed to save exit state for %s: %s", symbol, e)
+
+    async def get_exit_states(self) -> Dict[str, Dict]:
+        """Load all persisted exit states. Returns {symbol: state_dict}."""
+        try:
+            async with self._connection() as conn:
+                rows = await conn.fetch("SELECT * FROM exit_state")
+            states = {}
+            for row in rows:
+                tp_raw = row["tp_targets_hit"]
+                tp_hits = json.loads(tp_raw) if isinstance(tp_raw, str) else (tp_raw or [])
+                states[row["symbol"]] = {
+                    "pair": row["pair"],
+                    "peak_price": float(row["peak_price"]),
+                    "trailing_stop_active": bool(row["trailing_stop_active"]),
+                    "trailing_stop_price": float(row["trailing_stop_price"]) if row["trailing_stop_price"] else None,
+                    "tp_targets_hit": set(tp_hits),
+                }
+            logger.info("Loaded %d exit states from DB", len(states))
+            return states
+        except Exception as e:
+            logger.warning("Failed to load exit states: %s", e)
+            return {}
+
+    async def delete_exit_state(self, symbol: str) -> None:
+        """Remove exit state when a position is fully closed."""
+        try:
+            async with self._connection() as conn:
+                await conn.execute("DELETE FROM exit_state WHERE symbol = $1", symbol)
+        except Exception as e:
+            logger.warning("Failed to delete exit state for %s: %s", symbol, e)
+
     async def get_daily_fees_today(self) -> float:
         """Get total fees paid today."""
         try:

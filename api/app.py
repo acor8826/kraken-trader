@@ -656,6 +656,8 @@ async def _create_orchestrator(settings: Settings):
                 sentinel=meme_sentinel,
                 listing_detector=listing_detector,
                 config=meme_config,
+                memory=memory,
+                settings=settings,
             )
 
             # Wire up API routes
@@ -765,6 +767,7 @@ async def _run_migrations_on_startup():
         "007_trades_regime.sql",
         "008_daily_portfolio_ledger.sql",
         "009_autoresearch_experiments.sql",
+        "010_exit_state.sql",
     ]
     for filename in migration_files:
         try:

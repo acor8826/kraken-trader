@@ -56,6 +56,10 @@ PARAMETER_BOUNDS: Dict[str, Tuple[float, float]] = {
     "exit_management.trailing_stop.distance_pct": (0.003, 0.03),
     "exit_management.breakeven.activation_pct": (0.002, 0.03),
     "exit_management.breakeven.buffer_pct": (0.0005, 0.01),
+    # Portfolio protection
+    "portfolio_protection.hwm_drawdown_pct": (0.02, 0.10),
+    "portfolio_protection.hwm_critical_drawdown_pct": (0.04, 0.15),
+    "portfolio_protection.hwm_tighten_trail_pct": (0.003, 0.015),
     # Hybrid thresholds
     "cost_optimization.hybrid.direction_threshold": (0.10, 0.60),
     "cost_optimization.hybrid.confidence_threshold": (0.30, 0.80),

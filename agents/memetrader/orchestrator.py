@@ -45,6 +45,8 @@ class MemeOrchestrator:
         sentinel: MemeSentinel,
         listing_detector: ListingDetector,
         config: MemeConfig = None,
+        memory=None,
+        settings=None,
     ):
         self.exchange = exchange
         self.executor = executor
@@ -54,16 +56,100 @@ class MemeOrchestrator:
         self.sentinel = sentinel
         self.listing_detector = listing_detector
         self.config = config or MemeConfig()
+        self.memory = memory
+        self.settings = settings
 
         # Internal state
         self._cycle_count: int = 0
         self._coin_tiers: Dict[str, MemeTier] = {}
         self._positions: Dict[str, MemePosition] = {}
         self._last_errors: List[str] = []
+        self._positions_reconstructed: bool = False
 
         # Evidence trail: per-coin analysis snapshots
         self._analysis_history: deque = deque(maxlen=200)
         self._latest_cycle_analyses: List[Dict] = []
+
+    async def _reconstruct_positions_from_db(self):
+        """Reconstruct meme positions from PostgreSQL trade history after deploy.
+
+        Without this, all meme position tracking (trailing stops, hard stops,
+        TP targets) is lost on every Cloud Run deploy, causing positions to
+        bleed unchecked and new BUYs to exceed position limits.
+        """
+        if not self.memory or not hasattr(self.memory, '_pool') or not self.memory._pool:
+            logger.debug("[MEME] No DB pool available for position reconstruction")
+            return
+
+        try:
+            async with self.memory._pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT pair, action,
+                           SUM(filled_size_base)  AS total_base,
+                           SUM(filled_size_quote) AS total_quote
+                    FROM trades
+                    WHERE status = 'filled'
+                    GROUP BY pair, action
+                """)
+
+            # Build net positions per symbol
+            agg: Dict[str, Dict] = {}
+            for row in rows:
+                pair = row["pair"]
+                symbol = pair.split("/")[0]
+                if symbol not in agg:
+                    agg[symbol] = {
+                        "buy_base": 0, "buy_quote": 0,
+                        "sell_base": 0, "sell_quote": 0,
+                        "pair": pair,
+                    }
+                if row["action"] == "BUY":
+                    agg[symbol]["buy_base"] += float(row["total_base"])
+                    agg[symbol]["buy_quote"] += float(row["total_quote"])
+                else:
+                    agg[symbol]["sell_base"] += float(row["total_base"])
+                    agg[symbol]["sell_quote"] += float(row["total_quote"])
+
+            # Determine which symbols are managed by the main Phase3 orchestrator
+            main_symbols = set()
+            if self.settings and hasattr(self.settings, 'trading'):
+                main_symbols = {p.split("/")[0] for p in self.settings.trading.pairs}
+
+            reconstructed = 0
+            for symbol, data in agg.items():
+                # Skip symbols already tracked or belonging to main orchestrator
+                if symbol in self._positions:
+                    continue
+                if symbol in main_symbols:
+                    continue
+
+                net = data["buy_base"] - data["sell_base"]
+                if net <= 1e-9:
+                    continue
+
+                avg_entry = (
+                    data["buy_quote"] / data["buy_base"]
+                    if data["buy_base"] > 0 else 0
+                )
+                position = MemePosition(
+                    symbol=symbol,
+                    pair=data["pair"],
+                    entry_price=avg_entry,
+                    amount=net,
+                )
+                self._positions[symbol] = position
+                self.strategist.update_position(symbol, position)
+                self._coin_tiers[symbol] = MemeTier.HOT
+                reconstructed += 1
+
+            if reconstructed:
+                logger.info(
+                    "[MEME] Reconstructed %d positions from DB: %s",
+                    reconstructed, list(self._positions.keys()),
+                )
+
+        except Exception as e:
+            logger.warning("[MEME] Position reconstruction failed: %s", e)
 
     async def run_cycle(self) -> Dict:
         """
@@ -77,6 +163,11 @@ class MemeOrchestrator:
         trades_executed: List[Dict] = []
         coins_analyzed: List[str] = []
         now = datetime.now(timezone.utc)
+
+        # 0. Reconstruct positions from DB on first cycle after deploy
+        if not self._positions_reconstructed:
+            await self._reconstruct_positions_from_db()
+            self._positions_reconstructed = True
 
         # 1. System health check
         if not await self.sentinel.system_healthy():
@@ -284,6 +375,50 @@ class MemeOrchestrator:
             self.strategist.update_trailing_stops(current_prices)
         except Exception as e:
             err = f"Failed to update trailing stops: {e}"
+            logger.warning("[MEME] %s", err)
+            self._last_errors.append(err)
+
+        # 11. Check stop-losses on ALL tracked positions (hard stop + trailing)
+        try:
+            # Update current prices on positions for sentinel stop check
+            for symbol, pos in self._positions.items():
+                if symbol in current_prices:
+                    pos.update_price(current_prices[symbol])
+
+            stop_trades = await self.sentinel.check_stop_losses(self._positions)
+            if stop_trades:
+                logger.warning(
+                    "[MEME] Sentinel triggered %d stop-loss exits", len(stop_trades)
+                )
+                portfolio = await self._build_portfolio()
+                for trade in stop_trades:
+                    symbol = trade.pair.split("/")[0]
+                    last_price = current_prices.get(symbol, 0)
+                    # Build a signal-like object for _execute_signal
+                    from core.models import TradeSignal, TradeStatus
+                    stop_signal = TradeSignal(
+                        pair=trade.pair,
+                        action=TradeAction.SELL,
+                        confidence=0.99,
+                        size_pct=1.0,
+                        reasoning=trade.reasoning,
+                        order_type=trade.order_type,
+                        stop_loss_pct=self.config.hard_stop_loss_pct,
+                    )
+                    try:
+                        trade_result = await self._execute_signal(
+                            stop_signal, symbol, trade.pair, portfolio, last_price
+                        )
+                        if trade_result:
+                            trades_executed.append(trade_result)
+                            logger.info(
+                                "[MEME] Stop-loss executed for %s: %s",
+                                symbol, trade.reasoning,
+                            )
+                    except Exception as e:
+                        logger.error("[MEME] Stop-loss execution failed for %s: %s", symbol, e)
+        except Exception as e:
+            err = f"Stop-loss check failed: {e}"
             logger.warning("[MEME] %s", err)
             self._last_errors.append(err)
 

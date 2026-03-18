@@ -105,6 +105,10 @@ class Phase3Orchestrator:
         #   peak_price, trailing_stop_active, trailing_stop_price
         self._exit_state: Dict[str, Dict] = {}
 
+        # Portfolio high-water-mark protection
+        self._portfolio_hwm: float = 0.0
+        self._hwm_tightened: bool = False
+
         logger.info(
             f"Phase3Orchestrator initialized with {len(analysts)} analysts: "
             f"{list(self._analysts_dict.keys())}"
@@ -167,11 +171,16 @@ class Phase3Orchestrator:
             # This ensures positions are protected even during anomaly-triggered pauses.
             early_stop_trades = await self.sentinel.check_stop_losses(portfolio.positions)
             for symbol, position in portfolio.positions.items():
+                tp_hit = self.sentinel._tp_targets_hit.get(symbol, set()) if hasattr(self.sentinel, '_tp_targets_hit') else set()
                 self._exit_state[symbol] = {
                     "peak_price": position.peak_price,
                     "trailing_stop_active": position.trailing_stop_active,
                     "trailing_stop_price": position.trailing_stop_price,
+                    "tp_targets_hit": tp_hit,
                 }
+            # Persist exit state to DB after sentinel update
+            await self._persist_exit_states()
+
             if early_stop_trades:
                 logger.warning(f"[SAFETY] Executing {len(early_stop_trades)} stop-loss/exit trades (pre-health-gate)")
                 await self.executor.execute_stop_loss(early_stop_trades)
@@ -180,6 +189,64 @@ class Phase3Orchestrator:
                 stale = [s for s in self._exit_state if s not in active_symbols]
                 for s in stale:
                     del self._exit_state[s]
+                await self._delete_stale_exit_states(stale)
+
+            # Portfolio HWM protection
+            if portfolio.total_value > self._portfolio_hwm:
+                self._portfolio_hwm = portfolio.total_value
+                self._hwm_tightened = False
+            if self._portfolio_hwm > 0:
+                drawdown = (self._portfolio_hwm - portfolio.total_value) / self._portfolio_hwm
+                hwm_cfg = getattr(self.settings, 'portfolio_protection', None)
+                hwm_dd = getattr(hwm_cfg, 'hwm_drawdown_pct', 0.03) if hwm_cfg else 0.03
+                hwm_crit = getattr(hwm_cfg, 'hwm_critical_drawdown_pct', 0.06) if hwm_cfg else 0.06
+                hwm_trail = getattr(hwm_cfg, 'hwm_tighten_trail_pct', 0.005) if hwm_cfg else 0.005
+
+                if drawdown >= hwm_crit:
+                    # Critical: force-sell worst position
+                    worst_sym, worst_pnl = None, float('inf')
+                    for sym, pos in portfolio.positions.items():
+                        pnl = pos.unrealized_pnl or 0
+                        if pnl < worst_pnl:
+                            worst_sym, worst_pnl = sym, pnl
+                    if worst_sym and worst_pnl < 0:
+                        logger.warning(
+                            "[HWM] CRITICAL drawdown %.1f%% from peak $%.0f — "
+                            "force-selling worst position %s (PnL: $%.2f)",
+                            drawdown * 100, self._portfolio_hwm, worst_sym, worst_pnl,
+                        )
+                        from core.models.trading import Trade, OrderType
+                        pos = portfolio.positions[worst_sym]
+                        qc = self.settings.trading.quote_currency
+                        hwm_trade = Trade(
+                            pair=f"{worst_sym}/{qc}",
+                            action=TradeAction.SELL,
+                            order_type=OrderType.STOP_LOSS,
+                            requested_size_base=pos.amount,
+                            entry_price=pos.entry_price,
+                            reasoning=f"HWM critical drawdown: {drawdown:.1%} from ${self._portfolio_hwm:,.0f}",
+                        )
+                        await self.executor.execute_stop_loss([hwm_trade])
+                        portfolio = await self._get_portfolio_state()
+
+                elif drawdown >= hwm_dd and not self._hwm_tightened:
+                    logger.warning(
+                        "[HWM] Drawdown %.1f%% from peak $%.0f — tightening all stops to %.1f%%",
+                        drawdown * 100, self._portfolio_hwm, hwm_trail * 100,
+                    )
+                    for sym, pos in portfolio.positions.items():
+                        if not pos.trailing_stop_active:
+                            pos.trailing_stop_active = True
+                            pos.peak_price = pos.current_price
+                        new_trail = round(pos.current_price * (1 - hwm_trail), 2)
+                        if pos.trailing_stop_price is None or new_trail > pos.trailing_stop_price:
+                            pos.trailing_stop_price = new_trail
+                        self._exit_state[sym] = {
+                            "peak_price": pos.peak_price,
+                            "trailing_stop_active": pos.trailing_stop_active,
+                            "trailing_stop_price": pos.trailing_stop_price,
+                        }
+                    self._hwm_tightened = True
 
             # 1. Check system health (new trades/analysis gated here, exits are already handled above)
             if not await self.sentinel.system_healthy():
@@ -207,10 +274,12 @@ class Phase3Orchestrator:
 
             # Persist trailing stop state changes made by sentinel back to cache
             for symbol, position in portfolio.positions.items():
+                tp_hit = self.sentinel._tp_targets_hit.get(symbol, set()) if hasattr(self.sentinel, '_tp_targets_hit') else set()
                 self._exit_state[symbol] = {
                     "peak_price": position.peak_price,
                     "trailing_stop_active": position.trailing_stop_active,
                     "trailing_stop_price": position.trailing_stop_price,
+                    "tp_targets_hit": tp_hit,
                 }
 
             if stop_trades:
@@ -230,6 +299,8 @@ class Phase3Orchestrator:
                 stale = [s for s in self._exit_state if s not in active_symbols]
                 for s in stale:
                     del self._exit_state[s]
+                await self._delete_stale_exit_states(stale)
+                await self._persist_exit_states()
 
             # 4. Detect market regime
             regime = await self._detect_regime()
@@ -611,6 +682,28 @@ class Phase3Orchestrator:
         except Exception as e:
             logger.debug(f"WebSocket broadcast skipped: {e}")
 
+    async def _persist_exit_states(self) -> None:
+        """Save current exit state cache to DB and clean up closed positions."""
+        if not hasattr(self.memory, 'save_exit_state'):
+            return
+        try:
+            for symbol, state in self._exit_state.items():
+                qc = self.settings.trading.quote_currency
+                pair = state.get("pair", f"{symbol}/{qc}")
+                await self.memory.save_exit_state(symbol, pair, state)
+        except Exception as e:
+            logger.debug("Exit state persist failed: %s", e)
+
+    async def _delete_stale_exit_states(self, stale_symbols: list) -> None:
+        """Remove exit state for positions that no longer exist."""
+        if not hasattr(self.memory, 'delete_exit_state'):
+            return
+        for s in stale_symbols:
+            try:
+                await self.memory.delete_exit_state(s)
+            except Exception as e:
+                logger.debug("Exit state delete for %s failed: %s", s, e)
+
     async def _publish_event(self, event_type: EventType, data: Dict) -> None:
         """Publish event to event bus."""
         if self.event_bus:
@@ -623,6 +716,38 @@ class Phase3Orchestrator:
     async def start(self) -> None:
         """Start the orchestrator."""
         self._running = True
+
+        # Restore portfolio high-water mark from DB
+        try:
+            if hasattr(self.memory, '_pool') and self.memory._pool:
+                async with self.memory._pool.acquire() as conn:
+                    val = await conn.fetchval(
+                        "SELECT MAX(total_value) FROM portfolio_snapshots"
+                    )
+                    if val:
+                        self._portfolio_hwm = float(val)
+                        logger.info(f"Restored portfolio HWM: ${self._portfolio_hwm:,.2f}")
+        except Exception as e:
+            logger.debug(f"HWM restore failed (non-critical): {e}")
+
+        # Restore exit state (trailing stops, peak prices, TP hits) from DB
+        try:
+            if hasattr(self.memory, 'get_exit_states'):
+                self._exit_state = await self.memory.get_exit_states()
+                if self._exit_state:
+                    logger.info(
+                        "Restored exit state for %d positions: %s",
+                        len(self._exit_state),
+                        list(self._exit_state.keys()),
+                    )
+                    # Restore TP targets hit into sentinel
+                    if hasattr(self.sentinel, '_tp_targets_hit'):
+                        for sym, es in self._exit_state.items():
+                            tp = es.get("tp_targets_hit")
+                            if tp:
+                                self.sentinel._tp_targets_hit[sym] = set(tp)
+        except Exception as e:
+            logger.debug(f"Exit state restore failed (non-critical): {e}")
 
         # Load historical signals for learning
         await self.performance_tracker.load_from_storage()

@@ -13,6 +13,9 @@ MIGRATION_ORDER = [
     "005_seed_improver_autonomous.sql",
     "006_dgm_population_archive.sql",
     "007_trades_regime.sql",
+    "008_daily_portfolio_ledger.sql",
+    "009_autoresearch_experiments.sql",
+    "010_exit_state.sql",
 ]
 
 

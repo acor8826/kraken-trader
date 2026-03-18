@@ -158,8 +158,69 @@ class MemeSentinel(ISentinel):
             self._consecutive_losses = 0
 
     async def check_stop_losses(self, positions: Dict) -> List[Trade]:
-        """Not used for meme - trailing stops handled by strategist."""
-        return []
+        """Check all meme positions for hard stop-loss and trailing stop triggers.
+
+        Previously returned [] — delegating to the strategist. But the strategist
+        only checks exits when a coin is polled (which doesn't happen if the
+        position is lost on deploy). This sentinel check is the safety net.
+        """
+        from core.models import Trade, OrderType
+        exit_trades: List[Trade] = []
+
+        for symbol, position in positions.items():
+            entry_price = getattr(position, 'entry_price', None)
+            if not entry_price or entry_price <= 0:
+                continue
+
+            current_price = getattr(position, '_current_price', None)
+            if not current_price or current_price <= 0:
+                continue
+
+            pair = getattr(position, 'pair', f"{symbol}/USDT")
+            pnl_pct = (current_price - entry_price) / entry_price
+
+            # Hard stop loss
+            if pnl_pct <= -self.config.hard_stop_loss_pct:
+                logger.warning(
+                    "[MEME_SENTINEL] HARD STOP for %s: %.1f%% loss (threshold: -%.0f%%)",
+                    symbol, pnl_pct * 100, self.config.hard_stop_loss_pct * 100,
+                )
+                trade = Trade(
+                    pair=pair,
+                    action=TradeAction.SELL,
+                    order_type=OrderType.STOP_LOSS,
+                    requested_size_base=position.amount,
+                    entry_price=entry_price,
+                    reasoning=(
+                        f"Meme hard stop: {pnl_pct:.1%} loss "
+                        f"(threshold: -{self.config.hard_stop_loss_pct:.0%})"
+                    ),
+                )
+                exit_trades.append(trade)
+                continue
+
+            # Trailing stop
+            if getattr(position, 'trailing_active', False):
+                trail_price = getattr(position, 'trailing_stop_price', 0)
+                if trail_price > 0 and current_price <= trail_price:
+                    logger.warning(
+                        "[MEME_SENTINEL] TRAILING STOP for %s: $%.6f <= trail $%.6f",
+                        symbol, current_price, trail_price,
+                    )
+                    trade = Trade(
+                        pair=pair,
+                        action=TradeAction.SELL,
+                        order_type=OrderType.TRAILING_STOP,
+                        requested_size_base=position.amount,
+                        entry_price=entry_price,
+                        reasoning=(
+                            f"Meme trailing stop: ${current_price:.6f} "
+                            f"<= trail ${trail_price:.6f}"
+                        ),
+                    )
+                    exit_trades.append(trade)
+
+        return exit_trades
 
     async def system_healthy(self) -> bool:
         """Check if meme trading is allowed."""

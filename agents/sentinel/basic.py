@@ -234,6 +234,20 @@ class BasicSentinel(ISentinel):
                             position.amount -= sell_amount
                 self._tp_targets_hit[symbol] = hit_set
                 if exit_trades:
+                    # Post-TP ratchet: auto-activate trailing stop on remaining
+                    # position to close the gap where residual sits unprotected
+                    if not position.trailing_stop_active and position.amount > 0:
+                        position.trailing_stop_active = True
+                        position.peak_price = position.current_price
+                        ratchet_distance = self._trailing_distance * 0.6
+                        position.trailing_stop_price = round(
+                            position.current_price * (1 - ratchet_distance), 2
+                        )
+                        logger.info(
+                            f"[SENTINEL] Post-TP ratchet for {symbol}: "
+                            f"trail activated at {ratchet_distance:.2%} "
+                            f"below ${position.current_price:,.2f}"
+                        )
                     # Don't process other exit checks this cycle for partial sells
                     continue
 
@@ -304,20 +318,23 @@ class BasicSentinel(ISentinel):
                         f"[SENTINEL] Trailing stop ACTIVATED for {symbol}: "
                         f"gain={gain_pct:.1%}, trail=${position.trailing_stop_price:,.2f}")
 
-            # --- 3. BREAKEVEN STOP ---
-            # Triggers when: position previously reached activation threshold
-            # (peak_price shows it was profitable), but price has now dropped
-            # back to near entry. Uses peak_price to detect prior activation.
+            # --- 3. PROGRESSIVE BREAKEVEN FLOOR ---
+            # Instead of binary breakeven (fall all the way to entry), keep 30%
+            # of peak gains as a floor. This prevents giving back all gains.
+            # Peak at +0.8%: floor at +0.24%  |  Peak at +1.5%: floor at +0.45%
             if (self._breakeven_enabled and not position.trailing_stop_active
                     and position.peak_price is not None):
                 peak_gain = (position.peak_price - position.entry_price) / position.entry_price
                 if peak_gain >= self._breakeven_activation:
-                    breakeven_price = position.entry_price * (1 + self._breakeven_buffer)
-                    if position.current_price <= breakeven_price:
+                    # Floor = entry + 30% of peak gain (always positive)
+                    floor_gain = peak_gain * 0.3
+                    floor_price = position.entry_price * (1 + floor_gain)
+                    if position.current_price <= floor_price:
                         logger.info(
-                            f"BREAKEVEN-STOP triggered for {symbol}: "
+                            f"BREAKEVEN-FLOOR triggered for {symbol}: "
                             f"entry=${position.entry_price:,.2f}, "
-                            f"peak=${position.peak_price:,.2f}, "
+                            f"peak=${position.peak_price:,.2f} (+{peak_gain:.1%}), "
+                            f"floor=${floor_price:,.2f} (+{floor_gain:.1%}), "
                             f"current=${position.current_price:,.2f}")
                         trade = Trade(
                             pair=pair,
@@ -325,9 +342,10 @@ class BasicSentinel(ISentinel):
                             order_type=OrderType.BREAKEVEN_STOP,
                             requested_size_base=position.amount,
                             entry_price=position.entry_price,
-                            reasoning=f"Breakeven stop triggered: peaked at "
-                                      f"${position.peak_price:,.2f} then reverted "
-                                      f"to entry (${position.current_price:,.2f})"
+                            reasoning=f"Progressive breakeven: peaked at "
+                                      f"${position.peak_price:,.2f} (+{peak_gain:.1%}), "
+                                      f"floor at +{floor_gain:.1%}, "
+                                      f"current ${position.current_price:,.2f}"
                         )
                         exit_trades.append(trade)
                         self._tp_targets_hit.pop(symbol, None)

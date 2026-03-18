@@ -24,22 +24,31 @@ risk:
   max_daily_trades: 20
   max_daily_loss_pct: 0.08
 
-# Exit management
+# Exit management — tightened for scalping profit retention
 exit_management:
   enable_trailing_stop: true
   enable_breakeven_stop: true
   trailing_stop:
-    activation_pct: 0.03
-    distance_pct: 0.015
+    activation_pct: 0.012      # Activate at +1.2% gain (was 3%)
+    distance_pct: 0.008        # Trail 0.8% below peak (was 1.5%)
   breakeven:
-    activation_pct: 0.015
-    buffer_pct: 0.004
+    activation_pct: 0.008      # Move to breakeven at +0.8% (was 1.5%)
+    buffer_pct: 0.003          # 0.3% above entry covers fees (was 0.4%)
   take_profit_targets:
-    - pct: 0.02
-      sell_pct: 0.50
-    - pct: 0.04
-      sell_pct: 0.50
-  max_hold_hours: 48
+    - pct: 0.012               # Sell 40% at +1.2% gain
+      sell_pct: 0.40
+    - pct: 0.025               # Sell 30% at +2.5% gain
+      sell_pct: 0.30
+    - pct: 0.04                # Sell 30% at +4% gain
+      sell_pct: 0.30
+  max_hold_hours: 24           # Free up capital faster (was 48)
+
+# Portfolio-level profit protection
+portfolio_protection:
+  enable_hwm: true
+  hwm_drawdown_pct: 0.03          # 3% drawdown from peak tightens all stops
+  hwm_critical_drawdown_pct: 0.06  # 6% drawdown forces sale of worst position
+  hwm_tighten_trail_pct: 0.005    # Tighten all trails to 0.5% when triggered
 
 features:
   # Analysts - ALL enabled

@@ -6,21 +6,21 @@ class MemeConfig:
     # Risk limits
     max_meme_allocation_pct: float = 0.25      # 25% of total portfolio
     max_per_coin_pct: float = 0.05             # 5% per coin
-    max_simultaneous_positions: int = 3
+    max_simultaneous_positions: int = 5
     min_trade_size_quote: float = 5.0
 
     # Timing
     cycle_interval_seconds: int = 180           # 3 minutes
     listing_check_every_n_cycles: int = 5       # ~15 min
 
-    # Stop losses
-    trailing_stop_activation_pct: float = 0.08  # Activate at +8% gain
-    trailing_stop_distance_pct: float = 0.05    # Trail at 5% from peak
-    hard_stop_loss_pct: float = 0.10            # Hard stop at -10%
+    # Stop losses — tightened for scalping profit retention
+    trailing_stop_activation_pct: float = 0.03  # Activate at +3% gain (was 8%)
+    trailing_stop_distance_pct: float = 0.03    # Trail at 3% from peak (was 5%)
+    hard_stop_loss_pct: float = 0.07            # Hard stop at -7% (was -10%)
 
     # Scaled take-profit targets (pct gain, fraction of remaining position to sell)
     take_profit_targets: List[tuple] = None  # Initialized in __post_init__
-    max_hold_minutes: int = 360  # 6 hours max hold
+    max_hold_minutes: int = 180  # 3 hours max hold (was 6h)
 
     # Decision thresholds
     entry_cms_threshold: float = 0.65           # CMS >= 0.65 for rule-based BUY
@@ -55,5 +55,5 @@ class MemeConfig:
 
     def __post_init__(self):
         if self.take_profit_targets is None:
-            # Sell 50% at +5%, sell 50% of remainder at +10%
-            self.take_profit_targets = [(0.05, 0.50), (0.10, 0.50)]
+            # 3-tier TP: sell 30% at +3%, 30% at +8%, 40% at +15%
+            self.take_profit_targets = [(0.03, 0.30), (0.08, 0.30), (0.15, 0.40)]
