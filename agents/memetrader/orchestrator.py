@@ -142,6 +142,12 @@ class MemeOrchestrator:
                 self._coin_tiers[symbol] = MemeTier.HOT
                 reconstructed += 1
 
+                # Seed sim exchange's internal position so market_sell doesn't
+                # reject with "No position" after a service restart.
+                if hasattr(self.exchange, '_positions'):
+                    self.exchange._positions[symbol] = net
+                    logger.debug("[MEME] Seeded sim exchange position %s = %.6f", symbol, net)
+
             if reconstructed:
                 logger.info(
                     "[MEME] Reconstructed %d positions from DB: %s",

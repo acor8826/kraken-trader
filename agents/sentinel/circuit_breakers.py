@@ -256,8 +256,9 @@ class CircuitBreakers:
             self._day_start_value = None
             self._last_reset = now
 
-            # Reset daily loss breaker
+            # Reset daily-scoped breakers
             self._breakers["daily_loss"].triggered = False
+            self._breakers["trade_frequency"].triggered = False  # trade count resets each day
 
             logger.info("Daily circuit breakers reset (new day)")
 

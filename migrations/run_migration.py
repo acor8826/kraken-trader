@@ -16,6 +16,7 @@ MIGRATION_ORDER = [
     "008_daily_portfolio_ledger.sql",
     "009_autoresearch_experiments.sql",
     "010_exit_state.sql",
+    "011_backfill_realized_pnl.sql",
 ]
 
 

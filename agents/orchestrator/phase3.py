@@ -716,11 +716,12 @@ class Phase3Orchestrator:
 
             # Only override if DB total is meaningfully different (deploy reset)
             if abs(db_total - portfolio.total_value) > 50:
-                portfolio.available_quote = db_total - portfolio.positions_value
                 logger.debug(
                     "Portfolio snapshot corrected: sim=$%.0f → db=$%.0f",
                     portfolio.total_value, db_total,
                 )
+                portfolio.total_value = db_total
+                portfolio.available_quote = max(0, db_total - portfolio.positions_value)
 
             await self.memory.save_portfolio(portfolio)
         except Exception as e:

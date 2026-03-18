@@ -800,6 +800,7 @@ async def _run_migrations_on_startup():
         "008_daily_portfolio_ledger.sql",
         "009_autoresearch_experiments.sql",
         "010_exit_state.sql",
+        "011_backfill_realized_pnl.sql",
     ]
     for filename in migration_files:
         try:
@@ -841,11 +842,17 @@ _STAGNANT_THRESHOLD_PCT = 0.10
 
 
 async def _run_daily_profit_snapshot() -> dict:
-    """5:30 PM AEST — capture daily P&L vs yesterday, save to DB ledger."""
+    """5:30 PM AEST — capture daily P&L vs yesterday, save to DB ledger.
+
+    Uses DB-reconstructed portfolio values (same source as the dashboard header)
+    so that the daily ledger is consistent with the header tiles.
+    """
     global orchestrator
     import json as _json
     import os as _os
     from datetime import date as _date, datetime as _dt, timezone as _tz
+
+    MAIN_SYMBOLS = {"BTC", "ETH", "SOL", "DOT"}
 
     logger.info("[PROFIT_SNAPSHOT] 5:30 PM snapshot starting")
     _os.makedirs(_PROFIT_TRACKER_DIR, exist_ok=True)
@@ -865,38 +872,76 @@ async def _run_daily_profit_snapshot() -> dict:
     fees_total = 0.0
 
     if orchestrator:
+        # Use DB-reconstructed portfolio (same source as dashboard header)
+        # to avoid sim-exchange reset inconsistencies across deploys.
         try:
-            pf = await orchestrator._get_portfolio_state()
-            portfolio_value = pf.total_value
-            # Calculate unrealized P&L from open positions
-            for pos in pf.positions.values():
-                if pos.entry_price and pos.current_price and pos.amount:
-                    unrealized_pnl += (pos.current_price - pos.entry_price) * pos.amount
+            cached = await _get_cached_portfolio()
+            if cached and cached.get("total_value", 0) > 0:
+                portfolio_value = cached["total_value"]
+                unrealized_pnl = cached.get("total_pnl", 0)
+                realized_pnl = 0  # realized is folded into total_pnl already
+
+                # Split unrealized P&L into main vs meme from positions
+                for symbol, pos in cached.get("positions", {}).items():
+                    pos_pnl = pos.get("unrealized_pnl", 0)
+                    if symbol in MAIN_SYMBOLS:
+                        main_pnl += pos_pnl
+                    else:
+                        meme_pnl += pos_pnl
+            else:
+                # Fallback to sim exchange if DB reconstruction unavailable
+                pf = await orchestrator._get_portfolio_state()
+                portfolio_value = pf.total_value
         except Exception as exc:
             logger.error("[PROFIT_SNAPSHOT] Portfolio fetch failed: %s", exc)
+
+        # Count today's trades and compute wins/losses from trade history
         try:
-            perf = await orchestrator.memory.get_performance_summary()
-            total_trades = perf.get("total_trades", 0)
-            wins = perf.get("wins_7d", 0)
-            losses = perf.get("losses_7d", 0)
-            win_rate = perf.get("win_rate", 0.0)
-            main_pnl = perf.get("total_pnl", 0.0)
-            realized_pnl = main_pnl
+            async with orchestrator.memory._connection() as conn:
+                # Count all trades today
+                trade_count = await conn.fetchval("""
+                    SELECT COUNT(*) FROM trades
+                    WHERE DATE(created_at) = CURRENT_DATE AND status = 'filled'
+                """)
+                total_trades = int(trade_count or 0)
+
+                # Compute wins/losses from sell trades:
+                # For sells with realized_pnl set, use that directly.
+                # For sells without realized_pnl, compute from avg buy price.
+                sell_rows = await conn.fetch("""
+                    SELECT t.pair, t.filled_size_base, t.average_price, t.realized_pnl,
+                           (SELECT CASE WHEN SUM(filled_size_base) > 0
+                                   THEN SUM(filled_size_quote) / SUM(filled_size_base)
+                                   ELSE 0 END
+                            FROM trades t2
+                            WHERE t2.pair = t.pair AND t2.action = 'BUY'
+                              AND t2.status = 'filled') AS avg_buy_price
+                    FROM trades t
+                    WHERE t.action = 'SELL' AND t.status = 'filled'
+                      AND DATE(t.created_at) = CURRENT_DATE
+                """)
+                for sr in sell_rows:
+                    rpnl = sr["realized_pnl"]
+                    if rpnl is None:
+                        # Compute from avg buy price
+                        avg_buy = float(sr["avg_buy_price"] or 0)
+                        sell_price = float(sr["average_price"] or 0)
+                        qty = float(sr["filled_size_base"] or 0)
+                        rpnl = (sell_price - avg_buy) * qty if avg_buy > 0 else 0
+                    else:
+                        rpnl = float(rpnl)
+                    if rpnl > 0:
+                        wins += 1
+                    elif rpnl < 0:
+                        losses += 1
+                win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0.0
         except Exception as exc:
             logger.warning("[PROFIT_SNAPSHOT] Trade stats failed: %s", exc)
+
         try:
             fees_total = await orchestrator.memory.get_daily_fees_today()
         except Exception as exc:
             logger.warning("[PROFIT_SNAPSHOT] Fee fetch failed: %s", exc)
-
-    if (orchestrator and hasattr(orchestrator, "_meme_orchestrator")
-            and orchestrator._meme_orchestrator):
-        for pos in getattr(orchestrator._meme_orchestrator, "_positions", {}).values():
-            entry = getattr(pos, "entry_price", None)
-            current = getattr(pos, "_current_price", None) or getattr(pos, "current_price", None)
-            qty = getattr(pos, "amount", None) or getattr(pos, "quantity", None)
-            if entry and current and qty:
-                meme_pnl += (current - entry) * qty
 
     # Determine start value: previous day's end_value from DB, else flat file, else current
     start_value = portfolio_value
@@ -2425,6 +2470,114 @@ def _register_routes(app: FastAPI):
             "consecutive_losses": result.get("consecutive_losses"),
         }
 
+    @app.post("/api/daily-profit/recalculate")
+    async def recalculate_daily_ledger():
+        """Recalculate all historical daily ledger entries using DB-reconstructed
+        portfolio snapshots. Fixes entries that were saved with sim exchange values."""
+        if not orchestrator or not hasattr(orchestrator.memory, '_connection'):
+            raise HTTPException(400, "Orchestrator not ready")
+
+        MAIN_SYMBOLS = {"BTC", "ETH", "SOL", "DOT"}
+        initial_capital = settings.trading.initial_capital if settings else 1000
+        updated = 0
+
+        try:
+            async with orchestrator.memory._connection() as conn:
+                # Get all daily ledger entries
+                ledger_rows = await conn.fetch(
+                    "SELECT date FROM daily_portfolio_ledger ORDER BY date ASC"
+                )
+                if not ledger_rows:
+                    return {"status": "ok", "updated": 0, "message": "No ledger entries"}
+
+                # For each day, compute the correct end_value from the best
+                # portfolio_snapshot near the end of that day, or from trade data.
+                prev_end_value = initial_capital
+
+                for row in ledger_rows:
+                    day = row["date"]
+
+                    # Best portfolio snapshot for this day (latest one that day)
+                    snap = await conn.fetchrow("""
+                        SELECT total_value, positions FROM portfolio_snapshots
+                        WHERE DATE(created_at) = $1
+                        ORDER BY created_at DESC LIMIT 1
+                    """, day)
+
+                    if snap and float(snap["total_value"]) > initial_capital * 0.5:
+                        end_value = float(snap["total_value"])
+                    else:
+                        end_value = prev_end_value  # carry forward if no good snapshot
+
+                    # Compute wins/losses for this day
+                    sell_rows = await conn.fetch("""
+                        SELECT t.pair, t.filled_size_base, t.average_price, t.realized_pnl
+                        FROM trades t
+                        WHERE t.action = 'SELL' AND t.status = 'filled'
+                          AND DATE(t.created_at) = $1
+                    """, day)
+                    day_wins = 0
+                    day_losses = 0
+                    for sr in sell_rows:
+                        rpnl = float(sr["realized_pnl"]) if sr["realized_pnl"] is not None else None
+                        if rpnl is None:
+                            continue  # backfill migration should have set this
+                        if rpnl > 0:
+                            day_wins += 1
+                        elif rpnl < 0:
+                            day_losses += 1
+
+                    trade_count = await conn.fetchval("""
+                        SELECT COUNT(*) FROM trades
+                        WHERE DATE(created_at) = $1 AND status = 'filled'
+                    """, day)
+
+                    # Compute main vs meme P&L from positions snapshot
+                    day_main_pnl = 0.0
+                    day_meme_pnl = 0.0
+                    if snap and snap["positions"]:
+                        import json as _json
+                        positions = _json.loads(snap["positions"]) if isinstance(snap["positions"], str) else snap["positions"]
+                        for symbol, pos in positions.items():
+                            entry = pos.get("entry_price", 0) or 0
+                            current = pos.get("current_price", 0) or 0
+                            amount = pos.get("amount", 0) or 0
+                            if entry > 0 and current > 0 and amount > 0:
+                                pnl = (current - entry) * amount
+                                if symbol in MAIN_SYMBOLS:
+                                    day_main_pnl += pnl
+                                else:
+                                    day_meme_pnl += pnl
+
+                    daily_pnl = end_value - prev_end_value
+                    daily_pnl_pct = (daily_pnl / prev_end_value * 100) if prev_end_value > 0 else 0
+                    status = "STAGNANT" if abs(daily_pnl_pct) < 0.10 else ("PROFIT" if daily_pnl > 0 else "LOSS")
+                    wr = (day_wins / (day_wins + day_losses) * 100) if (day_wins + day_losses) > 0 else 0
+
+                    await conn.execute("""
+                        UPDATE daily_portfolio_ledger SET
+                            start_value = $2, end_value = $3,
+                            daily_pnl = $4, daily_pnl_pct = $5,
+                            wins = $6, losses = $7, win_rate = $8,
+                            total_trades = $9,
+                            main_pnl = $10, meme_pnl = $11,
+                            status = $12, updated_at = NOW()
+                        WHERE date = $1
+                    """, day, prev_end_value, end_value,
+                        daily_pnl, daily_pnl_pct,
+                        day_wins, day_losses, wr / 100,
+                        int(trade_count or 0),
+                        day_main_pnl, day_meme_pnl,
+                        status)
+
+                    prev_end_value = end_value
+                    updated += 1
+
+            return {"status": "ok", "updated": updated}
+        except Exception as exc:
+            logger.error("Daily ledger recalculation failed: %s", exc)
+            raise HTTPException(500, f"Recalculation failed: {exc}")
+
     # =========================================================================
     # Daily Profit Ledger Endpoints
     # =========================================================================
@@ -2512,13 +2665,17 @@ def _register_routes(app: FastAPI):
                 "improvement_action": entry.get("improvement_action"),
             }
 
-        # No snapshot yet — provide a live estimate
+        # No snapshot yet — provide a live estimate using DB-reconstructed values
         portfolio_value = 0.0
         start_value = 0.0
         if orchestrator:
             try:
-                pf = await orchestrator._get_portfolio_state()
-                portfolio_value = pf.total_value
+                cached = await _get_cached_portfolio()
+                if cached and cached.get("total_value", 0) > 0:
+                    portfolio_value = cached["total_value"]
+                else:
+                    pf = await orchestrator._get_portfolio_state()
+                    portfolio_value = pf.total_value
             except Exception:
                 pass
             if hasattr(orchestrator.memory, "get_previous_day_end_value"):
