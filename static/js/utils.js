@@ -219,6 +219,29 @@ export function getQuoteCurrency(pair) {
     return pair?.split('/')[1] || 'AUD';
 }
 
+/**
+ * Split portfolio positions into main holdings vs meme coins.
+ * Main pairs: BTC, ETH, SOL, DOT. Everything else is meme.
+ * @param {object} positions - {symbol: {amount, current_price, ...}}
+ * @returns {{holdingsValue: number, memeValue: number}}
+ */
+export function splitPositionValues(positions) {
+    const MAIN_SYMBOLS = new Set(['BTC', 'ETH', 'SOL', 'DOT']);
+    let holdingsValue = 0;
+    let memeValue = 0;
+    if (positions && typeof positions === 'object') {
+        for (const [symbol, pos] of Object.entries(positions)) {
+            const value = (pos.amount || 0) * (pos.current_price || 0);
+            if (MAIN_SYMBOLS.has(symbol)) {
+                holdingsValue += value;
+            } else {
+                memeValue += value;
+            }
+        }
+    }
+    return { holdingsValue, memeValue };
+}
+
 // ========================================
 // DOM Helpers
 // ========================================

@@ -7,7 +7,7 @@ import router from './router.js';
 import store from './store.js';
 import api from './api.js';
 import wsManager from './websocket.js';
-import { formatCurrency, formatPercent, formatCountdown, showToast } from './utils.js';
+import { formatCurrency, formatPercent, formatCountdown, showToast, splitPositionValues } from './utils.js';
 
 // ========================================
 // Page Imports (lazy loaded)
@@ -31,9 +31,11 @@ class Header {
 
         // Subscribe to store updates
         store.subscribe('totalValue', (value) => this.updateTile('portfolio', formatCurrency(value)));
+        store.subscribe('availableQuote', (value) => this.updateTile('cash', formatCurrency(value)));
+        store.subscribe('holdingsValue', (value) => this.updateTile('holdings', formatCurrency(value)));
+        store.subscribe('memeValue', (value) => this.updateTile('meme', formatCurrency(value)));
         store.subscribe('totalPnL', (value) => this.updatePnLTile(value, store.get('pnlPercent')));
         store.subscribe('pnlPercent', (pct) => this.updatePnLTile(store.get('totalPnL'), pct));
-        store.subscribe('progressToTarget', (value) => this.updateTargetTile(value));
         store.subscribe('isPaused', () => this.updateAIStatus());
         store.subscribe('schedulerRunning', () => this.updateAIStatus());
         store.subscribe('secondsUntilNext', (secs) => this.updateCountdown(secs));
@@ -281,10 +283,13 @@ async function loadInitialData() {
         const data = await api.loadDashboardData();
 
         if (data.portfolio) {
+            const { holdingsValue, memeValue } = splitPositionValues(data.portfolio.positions);
             store.update({
                 portfolio: data.portfolio,
                 totalValue: data.portfolio.total_value || 0,
                 availableQuote: data.portfolio.available_quote || 0,
+                holdingsValue,
+                memeValue,
                 totalPnL: data.portfolio.total_pnl || 0,
                 pnlPercent: data.portfolio.pnl_percent || 0,
                 progressToTarget: data.portfolio.progress_to_target || 0,
@@ -458,10 +463,13 @@ async function initApp() {
     // Set up WebSocket event handlers
     wsManager.subscribe('portfolio', (data) => {
         if (data && data.total_value !== undefined) {
+            const { holdingsValue, memeValue } = splitPositionValues(data.positions);
             store.update({
                 portfolio: data,
                 totalValue: data.total_value || 0,
                 availableQuote: data.available_quote || 0,
+                holdingsValue,
+                memeValue,
                 totalPnL: data.total_pnl || 0,
                 pnlPercent: data.pnl_percent || 0,
                 progressToTarget: data.progress_to_target || 0

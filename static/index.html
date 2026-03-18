@@ -54,14 +54,40 @@
 
         <!-- Center: Data Tiles (Telemetry Strip) -->
         <div class="header-segment header-telemetry">
-            <!-- Portfolio Value -->
+            <!-- Portfolio Total -->
             <div class="telemetry-tile" data-tile="portfolio">
                 <div class="tile-glow"></div>
                 <span class="tile-label font-display">PORTFOLIO</span>
                 <span class="tile-value font-mono" id="tile-portfolio">$1,000.00</span>
             </div>
 
-            <!-- Separator -->
+            <div class="telemetry-divider"></div>
+
+            <!-- Cash Reserve -->
+            <div class="telemetry-tile" data-tile="cash">
+                <div class="tile-glow"></div>
+                <span class="tile-label font-display">CASH</span>
+                <span class="tile-value font-mono" id="tile-cash">$0.00</span>
+            </div>
+
+            <div class="telemetry-divider"></div>
+
+            <!-- Holdings Value (main pairs: BTC, ETH, SOL, DOT) -->
+            <div class="telemetry-tile" data-tile="holdings">
+                <div class="tile-glow"></div>
+                <span class="tile-label font-display">HOLDINGS</span>
+                <span class="tile-value font-mono" id="tile-holdings">$0.00</span>
+            </div>
+
+            <div class="telemetry-divider"></div>
+
+            <!-- Meme Coin Value -->
+            <div class="telemetry-tile" data-tile="meme">
+                <div class="tile-glow"></div>
+                <span class="tile-label font-display">MEME</span>
+                <span class="tile-value font-mono" id="tile-meme">$0.00</span>
+            </div>
+
             <div class="telemetry-divider"></div>
 
             <!-- Net P&L -->
@@ -74,22 +100,6 @@
                 </div>
             </div>
 
-            <!-- Separator -->
-            <div class="telemetry-divider"></div>
-
-            <!-- Target Progress -->
-            <div class="telemetry-tile" data-tile="target">
-                <div class="tile-glow"></div>
-                <span class="tile-label font-display">TARGET</span>
-                <div class="tile-progress-wrap">
-                    <div class="tile-progress-bar">
-                        <div class="tile-progress-fill" id="tile-target-bar" style="width: 0%;"></div>
-                    </div>
-                    <span class="tile-value font-mono" id="tile-target">0%</span>
-                </div>
-            </div>
-
-            <!-- Separator -->
             <div class="telemetry-divider"></div>
 
             <!-- AI Status -->
@@ -102,7 +112,6 @@
                 </div>
             </div>
 
-            <!-- Separator -->
             <div class="telemetry-divider"></div>
 
             <!-- Next Cycle Countdown -->
