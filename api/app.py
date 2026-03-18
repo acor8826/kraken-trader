@@ -152,7 +152,9 @@ async def _get_cached_portfolio() -> dict | None:
             unrealized_pnl = positions_value - cost_basis
             total_value = initial_capital + realized_pnl + unrealized_pnl
             total_pnl = total_value - initial_capital
-            available = total_value - positions_value
+            # In sim mode across deploys, available cash can't be properly tracked
+            # since the sim resets to $1,000 each time. Show 0 rather than confusing negatives.
+            available = max(0, total_value - positions_value)
 
             result = {
                 "quote_currency": quote,
@@ -1465,9 +1467,9 @@ def _register_routes(app: FastAPI):
     async def get_portfolio_history(range: str = "7D"):
         """Get portfolio value history for charting.
 
-        Builds chart from trade history (cumulative realized PnL) instead of
-        portfolio_snapshots, because the sim exchange resets on each deploy
-        and those snapshots contain wrong ~$1,000 values.
+        Uses portfolio_snapshots for historical data (populated each cycle).
+        Appends the current DB-reconstructed total_value as the latest point
+        so the chart endpoint always reflects the correct current value.
         """
         if not orchestrator:
             return {"snapshots": [], "range": range, "count": 0}
@@ -1479,38 +1481,19 @@ def _register_routes(app: FastAPI):
             db = orchestrator.memory
             initial_capital = settings.trading.initial_capital if settings else 1000
 
-            # Build chart from trade history — authoritative source that
-            # survives Cloud Run deploys (unlike sim exchange snapshots).
             if hasattr(db, '_connection'):
                 async with db._connection() as conn:
-                    trade_rows = await conn.fetch("""
-                        SELECT realized_pnl, fees_quote, created_at
-                        FROM trades
-                        WHERE status = 'filled' AND action = 'SELL'
-                          AND realized_pnl IS NOT NULL
-                          AND created_at >= NOW() - ($1 || ' days')::INTERVAL
+                    rows = await conn.fetch("""
+                        SELECT total_value, created_at
+                        FROM portfolio_snapshots
+                        WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
                         ORDER BY created_at ASC
                     """, str(int(days) if days >= 1 else 1))
 
-                    # Get the cumulative PnL at the start of the window
-                    prior_pnl = await conn.fetchval("""
-                        SELECT COALESCE(SUM(realized_pnl), 0)
-                        FROM trades
-                        WHERE status = 'filled' AND action = 'SELL'
-                          AND realized_pnl IS NOT NULL
-                          AND created_at < NOW() - ($1 || ' days')::INTERVAL
-                    """, str(int(days) if days >= 1 else 1))
-
-                running_value = initial_capital + float(prior_pnl or 0)
-                snapshots = [{"timestamp": (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(),
-                              "total_value": round(running_value, 2)}]
-                for row in trade_rows:
-                    pnl = float(row["realized_pnl"] or 0)
-                    running_value += pnl
-                    snapshots.append({
-                        "timestamp": row["created_at"].isoformat(),
-                        "total_value": round(running_value, 2),
-                    })
+                snapshots = [
+                    {"timestamp": row["created_at"].isoformat(), "total_value": float(row["total_value"])}
+                    for row in rows
+                ]
             else:
                 # In-memory fallback: build from trade history
                 snapshots = []
