@@ -43,12 +43,11 @@ async def _reconstruct_positions_from_db() -> dict:
     Survives container restarts / deploys where the sim exchange resets.
     Returns {
         "positions": {pair: {amount, avg_entry_price, total_cost}},
-        "total_bought": float,   # total AUD spent on all buys (including closed)
-        "total_sold": float,     # total AUD received from all sells (including closed)
+        "realized_pnl": float,  # total realized PnL from closed trades
     }
     """
     if not orchestrator or not hasattr(orchestrator.memory, '_connection'):
-        return {"positions": {}, "total_bought": 0, "total_sold": 0}
+        return {"positions": {}, "realized_pnl": 0}
     try:
         async with orchestrator.memory._connection() as conn:
             rows = await conn.fetch("""
@@ -59,10 +58,17 @@ async def _reconstruct_positions_from_db() -> dict:
                 WHERE status = 'filled'
                 GROUP BY pair, action
             """)
+            # Total realized PnL from sell trades (authoritative)
+            realized_row = await conn.fetchval("""
+                SELECT COALESCE(SUM(realized_pnl), 0)
+                FROM trades
+                WHERE status = 'filled' AND action = 'SELL'
+                  AND realized_pnl IS NOT NULL
+            """)
+            realized_pnl = float(realized_row or 0)
+
         # Aggregate net positions per pair
         agg: dict = {}
-        total_bought = 0.0
-        total_sold = 0.0
         for row in rows:
             pair = row["pair"]
             if pair not in agg:
@@ -70,11 +76,9 @@ async def _reconstruct_positions_from_db() -> dict:
             if row["action"] == "BUY":
                 agg[pair]["buy_base"] += float(row["total_base"])
                 agg[pair]["buy_quote"] += float(row["total_quote"])
-                total_bought += float(row["total_quote"])
             else:
                 agg[pair]["sell_base"] += float(row["total_base"])
                 agg[pair]["sell_quote"] += float(row["total_quote"])
-                total_sold += float(row["total_quote"])
 
         positions = {}
         for pair, data in agg.items():
@@ -86,10 +90,10 @@ async def _reconstruct_positions_from_db() -> dict:
                     "avg_entry_price": avg_entry,
                     "total_cost": data["buy_quote"] - data["sell_quote"],
                 }
-        return {"positions": positions, "total_bought": total_bought, "total_sold": total_sold}
+        return {"positions": positions, "realized_pnl": realized_pnl}
     except Exception as e:
         logger.debug("Position reconstruction failed: %s", e)
-        return {"positions": {}, "total_bought": 0, "total_sold": 0}
+        return {"positions": {}, "realized_pnl": 0}
 
 
 async def _get_cached_portfolio() -> dict | None:
@@ -116,11 +120,11 @@ async def _get_cached_portfolio() -> dict | None:
         # survives Cloud Run deploys (sim exchange resets to $1,000).
         db_result = await _reconstruct_positions_from_db()
         db_positions = db_result.get("positions", {})
-        total_bought = db_result.get("total_bought", 0)
-        total_sold = db_result.get("total_sold", 0)
+        realized_pnl = db_result.get("realized_pnl", 0)
 
         if db_positions:
             positions_value = 0
+            cost_basis = 0
             pos_dict = {}
             for pair, pdata in db_positions.items():
                 symbol = pair.split("/")[0]
@@ -130,22 +134,25 @@ async def _get_cached_portfolio() -> dict | None:
                 except Exception:
                     current_price = pdata["avg_entry_price"]
                 value = pdata["amount"] * current_price
+                entry_cost = pdata["amount"] * pdata["avg_entry_price"]
                 positions_value += value
-                unrealized_pnl = value - (pdata["amount"] * pdata["avg_entry_price"])
-                pnl_pct = (unrealized_pnl / (pdata["amount"] * pdata["avg_entry_price"]) * 100) if pdata["avg_entry_price"] > 0 else 0
+                cost_basis += entry_cost
+                unrealized_pnl_pos = value - entry_cost
+                pnl_pct = (unrealized_pnl_pos / entry_cost * 100) if entry_cost > 0 else 0
                 pos_dict[symbol] = {
                     "amount": pdata["amount"],
                     "entry_price": pdata["avg_entry_price"],
                     "current_price": current_price,
-                    "unrealized_pnl": round(unrealized_pnl, 2),
+                    "unrealized_pnl": round(unrealized_pnl_pos, 2),
                     "unrealized_pnl_pct": round(pnl_pct, 2),
                 }
 
-            # Available = initial capital + total sell proceeds - total buy costs
-            # This correctly accounts for profits from fully-closed positions
-            available = initial_capital - total_bought + total_sold
-            total_value = available + positions_value
+            # total_value = initial_capital + realized_pnl + unrealized_pnl
+            # This is correct regardless of how many deploy restarts happened.
+            unrealized_pnl = positions_value - cost_basis
+            total_value = initial_capital + realized_pnl + unrealized_pnl
             total_pnl = total_value - initial_capital
+            available = total_value - positions_value
 
             result = {
                 "quote_currency": quote,

@@ -698,29 +698,25 @@ class Phase3Orchestrator:
                 return
 
             async with self.memory._connection() as conn:
-                rows = await conn.fetch("""
-                    SELECT action,
-                           SUM(filled_size_quote) AS total_quote
+                realized_pnl = await conn.fetchval("""
+                    SELECT COALESCE(SUM(realized_pnl), 0)
                     FROM trades
-                    WHERE status = 'filled'
-                    GROUP BY action
+                    WHERE status = 'filled' AND action = 'SELL'
+                      AND realized_pnl IS NOT NULL
                 """)
 
-            total_bought = 0.0
-            total_sold = 0.0
-            for row in rows:
-                if row["action"] == "BUY":
-                    total_bought = float(row["total_quote"] or 0)
-                else:
-                    total_sold = float(row["total_quote"] or 0)
-
+            realized_pnl = float(realized_pnl or 0)
             initial_capital = self.settings.trading.initial_capital
-            available = initial_capital - total_bought + total_sold
-            db_total = available + portfolio.positions_value
+            # total = initial + realized + unrealized
+            unrealized = portfolio.positions_value - sum(
+                p.amount * p.entry_price for p in portfolio.positions.values()
+                if p.entry_price
+            )
+            db_total = initial_capital + realized_pnl + unrealized
 
             # Only override if DB total is meaningfully different (deploy reset)
             if abs(db_total - portfolio.total_value) > 50:
-                portfolio.available_quote = available
+                portfolio.available_quote = db_total - portfolio.positions_value
                 logger.debug(
                     "Portfolio snapshot corrected: sim=$%.0f → db=$%.0f",
                     portfolio.total_value, db_total,
