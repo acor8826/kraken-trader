@@ -13,7 +13,7 @@ import logging
 import json
 import os
 from typing import Dict, List, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 import asyncpg
 
@@ -719,3 +719,90 @@ class PostgresStore(IMemory):
                 "lifecycle_completeness_pct": 0.0, "underperforming": False,
                 "error": str(e),
             }
+
+    # ------------------------------------------------------------------
+    # Signal persistence for AnalystPerformanceTracker (learning module)
+    # ------------------------------------------------------------------
+
+    async def save_signal(self, signal_data: dict) -> None:
+        """Save a standalone analyst signal (not tied to a trade)."""
+        try:
+            metadata = {
+                "price_at_signal": signal_data.get("price_at_signal"),
+                "outcome": signal_data.get("outcome"),
+            }
+            async with self._connection() as conn:
+                await conn.execute("""
+                    INSERT INTO signals (
+                        source, pair, direction, confidence,
+                        regime, metadata, created_at
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                    signal_data.get("analyst", "unknown"),
+                    signal_data.get("pair", ""),
+                    float(signal_data.get("direction", 0)),
+                    float(signal_data.get("confidence", 0)),
+                    signal_data.get("regime"),
+                    json.dumps(metadata),
+                    datetime.fromisoformat(signal_data["timestamp"])
+                    if isinstance(signal_data.get("timestamp"), str)
+                    else signal_data.get("timestamp", datetime.now(timezone.utc)),
+                )
+        except Exception as e:
+            logger.error("Failed to save signal: %s", e)
+
+    async def update_signal(self, analyst: str, timestamp, outcome: str,
+                            actual_return: Optional[float] = None) -> None:
+        """Update a signal's outcome after evaluation."""
+        try:
+            async with self._connection() as conn:
+                await conn.execute("""
+                    UPDATE signals
+                    SET metadata = COALESCE(metadata, '{}'::jsonb)
+                        || jsonb_build_object('outcome', $1::text,
+                                              'actual_return', $2::text)
+                    WHERE source = $3
+                      AND created_at = $4
+                """,
+                    outcome,
+                    str(actual_return) if actual_return is not None else None,
+                    analyst,
+                    timestamp if isinstance(timestamp, datetime)
+                    else datetime.fromisoformat(str(timestamp)),
+                )
+        except Exception as e:
+            logger.error("Failed to update signal: %s", e)
+
+    async def get_signals(self, limit: int = 10000, days: int = 30) -> list:
+        """Load historical signals for the learning module."""
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            async with self._connection() as conn:
+                rows = await conn.fetch("""
+                    SELECT source AS analyst, pair, direction, confidence,
+                           regime, metadata, created_at AS timestamp
+                    FROM signals
+                    WHERE trade_id IS NULL AND created_at >= $1
+                    ORDER BY created_at DESC
+                    LIMIT $2
+                """, cutoff, limit)
+
+            results = []
+            for row in rows:
+                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                results.append({
+                    "analyst": row["analyst"],
+                    "pair": row["pair"],
+                    "direction": float(row["direction"]),
+                    "confidence": float(row["confidence"]),
+                    "regime": row["regime"],
+                    "timestamp": row["timestamp"],
+                    "price_at_signal": meta.get("price_at_signal", 0),
+                    "outcome": meta.get("outcome", "pending"),
+                    "actual_return": float(meta["actual_return"])
+                    if meta.get("actual_return") not in (None, "None") else None,
+                })
+            return results
+        except Exception as e:
+            logger.error("Failed to get signals: %s", e)
+            return []
