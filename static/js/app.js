@@ -291,7 +291,7 @@ async function loadInitialData() {
                 holdingsValue,
                 memeValue,
                 totalPnL: data.portfolio.total_pnl || 0,
-                pnlPercent: data.portfolio.pnl_percent || 0,
+                pnlPercent: (data.portfolio.total_pnl_pct || 0) / 100,
                 progressToTarget: data.portfolio.progress_to_target || 0,
                 positions: data.portfolio.positions || []
             });
@@ -471,7 +471,7 @@ async function initApp() {
                 holdingsValue,
                 memeValue,
                 totalPnL: data.total_pnl || 0,
-                pnlPercent: data.pnl_percent || 0,
+                pnlPercent: (data.total_pnl_pct || 0) / 100,
                 progressToTarget: data.progress_to_target || 0
             });
         }

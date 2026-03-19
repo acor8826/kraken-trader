@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional
 from collections import defaultdict
 import logging
 
-from core.models import Trade, TradeStatus
+from core.models import Trade, TradeStatus, TradeAction
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +53,15 @@ class AnalyticsCalculator:
         if not completed:
             return self._empty_summary()
 
-        # Calculate P&L
-        total_pnl = sum(t.pnl or 0 for t in completed if t.pnl is not None)
-        winning_trades = [t for t in completed if (t.pnl or 0) > 0]
-        losing_trades = [t for t in completed if (t.pnl or 0) < 0]
+        # Win/loss metrics use SELL trades only (BUY trades don't have realized P&L)
+        sells = [t for t in completed if getattr(t, 'action', None) == TradeAction.SELL]
+        total_pnl = sum(t.pnl or 0 for t in sells if t.pnl is not None)
+        winning_trades = [t for t in sells if (t.pnl or 0) > 0]
+        losing_trades = [t for t in sells if (t.pnl or 0) < 0]
 
         win_count = len(winning_trades)
         loss_count = len(losing_trades)
-        total_count = len(completed)
+        total_count = len(sells) if sells else len(completed)
 
         # Win rate
         win_rate = win_count / total_count if total_count > 0 else 0
@@ -103,7 +104,7 @@ class AnalyticsCalculator:
             "best_trade": self._trade_to_dict(best_trade),
             "worst_trade": self._trade_to_dict(worst_trade),
             "sharpe_ratio": round(sharpe, 2),
-            "max_drawdown": round(max_drawdown * 100, 1),
+            "max_drawdown": round(max_drawdown, 4),
             "drawdown_duration_hours": drawdown_duration,
             "avg_trade_duration_minutes": avg_duration,
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -264,16 +265,19 @@ class AnalyticsCalculator:
         """
         Calculate maximum drawdown and duration.
 
+        Uses SELL trades only to build the equity curve (BUY trades have no P&L).
         Returns:
             (max_drawdown_pct, duration_hours)
         """
-        if not trades:
+        # Filter to trades with actual P&L (sells)
+        pnl_trades = [t for t in trades if (t.pnl or 0) != 0]
+        if not pnl_trades:
             return 0, 0
 
         # Sort by timestamp
-        sorted_trades = sorted(trades, key=lambda t: t.timestamp if t.timestamp else datetime.min.replace(tzinfo=timezone.utc))
+        sorted_trades = sorted(pnl_trades, key=lambda t: t.timestamp if t.timestamp else datetime.min.replace(tzinfo=timezone.utc))
 
-        # Build equity curve
+        # Build equity curve from realized P&L
         equity = [0]
         for trade in sorted_trades:
             equity.append(equity[-1] + (trade.pnl or 0))
@@ -294,8 +298,10 @@ class AnalyticsCalculator:
                     duration = i - drawdown_start
                     max_drawdown_duration = max(max_drawdown_duration, duration)
                 drawdown_start = None
-            else:
-                drawdown = (peak - value) / peak if peak > 0 else 0
+            elif peak > 0:
+                drawdown = (peak - value) / peak
+                # Cap at 1.0 (100%) — can't lose more than everything
+                drawdown = min(drawdown, 1.0)
                 if drawdown > max_drawdown:
                     max_drawdown = drawdown
                     if drawdown_start is None:

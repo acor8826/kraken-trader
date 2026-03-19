@@ -206,15 +206,20 @@ const DailyProfitPage = {
         const heroCard = document.getElementById('today-hero');
 
         if (data.snapshot_taken) {
+            // Use live values if available (snapshot may be stale from pre-fix deploys)
+            const currentValue = data.current_value || data.end_value;
+            const pnl = data.live_pnl != null ? data.live_pnl : data.daily_pnl;
+            const pnlPct = data.live_pnl_pct != null ? data.live_pnl_pct : data.daily_pnl_pct;
+
             if (startEl) startEl.textContent = formatCurrency(data.start_value);
-            if (currentEl) currentEl.textContent = formatCurrency(data.end_value);
+            if (currentEl) currentEl.textContent = formatCurrency(currentValue);
             if (pnlEl) {
-                pnlEl.textContent = formatCurrency(data.daily_pnl);
-                pnlEl.className = `today-metric-value font-mono ${getPnLClass(data.daily_pnl)}`;
+                pnlEl.textContent = formatCurrency(pnl);
+                pnlEl.className = `today-metric-value font-mono ${getPnLClass(pnl)}`;
             }
-            if (pctEl) pctEl.textContent = `(${data.daily_pnl_pct >= 0 ? '+' : ''}${data.daily_pnl_pct.toFixed(2)}%)`;
-            if (statusEl) statusEl.textContent = `${this.statusIcon(data.status)} ${data.status} — Snapshot taken`;
-            if (heroCard) heroCard.setAttribute('data-status', data.status.toLowerCase());
+            if (pctEl) pctEl.textContent = `(${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`;
+            if (statusEl) statusEl.textContent = `${this.statusIcon(data.status)} LIVE (snapshot at 5:30 PM)`;
+            if (heroCard) heroCard.setAttribute('data-status', pnl >= 0 ? 'profit' : 'loss');
         } else {
             if (startEl) startEl.textContent = formatCurrency(data.start_value);
             if (currentEl) currentEl.textContent = formatCurrency(data.current_value);

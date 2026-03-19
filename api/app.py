@@ -1695,8 +1695,14 @@ def _register_routes(app: FastAPI):
         """Get performance summary"""
         if not orchestrator:
             raise HTTPException(status_code=503, detail="Agent not initialized")
-        
-        return await orchestrator.memory.get_performance_summary()
+
+        result = await orchestrator.memory.get_performance_summary()
+        # Normalize win_rate from percentage (60.71) to decimal (0.6071)
+        # so frontend formatPercent() displays correctly
+        for key in ("win_rate", "win_rate_7d", "win_rate_30d"):
+            if key in result and result[key] > 1:
+                result[key] = round(result[key] / 100, 4)
+        return result
     
     @app.post("/trigger")
     async def trigger_cycle():
@@ -2234,20 +2240,32 @@ def _register_routes(app: FastAPI):
 
     @app.get("/api/pnl/summary")
     async def get_pnl_summary():
-        """Get comprehensive P&L summary."""
+        """Get comprehensive P&L summary.
+
+        Uses DB-reconstructed portfolio (same source as dashboard header)
+        so values are consistent across all pages.
+        """
         if not orchestrator:
             raise HTTPException(status_code=503, detail="Agent not initialized")
 
         try:
-            portfolio = await orchestrator._get_portfolio_state()
+            cached = await _get_cached_portfolio()
             performance = await orchestrator.memory.get_performance_summary()
 
-            realized_pnl = performance.get("total_pnl", 0)
-            unrealized_pnl = sum(
-                pos.current_price * pos.amount - pos.entry_price * pos.amount
-                for pos in portfolio.positions.values()
-                if pos.entry_price and pos.entry_price > 0
-            )
+            if cached:
+                total_pnl = cached.get("total_pnl", 0)
+                # Realized from DB, unrealized = total - realized
+                db_result = await _reconstruct_positions_from_db()
+                realized_pnl = db_result.get("realized_pnl", 0)
+                unrealized_pnl = total_pnl - realized_pnl
+                portfolio_value = cached.get("total_value", 0)
+                progress = cached.get("progress_to_target", 0)
+            else:
+                realized_pnl = performance.get("total_pnl", 0)
+                unrealized_pnl = 0
+                total_pnl = realized_pnl
+                portfolio_value = settings.trading.initial_capital
+                progress = 0
 
             try:
                 from integrations.llm.claude import ClaudeLLM
@@ -2255,18 +2273,25 @@ def _register_routes(app: FastAPI):
             except Exception:
                 api_cost = 0
 
+            # Normalize win_rate from percentage (60.71) to decimal (0.6071)
+            # so frontend formatPercent() displays it correctly
+            win_rate_pct = performance.get("win_rate", 0)
+
             return {
                 "realized_pnl": round(realized_pnl, 2),
                 "unrealized_pnl": round(unrealized_pnl, 2),
-                "total_pnl": round(realized_pnl + unrealized_pnl, 2),
+                "total_pnl": round(total_pnl, 2),
                 "api_costs": {"total_usd": round(api_cost, 4)},
-                "net_profit": round(realized_pnl + unrealized_pnl - api_cost, 2),
-                "portfolio_value": round(portfolio.total_value, 2),
+                "net_profit": round(total_pnl - api_cost, 2),
+                "portfolio_value": round(portfolio_value, 2),
                 "initial_capital": settings.trading.initial_capital,
                 "target_value": settings.trading.target_capital,
-                "progress_pct": round(portfolio.progress_to_target, 2),
-                "win_rate": performance.get("win_rate", 0),
+                "progress_pct": round(progress, 2),
+                "win_rate": round(win_rate_pct / 100, 4) if win_rate_pct > 1 else round(win_rate_pct, 4),
                 "profit_factor": performance.get("profit_factor", 0),
+                "total_trades": performance.get("total_trades", 0),
+                "wins_7d": performance.get("wins_7d", 0),
+                "losses_7d": performance.get("losses_7d", 0),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
         except Exception as e:
@@ -2747,13 +2772,30 @@ def _register_routes(app: FastAPI):
                 pass
 
         if entry:
+            # Also fetch live portfolio value so the page can show current
+            # reality even when a (possibly stale) snapshot exists
+            live_value = float(entry.get("end_value", 0))
+            try:
+                cached = await _get_cached_portfolio()
+                if cached and cached.get("total_value", 0) > 0:
+                    live_value = cached["total_value"]
+            except Exception:
+                pass
+
+            start = float(entry.get("start_value", 0))
+            live_pnl = live_value - start
+            live_pnl_pct = (live_pnl / start * 100) if start > 0 else 0.0
+
             return {
                 "snapshot_taken": True,
                 "date": today.isoformat(),
-                "start_value": float(entry.get("start_value", 0)),
+                "start_value": start,
                 "end_value": float(entry.get("end_value", 0)),
+                "current_value": round(live_value, 2),
                 "daily_pnl": float(entry.get("daily_pnl", 0)),
                 "daily_pnl_pct": float(entry.get("daily_pnl_pct", 0)),
+                "live_pnl": round(live_pnl, 2),
+                "live_pnl_pct": round(live_pnl_pct, 2),
                 "status": entry.get("status", "NO_DATA"),
                 "total_trades": entry.get("total_trades", 0),
                 "improvement_action": entry.get("improvement_action"),
