@@ -87,7 +87,7 @@ class SimulationConfig:
     """Configuration for the simulation exchange"""
     # Initial state
     initial_balance: float = 1000.0
-    quote_currency: str = "AUD"
+    quote_currency: str = "USDT"
 
     # Market scenario
     scenario: MarketScenario = MarketScenario.RANGING

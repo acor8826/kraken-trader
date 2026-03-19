@@ -46,10 +46,10 @@ class PairMetrics:
 @dataclass
 class PairConfig:
     """Configuration for pair selection."""
-    quote_currency: str = "AUD"
+    quote_currency: str = "USDT"
     min_volume_aud: float = 500  # Minimum 24h volume
     max_spread_pct: float = 0.03  # Maximum 3% spread
-    always_analyze: List[str] = field(default_factory=lambda: ["BTC/AUD", "ETH/AUD"])
+    always_analyze: List[str] = field(default_factory=lambda: ["BTC/USDT", "ETH/USDT"])
     max_active_pairs: int = 10  # Max pairs to analyze per cycle
     rotation_size: int = 3  # How many pairs to rotate each cycle
     opportunity_threshold: float = 30.0  # Min score to be considered

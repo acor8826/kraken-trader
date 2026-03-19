@@ -1,5 +1,45 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-18 19:00 AEST
+
+### Performance Gate
+- **Health:** healthy, scheduler running, sentinel not paused
+- **Win rate (7d):** 47.06% (target >55%, above underperforming threshold <35%)
+- **Profit factor:** 2.3804 ✅ (target >1.5)
+- **7d PnL:** +$9.2477 ✅
+- **Lifecycle completeness:** 100% (17/17) ✅
+- **Status:** NOT UNDERPERFORMING by gate definition
+- **Risk note:** Exposure remains extreme (>1000%) with 15 open positions
+
+### Implemented Fixes
+
+- [x] **[2026-03-18]** `[memetrader]` Seed simulation exchange positions during DB reconstruction after deploy restart.
+  Addresses: Sell rejections (`"No position"`) for reconstructed meme holdings despite internal position tracking.
+  Outcome: `market_sell()` can execute against reconstructed holdings instead of failing due to empty sim exchange position map.
+  **Review due: 2026-03-25** (7 days from deployment)
+  **Deployed:** 2026-03-18 19:18 AEST — revision `kraken-trader-00238-4rq`
+  **Verified:** 2026-03-18 19:18 AEST — `/health` healthy, scheduler active
+
+- [x] **[2026-03-18]** `[sentinel]` Reset `trade_frequency` circuit breaker at midnight UTC alongside daily counters.
+  Addresses: Main bot staying blocked up to 24h after hitting daily trade cap despite daily counter reset.
+  Outcome: Daily-scoped breaker now clears with the new day, restoring expected daily trading window behavior.
+  **Review due: 2026-03-25** (7 days from deployment)
+  **Deployed:** 2026-03-18 19:18 AEST — revision `kraken-trader-00238-4rq`
+  **Verified:** 2026-03-18 19:18 AEST — deployment healthy and scheduled cycles resumed
+
+- [x] **[2026-03-18]** `[orchestrator]` Correct portfolio snapshot correction to apply DB total to `total_value` and clamp negative available quote.
+  Addresses: Portfolio display inconsistency after sim/DB divergence across deploys.
+  Outcome: Dashboard totals reflect DB-corrected value consistently.
+  **Review due: 2026-03-25** (7 days from deployment)
+  **Deployed:** 2026-03-18 19:18 AEST — revision `kraken-trader-00238-4rq`
+  **Verified:** 2026-03-18 19:18 AEST — API status healthy after deploy
+
+### Deployment / Verification
+- **Commit:** `eac78c9`
+- **Build:** Cloud Build `65f5d1a0-4ebe-4c51-b7a3-bce6b10f1698` (SUCCESS)
+- **Traffic:** 100% to `kraken-trader-00238-4rq`
+- **Smoke test:** `/health` and `/status` passed
+
 ## Improvement Cycle 2026-03-17 19:00 AEST
 
 ### Observations

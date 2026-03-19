@@ -252,13 +252,14 @@ class EnhancedOrchestrator:
 
         # Build positions
         positions = {}
+        qc = self.settings.trading.quote_currency
         for asset, amount in balance.items():
-            if asset in ["AUD", "total"] or amount <= 0:
+            if asset in [qc, "AUD", "USDT", "total"] or amount <= 0:
                 continue
 
             # Get current price
             try:
-                ticker = await self.exchange.get_ticker(f"{asset}/AUD")
+                ticker = await self.exchange.get_ticker(f"{asset}/{qc}")
                 current_price = ticker.get("price", 0)
             except:
                 current_price = 0
@@ -274,7 +275,7 @@ class EnhancedOrchestrator:
             )
 
         return Portfolio(
-            available_quote=balance.get("AUD", 0),
+            available_quote=balance.get(qc, 0),
             positions=positions,
             initial_value=self.settings.trading.initial_capital,
             target_value=self.settings.trading.target_capital

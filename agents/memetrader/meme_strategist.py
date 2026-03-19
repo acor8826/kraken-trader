@@ -27,12 +27,14 @@ class MemeStrategist(IStrategist):
     """
 
     def __init__(self, llm: Optional[ILLM] = None, config: MemeConfig = None):
+        import os
         self.llm = llm
         self.config = config or MemeConfig()
         self._positions: Dict[str, MemePosition] = {}
         self._stats = {"rule_decisions": 0, "haiku_decisions": 0, "errors": 0}
         # Track which scaled TP targets have been hit per symbol
         self._tp_targets_hit: Dict[str, set] = {}
+        self._quote_currency = "USDT" if os.getenv("EXCHANGE", "kraken").lower() == "binance" else "AUD"
 
     def update_position(self, symbol: str, position: Optional[MemePosition]):
         """Track or remove a meme position."""
@@ -206,7 +208,7 @@ class MemeStrategist(IStrategist):
             pos_str = f"LONG entry=${position.entry_price:.6f} pnl={position.unrealized_pnl_pct:.1f}%"
 
         prompt = (
-            f"{symbol}/AUD | CMS={cms:+.2f}\n"
+            f"{symbol}/{self._quote_currency} | CMS={cms:+.2f}\n"
             f"Twitter: mentions={twitter_meta.get('mention_count', 0)}, "
             f"sentiment={twitter_meta.get('sentiment_score', 0):+.2f}, "
             f"velocity={twitter_meta.get('mention_velocity', 0):.1f}/min, "

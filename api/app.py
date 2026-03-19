@@ -41,6 +41,8 @@ async def _reconstruct_positions_from_db() -> dict:
     """Reconstruct active positions from trade history in PostgreSQL.
 
     Survives container restarts / deploys where the sim exchange resets.
+    Only includes trades matching the current quote currency to avoid
+    mixing AUD and USDT positions after an exchange switch.
     Returns {
         "positions": {pair: {amount, avg_entry_price, total_cost}},
         "realized_pnl": float,  # total realized PnL from closed trades
@@ -49,6 +51,9 @@ async def _reconstruct_positions_from_db() -> dict:
     if not orchestrator or not hasattr(orchestrator.memory, '_connection'):
         return {"positions": {}, "realized_pnl": 0}
     try:
+        quote = settings.trading.quote_currency if settings else "USDT"
+        quote_suffix = f"/{quote}"
+
         async with orchestrator.memory._connection() as conn:
             rows = await conn.fetch("""
                 SELECT pair, action,
@@ -56,15 +61,17 @@ async def _reconstruct_positions_from_db() -> dict:
                        SUM(filled_size_quote) AS total_quote
                 FROM trades
                 WHERE status = 'filled'
+                  AND pair LIKE '%' || $1
                 GROUP BY pair, action
-            """)
+            """, quote_suffix)
             # Total realized PnL from sell trades (authoritative)
             realized_row = await conn.fetchval("""
                 SELECT COALESCE(SUM(realized_pnl), 0)
                 FROM trades
                 WHERE status = 'filled' AND action = 'SELL'
                   AND realized_pnl IS NOT NULL
-            """)
+                  AND pair LIKE '%' || $1
+            """, quote_suffix)
             realized_pnl = float(realized_row or 0)
 
         # Aggregate net positions per pair
@@ -96,6 +103,87 @@ async def _reconstruct_positions_from_db() -> dict:
         return {"positions": {}, "realized_pnl": 0}
 
 
+async def _sync_sim_exchange_with_db(exchange, memory, settings) -> None:
+    """Sync SimulationExchange balance and positions with DB trade history.
+
+    On every Cloud Run deploy the sim exchange resets to initial_capital with
+    zero positions.  This function reconstructs the true state from PostgreSQL
+    so the executor sees the real available balance and the sentinel sees all
+    open positions.
+    """
+    try:
+        quote = settings.trading.quote_currency
+        quote_suffix = f"/{quote}"
+        initial_capital = settings.trading.initial_capital
+
+        async with memory._connection() as conn:
+            rows = await conn.fetch("""
+                SELECT pair, action,
+                       SUM(filled_size_base)  AS total_base,
+                       SUM(filled_size_quote) AS total_quote
+                FROM trades
+                WHERE status = 'filled'
+                  AND pair LIKE '%' || $1
+                GROUP BY pair, action
+            """, quote_suffix)
+            realized_pnl = float(await conn.fetchval("""
+                SELECT COALESCE(SUM(realized_pnl), 0)
+                FROM trades
+                WHERE status = 'filled' AND action = 'SELL'
+                  AND realized_pnl IS NOT NULL
+                  AND pair LIKE '%' || $1
+            """, quote_suffix) or 0)
+
+        # Aggregate net positions per symbol
+        agg: dict = {}
+        for row in rows:
+            pair = row["pair"]
+            symbol = pair.split("/")[0]
+            if symbol not in agg:
+                agg[symbol] = {"buy_base": 0, "buy_quote": 0,
+                               "sell_base": 0, "sell_quote": 0, "pair": pair}
+            if row["action"] == "BUY":
+                agg[symbol]["buy_base"] += float(row["total_base"])
+                agg[symbol]["buy_quote"] += float(row["total_quote"])
+            else:
+                agg[symbol]["sell_base"] += float(row["total_base"])
+                agg[symbol]["sell_quote"] += float(row["total_quote"])
+
+        # Seed positions into the sim exchange
+        total_cost_of_open = 0.0
+        seeded = 0
+        for symbol, data in agg.items():
+            net = data["buy_base"] - data["sell_base"]
+            if net <= 1e-9:
+                continue
+            avg_entry = data["buy_quote"] / data["buy_base"] if data["buy_base"] > 0 else 0
+            cost = data["buy_quote"] - data["sell_quote"]
+            total_cost_of_open += cost
+
+            if hasattr(exchange, '_positions'):
+                exchange._positions[symbol] = net
+            if hasattr(exchange, '_entry_prices'):
+                exchange._entry_prices[symbol] = avg_entry
+            seeded += 1
+
+        # Compute correct cash balance
+        correct_balance = initial_capital + realized_pnl - total_cost_of_open
+        if correct_balance < 0:
+            correct_balance = 0.0
+        if hasattr(exchange, '_balance'):
+            exchange._balance[quote] = correct_balance
+
+        logger.info(
+            "[STARTUP] Synced sim exchange with DB: "
+            "balance=$%.2f, %d positions seeded, realized_pnl=$%.2f, "
+            "open_cost=$%.2f (initial=$%.0f)",
+            correct_balance, seeded, realized_pnl,
+            total_cost_of_open, initial_capital,
+        )
+    except Exception as e:
+        logger.warning("[STARTUP] Sim exchange DB sync failed: %s", e)
+
+
 async def _get_cached_portfolio() -> dict | None:
     """Return cached portfolio dict, refreshing from exchange if stale.
 
@@ -113,7 +201,7 @@ async def _get_cached_portfolio() -> dict | None:
         return _portfolio_cache  # may be None
 
     try:
-        quote = settings.trading.quote_currency if settings else "AUD"
+        quote = settings.trading.quote_currency if settings else "USDT"
         initial_capital = settings.trading.initial_capital if settings else 1000
 
         # Always reconstruct from DB — the authoritative source that
@@ -150,7 +238,7 @@ async def _get_cached_portfolio() -> dict | None:
             # total_value = initial_capital + realized_pnl + unrealized_pnl
             # This is correct regardless of how many deploy restarts happened.
             unrealized_pnl = positions_value - cost_basis
-            total_value = initial_capital + realized_pnl + unrealized_pnl
+            total_value = max(0, initial_capital + realized_pnl + unrealized_pnl)
             total_pnl = total_value - initial_capital
             # In sim mode across deploys, available cash can't be properly tracked
             # since the sim resets to $1,000 each time. Show 0 rather than confusing negatives.
@@ -405,6 +493,12 @@ async def _create_orchestrator(settings: Settings):
     else:
         memory = InMemoryStore(initial_capital=settings.trading.initial_capital)
         logger.info("Using in-memory storage (Phase 1)")
+
+    # =========================================================================
+    # Sync SimExchange with DB reality (survives Cloud Run deploys)
+    # =========================================================================
+    if settings.features.simulation_mode and hasattr(memory, '_connection'):
+        await _sync_sim_exchange_with_db(exchange, memory, settings)
 
     # =========================================================================
     # Strategist / Sentinel / Executor (Stage 1/2 only — Phase3 creates its own)
@@ -2699,6 +2793,75 @@ def _register_routes(app: FastAPI):
             "live_pnl": live_pnl,
             "live_pnl_pct": live_pnl_pct,
             "status": "LIVE",
+        }
+
+    # =========================================================================
+    # Admin endpoints
+    # =========================================================================
+
+    @app.post("/api/admin/cleanup-positions")
+    async def admin_cleanup_positions(request: Request):
+        """Force-sell stale underwater positions.
+
+        Body (optional JSON):
+            max_loss_pct: float  — sell positions worse than this (default -0.20 = -20%)
+            max_age_hours: int   — sell positions older than this (default 72)
+            dry_run: bool        — if true, list but don't sell (default true)
+        """
+        if not orchestrator:
+            raise HTTPException(503, "Orchestrator not ready")
+
+        body = {}
+        try:
+            body = await request.json()
+        except Exception:
+            pass
+
+        max_loss_pct = body.get("max_loss_pct", -0.20)
+        dry_run = body.get("dry_run", True)
+
+        quote = settings.trading.quote_currency if settings else "USDT"
+        db_result = await _reconstruct_positions_from_db()
+        db_positions = db_result.get("positions", {})
+
+        candidates = []
+        for pair, pdata in db_positions.items():
+            symbol = pair.split("/")[0]
+            try:
+                ticker = await orchestrator.exchange.get_ticker(pair)
+                current_price = ticker.get("price", 0)
+            except Exception:
+                current_price = pdata["avg_entry_price"]
+
+            pnl_pct = (current_price - pdata["avg_entry_price"]) / pdata["avg_entry_price"] if pdata["avg_entry_price"] > 0 else 0
+            if pnl_pct <= max_loss_pct:
+                candidates.append({
+                    "pair": pair,
+                    "symbol": symbol,
+                    "amount": pdata["amount"],
+                    "entry_price": pdata["avg_entry_price"],
+                    "current_price": current_price,
+                    "pnl_pct": round(pnl_pct * 100, 1),
+                    "unrealized_pnl": round((current_price - pdata["avg_entry_price"]) * pdata["amount"], 2),
+                })
+
+        sold = []
+        if not dry_run:
+            for c in candidates:
+                try:
+                    result = await orchestrator.exchange.market_sell(c["pair"], c["amount"])
+                    c["sell_result"] = result
+                    sold.append(c)
+                    logger.info("[CLEANUP] Sold %s: %.1f%% loss", c["pair"], c["pnl_pct"])
+                except Exception as e:
+                    c["sell_error"] = str(e)
+                    logger.warning("[CLEANUP] Failed to sell %s: %s", c["pair"], e)
+
+        return {
+            "dry_run": dry_run,
+            "threshold_pct": max_loss_pct * 100,
+            "candidates": candidates,
+            "sold_count": len(sold),
         }
 
     # Cache-control: prevent stale JS/CSS/HTML

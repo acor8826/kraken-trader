@@ -82,6 +82,12 @@ class MemeOrchestrator:
             return
 
         try:
+            # Only reconstruct positions matching current quote currency
+            # to avoid mixing AUD and USDT positions after exchange switch
+            import os
+            quote = "USDT" if os.getenv("EXCHANGE", "kraken").lower() == "binance" else "AUD"
+            quote_suffix = f"/{quote}"
+
             async with self.memory._pool.acquire() as conn:
                 rows = await conn.fetch("""
                     SELECT pair, action,
@@ -89,8 +95,9 @@ class MemeOrchestrator:
                            SUM(filled_size_quote) AS total_quote
                     FROM trades
                     WHERE status = 'filled'
+                      AND pair LIKE '%' || $1
                     GROUP BY pair, action
-                """)
+                """, quote_suffix)
 
             # Build net positions per symbol
             agg: Dict[str, Dict] = {}
@@ -383,6 +390,20 @@ class MemeOrchestrator:
             err = f"Failed to update trailing stops: {e}"
             logger.warning("[MEME] %s", err)
             self._last_errors.append(err)
+
+        # 10b. Fetch prices for positions NOT in polled_symbols (e.g. DB-reconstructed
+        #      positions whose symbol the listing detector no longer tracks).
+        #      Without this, sentinel silently skips them and stops never fire.
+        for symbol, pos in self._positions.items():
+            if symbol not in current_prices:
+                try:
+                    ticker = await self.exchange.get_ticker(pos.pair)
+                    price = float(ticker.get("last", 0) or ticker.get("price", 0) or 0)
+                    if price > 0:
+                        current_prices[symbol] = price
+                        pos.update_price(price)
+                except Exception:
+                    logger.debug("[MEME] Could not fetch price for unpolled position %s", symbol)
 
         # 11. Check stop-losses on ALL tracked positions (hard stop + trailing)
         try:
@@ -740,7 +761,7 @@ class MemeOrchestrator:
         """Build a Portfolio object from exchange balance."""
         try:
             balance = await self.exchange.get_balance()
-            qc = getattr(self.exchange, '_quote', 'AUD')
+            qc = getattr(self.exchange, '_quote', 'USDT')
             available = float(balance.get(qc, 0))
             portfolio = Portfolio(
                 available_quote=available,
@@ -749,13 +770,13 @@ class MemeOrchestrator:
             return portfolio
         except Exception as e:
             logger.warning("[MEME] Failed to get balance: %s", e)
-            return Portfolio(available_quote=0.0, quote_currency="AUD")
+            return Portfolio(available_quote=0.0, quote_currency="USDT")
 
     async def _update_sentinel_context(self) -> None:
         """Update sentinel with current portfolio context."""
         try:
             balance = await self.exchange.get_balance()
-            qc = getattr(self.exchange, '_quote', 'AUD')
+            qc = getattr(self.exchange, '_quote', 'USDT')
             total_quote = float(balance.get(qc, 0))
         except Exception:
             total_quote = 0.0

@@ -111,6 +111,9 @@ class SmartExecutor(IExecutor):
         # Get actual available balance
         balance = await self.exchange.get_balance()
 
+        # Pre-compute total position value for exposure cap (once per batch)
+        _position_value_cache = None
+
         for signal in plan.signals:
             if signal.action == TradeAction.HOLD:
                 continue
@@ -119,9 +122,40 @@ class SmartExecutor(IExecutor):
                 ticker = await self.exchange.get_ticker(signal.pair)
                 current_price = ticker["price"]
 
-                # Derive quote currency from pair (e.g., BTC/AUD → AUD)
-                quote_currency = signal.pair.split("/")[1] if "/" in signal.pair else "AUD"
+                # Derive quote currency from pair (e.g., BTC/USDT → USDT)
+                quote_currency = signal.pair.split("/")[1] if "/" in signal.pair else "USDT"
                 available_quote = balance.get(quote_currency, 0)
+
+                # Global exposure cap: reject BUY if total position value
+                # already exceeds 90% of initial capital.  Prevents the
+                # runaway over-buying that caused $21K exposure from $1K.
+                if signal.action == TradeAction.BUY:
+                    if _position_value_cache is None:
+                        _position_value_cache = 0.0
+                        for asset, amount in balance.items():
+                            if asset in [quote_currency, "total"] or amount <= 0:
+                                continue
+                            try:
+                                t = await self.exchange.get_ticker(f"{asset}/{quote_currency}")
+                                _position_value_cache += amount * t.get("price", 0)
+                            except Exception:
+                                pass
+                    initial_capital = available_quote + _position_value_cache
+                    if initial_capital > 0 and _position_value_cache / initial_capital > 0.90:
+                        logger.warning(
+                            "[EXEC] Rejecting BUY %s: exposure $%.0f / $%.0f = %.0f%% > 90%%",
+                            signal.pair, _position_value_cache, initial_capital,
+                            (_position_value_cache / initial_capital) * 100,
+                        )
+                        trades.append(Trade(
+                            pair=signal.pair,
+                            action=signal.action,
+                            status=TradeStatus.FAILED,
+                            error_message="Exposure cap exceeded (>90%)",
+                            signal_confidence=signal.confidence,
+                            reasoning=signal.reasoning,
+                        ))
+                        continue
 
                 # Calculate real order value from available balance
                 order_value = signal.size_pct * available_quote

@@ -666,7 +666,7 @@ class Phase3Orchestrator:
             positions[asset] = pos
 
         return Portfolio(
-            available_quote=balance.get(qc, 0),
+            available_quote=max(0, balance.get(qc, 0)),
             positions=positions,
             initial_value=self.settings.trading.initial_capital,
             target_value=self.settings.trading.target_capital
@@ -697,13 +697,15 @@ class Phase3Orchestrator:
                 await self.memory.save_portfolio(portfolio)
                 return
 
+            quote_suffix = f"/{self.settings.trading.quote_currency}"
             async with self.memory._connection() as conn:
                 realized_pnl = await conn.fetchval("""
                     SELECT COALESCE(SUM(realized_pnl), 0)
                     FROM trades
                     WHERE status = 'filled' AND action = 'SELL'
                       AND realized_pnl IS NOT NULL
-                """)
+                      AND pair LIKE '%' || $1
+                """, quote_suffix)
 
             realized_pnl = float(realized_pnl or 0)
             initial_capital = self.settings.trading.initial_capital

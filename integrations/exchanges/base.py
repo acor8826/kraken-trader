@@ -23,7 +23,7 @@ class MockExchange(IExchange):
     Simulates market conditions and order execution.
     """
     
-    def __init__(self, initial_balance: float = 1000.0, quote_currency: str = "AUD"):
+    def __init__(self, initial_balance: float = 1000.0, quote_currency: str = "USDT"):
         self._balance = {quote_currency: initial_balance}
         self._quote = quote_currency
         self._positions: Dict[str, float] = {}

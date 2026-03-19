@@ -220,9 +220,10 @@ export function getQuoteCurrency(pair) {
 }
 
 /**
- * Split portfolio positions into main holdings vs meme coins.
+ * Split portfolio positions into main holdings vs meme coins P&L.
  * Main pairs: BTC, ETH, SOL, DOT. Everything else is meme.
- * @param {object} positions - {symbol: {amount, current_price, ...}}
+ * Returns unrealized P&L for each group (not market value).
+ * @param {object} positions - {symbol: {amount, current_price, entry_price, unrealized_pnl, ...}}
  * @returns {{holdingsValue: number, memeValue: number}}
  */
 export function splitPositionValues(positions) {
@@ -231,11 +232,14 @@ export function splitPositionValues(positions) {
     let memeValue = 0;
     if (positions && typeof positions === 'object') {
         for (const [symbol, pos] of Object.entries(positions)) {
-            const value = (pos.amount || 0) * (pos.current_price || 0);
+            // Use unrealized_pnl if available, otherwise compute from prices
+            const pnl = pos.unrealized_pnl != null
+                ? pos.unrealized_pnl
+                : ((pos.current_price || 0) - (pos.entry_price || 0)) * (pos.amount || 0);
             if (MAIN_SYMBOLS.has(symbol)) {
-                holdingsValue += value;
+                holdingsValue += pnl;
             } else {
-                memeValue += value;
+                memeValue += pnl;
             }
         }
     }
