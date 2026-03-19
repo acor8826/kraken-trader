@@ -417,3 +417,10 @@ Additionally, the trailing stop had no "ratchet" mechanism — `peak_price` was 
 3. Investigate trade recording gaps (23/25 unknown outcome)
 4. Consider manual sentinel resume via API to unblock the current deployment
 5. Evaluate pair rotation — AVAX and DOT consistently underperforming
+
+- [x] **[2026-03-19]** `[orchestrator]` Filtered Phase3 portfolio scope to main configured pairs only.
+  Addresses: meme SELL failures caused by shared SimulationExchange position drain (`No position` on meme exits).
+  Outcome: main stop-loss/HWM logic no longer touches meme-managed symbols.
+  **Review due: 2026-03-26**
+  **Deployed:** pending (time-boxed cycle ended before build/deploy completion)
+  **Verified:** 2026-03-19 19:00 AEST � root cause confirmed in Cloud Run logs; fix committed (`7667946`); tests 50 passed / 1 unrelated pre-existing failure.
