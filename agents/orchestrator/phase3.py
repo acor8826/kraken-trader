@@ -632,13 +632,26 @@ class Phase3Orchestrator:
             })
 
     async def _get_portfolio_state(self) -> Portfolio:
-        """Fetch and construct current portfolio state."""
+        """Fetch and construct current portfolio state.
+
+        Only includes positions for symbols in the configured main trading
+        pairs.  Meme-coin positions (managed by the MemeOrchestrator) share
+        the same SimulationExchange instance but must NOT be touched by the
+        Phase3 stop-loss / exit-management logic — otherwise the main bot
+        drains sim balances that the meme bot needs for its own sells.
+        """
         balance = await self.exchange.get_balance()
         qc = self.settings.trading.quote_currency
+
+        # Symbols the main orchestrator is responsible for
+        main_symbols = {p.split("/")[0] for p in self.settings.trading.pairs}
 
         positions = {}
         for asset, amount in balance.items():
             if asset in [qc, "total"] or amount <= 0:
+                continue
+            # Skip symbols not in main trading pairs (e.g. meme coins)
+            if asset not in main_symbols:
                 continue
 
             try:
