@@ -187,8 +187,8 @@ async def _sync_sim_exchange_with_db(exchange, memory, settings) -> None:
 async def _get_cached_portfolio() -> dict | None:
     """Return cached portfolio dict, refreshing from exchange if stale.
 
-    Always uses DB trade history as the authoritative source for portfolio
-    values, since the simulation exchange resets on every Cloud Run deploy.
+    In live/testnet mode: queries the real exchange for balances.
+    In simulation mode: reconstructs from DB trade history.
     Returns None when orchestrator is not initialised and no cache exists.
     """
     global _portfolio_cache, _portfolio_cache_ts
@@ -203,67 +203,19 @@ async def _get_cached_portfolio() -> dict | None:
     try:
         quote = settings.trading.quote_currency if settings else "USDT"
         initial_capital = settings.trading.initial_capital if settings else 1000
+        is_sim = settings.features.simulation_mode if settings else True
 
-        # Always reconstruct from DB — the authoritative source that
-        # survives Cloud Run deploys (sim exchange resets to $1,000).
-        db_result = await _reconstruct_positions_from_db()
-        db_positions = db_result.get("positions", {})
-        realized_pnl = db_result.get("realized_pnl", 0)
-
-        if db_positions:
-            positions_value = 0
-            cost_basis = 0
-            pos_dict = {}
-            for pair, pdata in db_positions.items():
-                symbol = pair.split("/")[0]
-                try:
-                    ticker = await orchestrator.exchange.get_ticker(pair)
-                    current_price = ticker.get("price", pdata["avg_entry_price"])
-                except Exception:
-                    current_price = pdata["avg_entry_price"]
-                value = pdata["amount"] * current_price
-                entry_cost = pdata["amount"] * pdata["avg_entry_price"]
-                positions_value += value
-                cost_basis += entry_cost
-                unrealized_pnl_pos = value - entry_cost
-                pnl_pct = (unrealized_pnl_pos / entry_cost * 100) if entry_cost > 0 else 0
-                pos_dict[symbol] = {
-                    "amount": pdata["amount"],
-                    "entry_price": pdata["avg_entry_price"],
-                    "current_price": current_price,
-                    "unrealized_pnl": round(unrealized_pnl_pos, 2),
-                    "unrealized_pnl_pct": round(pnl_pct, 2),
-                }
-
-            # total_value = initial_capital + realized_pnl + unrealized_pnl
-            # This is correct regardless of how many deploy restarts happened.
-            unrealized_pnl = positions_value - cost_basis
-            total_value = max(0, initial_capital + realized_pnl + unrealized_pnl)
-            total_pnl = total_value - initial_capital
-            # In sim mode across deploys, available cash can't be properly tracked
-            # since the sim resets to $1,000 each time. Show 0 rather than confusing negatives.
-            available = max(0, total_value - positions_value)
-
-            result = {
-                "quote_currency": quote,
-                "positions": pos_dict,
-                "positions_value": round(positions_value, 2),
-                "available_quote": round(available, 2),
-                "total_value": round(total_value, 2),
-                "total_pnl": round(total_pnl, 2),
-                "total_pnl_pct": round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0,
-                "exposure_pct": round((positions_value / total_value) * 100, 2) if total_value > 0 else 0,
-                "progress_to_target": round(
-                    (total_value - initial_capital) / (settings.trading.target_capital - initial_capital) * 100, 2
-                ) if settings else 0,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            }
+        if not is_sim:
+            # --- Live / Testnet: query real exchange balances ---
+            result = await _get_exchange_portfolio(quote, initial_capital)
         else:
-            # No DB data — fall back to exchange state
+            # --- Simulation: reconstruct from DB trade history ---
+            result = await _get_db_reconstructed_portfolio(quote, initial_capital)
+
+        if result is None:
             portfolio = await orchestrator._get_portfolio_state()
             result = portfolio.to_dict()
 
-        # Ensure quote_currency is correct
         if settings and result.get("quote_currency") != settings.trading.quote_currency:
             result["quote_currency"] = settings.trading.quote_currency
 
@@ -273,6 +225,111 @@ async def _get_cached_portfolio() -> dict | None:
     except Exception as e:
         logger.warning("Portfolio fetch failed, returning stale cache: %s", e)
         return _portfolio_cache  # may be None
+
+
+async def _get_exchange_portfolio(quote: str, initial_capital: float) -> dict | None:
+    """Build portfolio from real exchange balances (live or testnet)."""
+    try:
+        balance = await orchestrator.exchange.get_balance()
+        available_quote = balance.get(quote, 0)
+
+        positions_value = 0
+        pos_dict = {}
+        for asset, amount in balance.items():
+            if asset in (quote, "total") or amount <= 0:
+                continue
+            pair = f"{asset}/{quote}"
+            try:
+                ticker = await orchestrator.exchange.get_ticker(pair)
+                current_price = ticker.get("price", 0)
+            except Exception:
+                continue
+            if current_price <= 0:
+                continue
+            value = amount * current_price
+            positions_value += value
+            pos_dict[asset] = {
+                "amount": amount,
+                "entry_price": current_price,  # testnet doesn't track entry
+                "current_price": current_price,
+                "unrealized_pnl": 0,
+                "unrealized_pnl_pct": 0,
+            }
+
+        total_value = available_quote + positions_value
+        total_pnl = total_value - initial_capital
+
+        return {
+            "quote_currency": quote,
+            "positions": pos_dict,
+            "positions_value": round(positions_value, 2),
+            "available_quote": round(available_quote, 2),
+            "total_value": round(total_value, 2),
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0,
+            "exposure_pct": round((positions_value / total_value) * 100, 2) if total_value > 0 else 0,
+            "progress_to_target": round(
+                (total_value - initial_capital) / (settings.trading.target_capital - initial_capital) * 100, 2
+            ) if settings else 0,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    except Exception as e:
+        logger.warning("Exchange portfolio fetch failed: %s", e)
+        return None
+
+
+async def _get_db_reconstructed_portfolio(quote: str, initial_capital: float) -> dict | None:
+    """Build portfolio from DB trade history (for simulation mode)."""
+    db_result = await _reconstruct_positions_from_db()
+    db_positions = db_result.get("positions", {})
+    realized_pnl = db_result.get("realized_pnl", 0)
+
+    if not db_positions:
+        return None
+
+    positions_value = 0
+    cost_basis = 0
+    pos_dict = {}
+    for pair, pdata in db_positions.items():
+        symbol = pair.split("/")[0]
+        try:
+            ticker = await orchestrator.exchange.get_ticker(pair)
+            current_price = ticker.get("price", pdata["avg_entry_price"])
+        except Exception:
+            current_price = pdata["avg_entry_price"]
+        value = pdata["amount"] * current_price
+        entry_cost = pdata["amount"] * pdata["avg_entry_price"]
+        positions_value += value
+        cost_basis += entry_cost
+        unrealized_pnl_pos = value - entry_cost
+        pnl_pct = (unrealized_pnl_pos / entry_cost * 100) if entry_cost > 0 else 0
+        pos_dict[symbol] = {
+            "amount": pdata["amount"],
+            "entry_price": pdata["avg_entry_price"],
+            "current_price": current_price,
+            "unrealized_pnl": round(unrealized_pnl_pos, 2),
+            "unrealized_pnl_pct": round(pnl_pct, 2),
+        }
+
+    unrealized_pnl = positions_value - cost_basis
+    total_value = max(0, initial_capital + realized_pnl + unrealized_pnl)
+    total_pnl = total_value - initial_capital
+    available = max(0, total_value - positions_value)
+
+    return {
+        "quote_currency": quote,
+        "positions": pos_dict,
+        "positions_value": round(positions_value, 2),
+        "available_quote": round(available, 2),
+        "total_value": round(total_value, 2),
+        "total_pnl": round(total_pnl, 2),
+        "total_pnl_pct": round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0,
+        "exposure_pct": round((positions_value / total_value) * 100, 2) if total_value > 0 else 0,
+        "progress_to_target": round(
+            (total_value - initial_capital) / (settings.trading.target_capital - initial_capital) * 100, 2
+        ) if settings else 0,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 def create_app(stage: Stage = None) -> FastAPI:
