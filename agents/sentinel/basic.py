@@ -418,7 +418,7 @@ class BasicSentinel(ISentinel):
     
     async def emergency_stop(self) -> None:
         """Trigger emergency stop - pause all trading"""
-        logger.critical("🚨 EMERGENCY STOP TRIGGERED")
+        logger.critical("[EMERGENCY] STOP TRIGGERED")
         self._paused = True
     
     def pause(self) -> None:

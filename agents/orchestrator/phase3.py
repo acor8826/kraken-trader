@@ -261,7 +261,7 @@ class Phase3Orchestrator:
 
             # Check target
             if portfolio.total_value >= portfolio.target_value:
-                logger.info("🎯 TARGET REACHED!")
+                logger.info("[TARGET] TARGET REACHED!")
                 await self._publish_event(EventType.TARGET_REACHED, {
                     "value": portfolio.total_value,
                     "target": portfolio.target_value

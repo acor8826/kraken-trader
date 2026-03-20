@@ -292,4 +292,4 @@ class CircuitBreakers:
         for breaker in self._breakers.values():
             breaker.triggered = False
 
-        logger.warning("⚠️  ALL circuit breakers manually reset!")
+        logger.warning("[CIRCUIT] ALL circuit breakers manually reset!")
