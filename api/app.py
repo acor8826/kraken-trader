@@ -2908,11 +2908,12 @@ def _register_routes(app: FastAPI):
 
     @app.post("/api/admin/liquidate-all")
     async def admin_liquidate_all():
-        """Liquidate ALL open positions — market sell everything."""
+        """Liquidate ALL open positions — market sell everything and record to DB."""
         if not orchestrator:
             raise HTTPException(503, "Orchestrator not ready")
 
-        quote = settings.trading.quote_currency if settings else "USDT"
+        from core.models.trading import Trade, TradeAction, TradeStatus, OrderType
+
         db_result = await _reconstruct_positions_from_db()
         db_positions = db_result.get("positions", {})
 
@@ -2927,17 +2928,38 @@ def _register_routes(app: FastAPI):
             try:
                 ticker = await orchestrator.exchange.get_ticker(pair)
                 price = ticker.get("price", 0)
-                result = await orchestrator.exchange.market_sell(pair, amount)
+                await orchestrator.exchange.market_sell(pair, amount)
                 proceeds = price * amount
                 total_proceeds += proceeds
+                entry_price = pdata.get("avg_entry_price", 0)
+                realized_pnl = (price - entry_price) * amount
+
+                # Record sell trade in DB so portfolio reconstruction sees it
+                trade = Trade(
+                    pair=pair,
+                    action=TradeAction.SELL,
+                    order_type=OrderType.MARKET,
+                    requested_size_base=amount,
+                    filled_size_base=amount,
+                    filled_size_quote=proceeds,
+                    average_price=price,
+                    status=TradeStatus.FILLED,
+                    entry_price=entry_price,
+                    exit_price=price,
+                    realized_pnl=realized_pnl,
+                    reasoning="admin liquidate-all",
+                )
+                await orchestrator.memory.record_trade(trade, intel=None)
+
                 sold.append({
                     "pair": pair,
                     "amount": round(amount, 8),
                     "price": round(price, 6),
                     "proceeds": round(proceeds, 2),
+                    "pnl": round(realized_pnl, 2),
                 })
-                logger.info("[LIQUIDATE] Sold %s: %.8f @ %.6f = $%.2f",
-                            pair, amount, price, proceeds)
+                logger.info("[LIQUIDATE] Sold %s: %.8f @ %.6f = $%.2f (PnL $%.2f)",
+                            pair, amount, price, proceeds, realized_pnl)
             except Exception as e:
                 failed.append({"pair": pair, "amount": amount, "error": str(e)})
                 logger.warning("[LIQUIDATE] Failed to sell %s: %s", pair, e)
