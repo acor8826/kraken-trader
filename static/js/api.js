@@ -433,6 +433,10 @@ class ApiClient {
         });
     }
 
+    async liquidateAll() {
+        return this.request('/api/admin/liquidate-all', { method: 'POST' });
+    }
+
     // ========================================
     // Daily Profit Endpoints
     // ========================================

@@ -2906,6 +2906,51 @@ def _register_routes(app: FastAPI):
             "sold_count": len(sold),
         }
 
+    @app.post("/api/admin/liquidate-all")
+    async def admin_liquidate_all():
+        """Liquidate ALL open positions — market sell everything."""
+        if not orchestrator:
+            raise HTTPException(503, "Orchestrator not ready")
+
+        quote = settings.trading.quote_currency if settings else "USDT"
+        db_result = await _reconstruct_positions_from_db()
+        db_positions = db_result.get("positions", {})
+
+        sold = []
+        failed = []
+        total_proceeds = 0.0
+
+        for pair, pdata in db_positions.items():
+            amount = pdata.get("amount", 0)
+            if amount <= 0:
+                continue
+            try:
+                ticker = await orchestrator.exchange.get_ticker(pair)
+                price = ticker.get("price", 0)
+                result = await orchestrator.exchange.market_sell(pair, amount)
+                proceeds = price * amount
+                total_proceeds += proceeds
+                sold.append({
+                    "pair": pair,
+                    "amount": round(amount, 8),
+                    "price": round(price, 6),
+                    "proceeds": round(proceeds, 2),
+                })
+                logger.info("[LIQUIDATE] Sold %s: %.8f @ %.6f = $%.2f",
+                            pair, amount, price, proceeds)
+            except Exception as e:
+                failed.append({"pair": pair, "amount": amount, "error": str(e)})
+                logger.warning("[LIQUIDATE] Failed to sell %s: %s", pair, e)
+
+        return {
+            "status": "ok",
+            "sold": sold,
+            "sold_count": len(sold),
+            "failed": failed,
+            "failed_count": len(failed),
+            "total_proceeds": round(total_proceeds, 2),
+        }
+
     # Cache-control: prevent stale JS/CSS/HTML
     @app.middleware("http")
     async def add_cache_headers(request: Request, call_next):

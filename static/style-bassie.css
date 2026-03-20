@@ -6197,6 +6197,16 @@ html {
     box-shadow: 0 0 16px rgba(0, 212, 255, 0.4);
 }
 
+.action-btn.danger {
+    background: rgba(255, 50, 50, 0.15);
+    border-color: rgba(255, 50, 50, 0.4);
+    color: #ff5555;
+}
+.action-btn.danger:hover {
+    background: rgba(255, 50, 50, 0.25);
+    box-shadow: 0 0 16px rgba(255, 50, 50, 0.4);
+}
+
 .action-btn.triggering {
     animation: trigger-pulse 1s ease-in-out infinite;
     pointer-events: none;

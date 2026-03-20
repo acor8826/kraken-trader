@@ -407,6 +407,47 @@ function initHeaderActions() {
         });
     }
 
+    // --- Liquidate All ---
+    const liquidateBtn = document.getElementById('liquidate-btn');
+    if (liquidateBtn) {
+        liquidateBtn.addEventListener('click', async () => {
+            if (!confirm('LIQUIDATE ALL POSITIONS?\n\nThis will market-sell every open position. This cannot be undone.')) {
+                return;
+            }
+            liquidateBtn.disabled = true;
+            showToast('Liquidating all positions...', 'info', 3000);
+            try {
+                const result = await api.liquidateAll();
+                const msg = `Sold ${result.sold_count || 0} positions ($${result.total_proceeds || 0})` +
+                    (result.failed_count ? ` | ${result.failed_count} failed` : '');
+                showToast(msg, result.failed_count ? 'warning' : 'success', 5000);
+                loadInitialData();
+            } catch (e) {
+                showToast(`Liquidation failed: ${e.message}`, 'error', 5000);
+            }
+            liquidateBtn.disabled = false;
+        });
+    }
+
+    // --- Improvement Cycle ---
+    const improveBtn = document.getElementById('improve-btn');
+    if (improveBtn) {
+        improveBtn.addEventListener('click', async () => {
+            improveBtn.disabled = true;
+            showToast('Running improvement cycle...', 'info', 3000);
+            try {
+                const result = await api.triggerSeedImproverRun('manual');
+                const msg = result.patches_applied
+                    ? `Improvement complete: ${result.patches_applied} patches applied`
+                    : result.message || 'Improvement cycle complete';
+                showToast(msg, 'success', 5000);
+            } catch (e) {
+                showToast(`Improvement cycle failed: ${e.message}`, 'error', 5000);
+            }
+            improveBtn.disabled = false;
+        });
+    }
+
     // --- Refresh ---
     const refreshBtn = document.getElementById('refresh-btn');
     if (refreshBtn) {
