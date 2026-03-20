@@ -52,13 +52,18 @@ class BinanceExchange(IExchange):
         api_secret: Optional[str] = None,
         testnet: Optional[bool] = None,
     ):
-        self.api_key: str = api_key or os.getenv("BINANCE_API_KEY", "")
-        self.api_secret: str = api_secret or os.getenv("BINANCE_API_SECRET", "")
-
         if testnet is None:
             testnet = os.getenv("BINANCE_TESTNET", "").lower() in ("1", "true", "yes")
         self._testnet: bool = testnet
         self.base_url: str = self.TESTNET_URL if self._testnet else self.BASE_URL
+
+        # Use testnet-specific keys when in testnet mode
+        if self._testnet:
+            self.api_key: str = api_key or os.getenv("BINANCE_TESTNET_KEY", "") or os.getenv("BINANCE_API_KEY", "")
+            self.api_secret: str = api_secret or os.getenv("BINANCE_TESTNET_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")
+        else:
+            self.api_key: str = api_key or os.getenv("BINANCE_API_KEY", "")
+            self.api_secret: str = api_secret or os.getenv("BINANCE_API_SECRET", "")
 
         if not self.api_key or not self.api_secret:
             logger.warning("Binance API credentials not configured")
