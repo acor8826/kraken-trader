@@ -233,11 +233,17 @@ async def _get_exchange_portfolio(quote: str, initial_capital: float) -> dict | 
         balance = await orchestrator.exchange.get_balance()
         available_quote = balance.get(quote, 0)
 
+        # Only price significant assets to avoid rate-limit abuse on testnet
+        assets = [
+            (asset, amount)
+            for asset, amount in balance.items()
+            if asset not in (quote, "total") and amount > 0
+        ]
+        assets.sort(key=lambda x: x[1], reverse=True)
+
         positions_value = 0
         pos_dict = {}
-        for asset, amount in balance.items():
-            if asset in (quote, "total") or amount <= 0:
-                continue
+        for asset, amount in assets[:20]:  # top 20 by balance size
             pair = f"{asset}/{quote}"
             try:
                 ticker = await orchestrator.exchange.get_ticker(pair)
@@ -250,7 +256,7 @@ async def _get_exchange_portfolio(quote: str, initial_capital: float) -> dict | 
             positions_value += value
             pos_dict[asset] = {
                 "amount": amount,
-                "entry_price": current_price,  # testnet doesn't track entry
+                "entry_price": current_price,
                 "current_price": current_price,
                 "unrealized_pnl": 0,
                 "unrealized_pnl_pct": 0,
