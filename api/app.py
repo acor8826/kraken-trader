@@ -497,7 +497,6 @@ async def _create_orchestrator(settings: Settings):
         # Try enhanced simulation first
         try:
             from integrations.exchanges.simulation import SimulationExchange, SimulationConfig, MarketScenario
-            import os
 
             # Get scenario from environment or default to volatile
             scenario_name = os.getenv("SIMULATION_SCENARIO", "volatile")
