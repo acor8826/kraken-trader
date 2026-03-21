@@ -236,48 +236,53 @@ async def _get_cached_portfolio() -> dict | None:
 
 
 async def _get_exchange_portfolio(quote: str, initial_capital: float) -> dict | None:
-    """Build portfolio from real exchange balances (live or testnet)."""
-    try:
-        balance = await orchestrator.exchange.get_balance()
-        available_quote = balance.get(quote, 0)
+    """Build portfolio from DB trade history + live exchange prices.
 
-        # Only price significant assets to avoid rate-limit abuse on testnet
-        assets = [
-            (asset, amount)
-            for asset, amount in balance.items()
-            if asset not in (quote, "total") and amount > 0
-        ]
-        assets.sort(key=lambda x: x[1], reverse=True)
+    Uses DB-reconstructed positions (entry prices, cost basis) so the portfolio
+    is consistent across deploys and testnet balance resets.  Live exchange
+    prices are fetched only for current_price valuation.
+    """
+    try:
+        db_result = await _reconstruct_positions_from_db()
+        db_positions = db_result.get("positions", {})
+        realized_pnl = db_result.get("realized_pnl", 0)
 
         positions_value = 0
+        cost_basis = 0
         pos_dict = {}
-        for asset, amount in assets[:20]:  # top 20 by balance size
-            pair = f"{asset}/{quote}"
+        for pair, pdata in db_positions.items():
+            symbol = pair.split("/")[0]
             try:
                 ticker = await orchestrator.exchange.get_ticker(pair)
-                current_price = ticker.get("price", 0)
+                current_price = ticker.get("price", pdata["avg_entry_price"])
             except Exception:
-                continue
+                current_price = pdata["avg_entry_price"]
             if current_price <= 0:
                 continue
-            value = amount * current_price
+            value = pdata["amount"] * current_price
+            entry_cost = pdata["amount"] * pdata["avg_entry_price"]
             positions_value += value
-            pos_dict[asset] = {
-                "amount": amount,
-                "entry_price": current_price,
+            cost_basis += entry_cost
+            unrealized_pnl_pos = value - entry_cost
+            pnl_pct = (unrealized_pnl_pos / entry_cost * 100) if entry_cost > 0 else 0
+            pos_dict[symbol] = {
+                "amount": pdata["amount"],
+                "entry_price": pdata["avg_entry_price"],
                 "current_price": current_price,
-                "unrealized_pnl": 0,
-                "unrealized_pnl_pct": 0,
+                "unrealized_pnl": round(unrealized_pnl_pos, 2),
+                "unrealized_pnl_pct": round(pnl_pct, 2),
             }
 
-        total_value = available_quote + positions_value
+        unrealized_pnl = positions_value - cost_basis
+        total_value = max(0, initial_capital + realized_pnl + unrealized_pnl)
         total_pnl = total_value - initial_capital
+        available = max(0, total_value - positions_value)
 
         return {
             "quote_currency": quote,
             "positions": pos_dict,
             "positions_value": round(positions_value, 2),
-            "available_quote": round(available_quote, 2),
+            "available_quote": round(available, 2),
             "total_value": round(total_value, 2),
             "total_pnl": round(total_pnl, 2),
             "total_pnl_pct": round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0,
