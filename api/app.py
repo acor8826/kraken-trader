@@ -236,16 +236,19 @@ async def _get_cached_portfolio() -> dict | None:
 
 
 async def _get_exchange_portfolio(quote: str, initial_capital: float) -> dict | None:
-    """Build portfolio from DB trade history + live exchange prices.
+    """Build portfolio from exchange cash + DB positions with live prices.
 
-    Uses DB-reconstructed positions (entry prices, cost basis) so the portfolio
-    is consistent across deploys and testnet balance resets.  Live exchange
-    prices are fetched only for current_price valuation.
+    Hybrid approach: exchange provides the actual available cash balance,
+    DB provides position entry prices and cost basis for accurate P&L.
     """
     try:
+        # Get actual cash balance from exchange
+        balance = await orchestrator.exchange.get_balance()
+        available_quote = balance.get(quote, 0)
+
+        # Get DB-reconstructed positions for accurate entry prices
         db_result = await _reconstruct_positions_from_db()
         db_positions = db_result.get("positions", {})
-        realized_pnl = db_result.get("realized_pnl", 0)
 
         positions_value = 0
         cost_basis = 0
@@ -273,16 +276,14 @@ async def _get_exchange_portfolio(quote: str, initial_capital: float) -> dict | 
                 "unrealized_pnl_pct": round(pnl_pct, 2),
             }
 
-        unrealized_pnl = positions_value - cost_basis
-        total_value = max(0, initial_capital + realized_pnl + unrealized_pnl)
+        total_value = available_quote + positions_value
         total_pnl = total_value - initial_capital
-        available = max(0, total_value - positions_value)
 
         return {
             "quote_currency": quote,
             "positions": pos_dict,
             "positions_value": round(positions_value, 2),
-            "available_quote": round(available, 2),
+            "available_quote": round(available_quote, 2),
             "total_value": round(total_value, 2),
             "total_pnl": round(total_pnl, 2),
             "total_pnl_pct": round((total_pnl / initial_capital) * 100, 2) if initial_capital else 0,
