@@ -15,7 +15,10 @@ import os
 from typing import Dict, List, Optional
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
 import asyncpg
+
+_SYDNEY_TZ = ZoneInfo("Australia/Sydney")
 
 from core.interfaces import IMemory
 from core.models.portfolio import Portfolio, Position
@@ -359,13 +362,14 @@ class PostgresStore(IMemory):
     async def get_daily_pnl(self) -> float:
         """Calculate P&L for current day"""
         try:
+            today = datetime.now(_SYDNEY_TZ).date()
             async with self._connection() as conn:
                 result = await conn.fetchval("""
                     SELECT COALESCE(SUM(realized_pnl), 0) as daily_pnl
                     FROM trades
-                    WHERE DATE(created_at) = CURRENT_DATE
+                    WHERE DATE(created_at AT TIME ZONE 'Australia/Sydney') = $1
                     AND realized_pnl IS NOT NULL
-                """)
+                """, today)
 
                 return float(result) if result else 0.0
 
@@ -376,12 +380,13 @@ class PostgresStore(IMemory):
     async def get_trade_count_today(self) -> int:
         """Get number of trades executed today"""
         try:
+            today = datetime.now(_SYDNEY_TZ).date()
             async with self._connection() as conn:
                 count = await conn.fetchval("""
                     SELECT COUNT(*)
                     FROM trades
-                    WHERE DATE(created_at) = CURRENT_DATE
-                """)
+                    WHERE DATE(created_at AT TIME ZONE 'Australia/Sydney') = $1
+                """, today)
 
                 return int(count) if count else 0
 
@@ -621,13 +626,14 @@ class PostgresStore(IMemory):
     async def get_daily_fees_today(self) -> float:
         """Get total fees paid today."""
         try:
+            today = datetime.now(_SYDNEY_TZ).date()
             async with self._connection() as conn:
                 val = await conn.fetchval("""
                     SELECT COALESCE(SUM(fees_quote), 0)
                     FROM trades
-                    WHERE DATE(created_at) = CURRENT_DATE
+                    WHERE DATE(created_at AT TIME ZONE 'Australia/Sydney') = $1
                     AND fees_quote IS NOT NULL
-                """)
+                """, today)
                 return float(val) if val else 0.0
         except Exception as e:
             logger.error("Failed to get daily fees: %s", e)

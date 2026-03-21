@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -392,13 +393,15 @@ class AutoresearchService:
             return []
         try:
             async with self.store._connection() as conn:
+                _syd_today = datetime.now(ZoneInfo("Australia/Sydney")).date()
                 rows = await conn.fetch(
                     """
                     SELECT * FROM autoresearch_experiments
-                    WHERE status = 'COMMITTED' AND date < CURRENT_DATE
+                    WHERE status = 'COMMITTED' AND date < $1
                     ORDER BY created_at ASC
                     LIMIT 10
-                    """
+                    """,
+                    _syd_today,
                 )
                 return [Experiment.from_row(r) for r in rows]
         except Exception as e:
@@ -411,11 +414,13 @@ class AutoresearchService:
             return 0
         try:
             async with self.store._connection() as conn:
+                _syd_today = datetime.now(ZoneInfo("Australia/Sydney")).date()
                 count = await conn.fetchval(
                     """
                     SELECT COUNT(*) FROM autoresearch_experiments
-                    WHERE date = CURRENT_DATE
-                    """
+                    WHERE date = $1
+                    """,
+                    _syd_today,
                 )
                 return int(count) if count else 0
         except Exception as e:

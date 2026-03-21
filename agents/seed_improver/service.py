@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -327,10 +328,11 @@ class SeedImproverService:
                     stats["worst_trade"] = float(row["worst_trade"])
 
                 # Daily PnL
+                _sydney_today = datetime.now(ZoneInfo("Australia/Sydney")).date()
                 daily = await conn.fetchval("""
                     SELECT COALESCE(SUM(realized_pnl), 0)
-                    FROM trades WHERE created_at::date = CURRENT_DATE
-                """)
+                    FROM trades WHERE DATE(created_at AT TIME ZONE 'Australia/Sydney') = $1
+                """, _sydney_today)
                 stats["daily_pnl"] = float(daily) if daily else 0.0
         except Exception as e:
             logger.warning("Failed to gather stats: %s", e)

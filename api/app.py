@@ -19,8 +19,16 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pathlib import Path
 
 from core.config import Settings, init_settings, Stage
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
+
+_SYDNEY_TZ = ZoneInfo("Australia/Sydney")
+
+
+def _sydney_today():
+    """Return today's date in Sydney timezone (avoids UTC date mismatch on Cloud Run)."""
+    return datetime.now(_SYDNEY_TZ).date()
 
 # Global components (initialized on startup)
 orchestrator = None
@@ -918,7 +926,9 @@ async def _create_orchestrator(settings: Settings):
                 set_dgm_service(dgm_service, db_pool)
                 logger.info("DGM (Darwinian Godel Machine) initialized")
             except Exception as e:
+                import traceback
                 logger.warning(f"Failed to initialize DGM: {e}")
+                traceback.print_exc()
         elif dgm_config.get("enabled"):
             logger.warning("DGM enabled but no DB pool available, skipping")
 
@@ -1014,7 +1024,7 @@ async def _run_daily_profit_snapshot() -> dict:
     logger.info("[PROFIT_SNAPSHOT] 5:30 PM snapshot starting")
     _os.makedirs(_PROFIT_TRACKER_DIR, exist_ok=True)
 
-    today = _date.today()
+    today = _sydney_today()
     today_iso = today.isoformat()
     now_ts = _dt.now(_tz.utc).isoformat()
     portfolio_value = 0.0
@@ -1058,8 +1068,9 @@ async def _run_daily_profit_snapshot() -> dict:
                 # Count all trades today
                 trade_count = await conn.fetchval("""
                     SELECT COUNT(*) FROM trades
-                    WHERE DATE(created_at) = CURRENT_DATE AND status = 'filled'
-                """)
+                    WHERE DATE(created_at AT TIME ZONE 'Australia/Sydney') = $1
+                    AND status = 'filled'
+                """, today)
                 total_trades = int(trade_count or 0)
 
                 # Compute wins/losses from sell trades:
@@ -1075,8 +1086,8 @@ async def _run_daily_profit_snapshot() -> dict:
                               AND t2.status = 'filled') AS avg_buy_price
                     FROM trades t
                     WHERE t.action = 'SELL' AND t.status = 'filled'
-                      AND DATE(t.created_at) = CURRENT_DATE
-                """)
+                      AND DATE(t.created_at AT TIME ZONE 'Australia/Sydney') = $1
+                """, today)
                 for sr in sell_rows:
                     rpnl = sr["realized_pnl"]
                     if rpnl is None:
@@ -1236,7 +1247,7 @@ async def _run_meme_daily_review():
                 pos_lines.append(f"  - {symbol}: ${p:+.2f}")
 
         _os.makedirs(_PROFIT_TRACKER_DIR, exist_ok=True)
-        today = _date.today().isoformat()
+        today = _sydney_today().isoformat()
         log_path = _os.path.join(_PROFIT_TRACKER_DIR, f"{today}.md")
         pos_section = "\n".join(pos_lines) if pos_lines else "  - No open positions"
         with open(log_path, "a", encoding="utf-8") as fh:
@@ -1258,9 +1269,8 @@ async def _run_seed_improver_daily():
     issues. When DGM is enabled, runs a full evolutionary cycle.
     """
     global seed_improver, dgm_service, orchestrator
-    from datetime import date as _date
 
-    today = _date.today()
+    today = _sydney_today()
     daily_context = {}
 
     # Pull today's daily ledger entry to inform the improvement cycle
@@ -1407,9 +1417,7 @@ async def _run_autoresearch_daily():
         logger.info("[AUTORESEARCH] Service not initialized")
         return
 
-    from datetime import date as _date
-
-    today = _date.today()
+    today = _sydney_today()
     daily_context = {}
 
     if orchestrator and hasattr(orchestrator.memory, "get_daily_ledger_entry"):
@@ -1502,11 +1510,10 @@ def _register_routes(app: FastAPI):
         """Manually trigger an autoresearch session."""
         if not autoresearch_service:
             raise HTTPException(status_code=503, detail="Autoresearch service not initialized")
-        from datetime import date as _date
         daily_context = {}
         if orchestrator and hasattr(orchestrator.memory, "get_daily_ledger_entry"):
             try:
-                entry = await orchestrator.memory.get_daily_ledger_entry(_date.today())
+                entry = await orchestrator.memory.get_daily_ledger_entry(_sydney_today())
                 if entry:
                     daily_context = {
                         "daily_pnl": float(entry.get("daily_pnl", 0)),
@@ -1521,6 +1528,20 @@ def _register_routes(app: FastAPI):
     async def root():
         """Redirect to dashboard"""
         return RedirectResponse(url="/dashboard/")
+
+    @app.get("/api/debug/init-status")
+    async def debug_init_status():
+        """Diagnostic endpoint to check component initialization status."""
+        return {
+            "orchestrator": orchestrator is not None,
+            "memory_type": type(orchestrator.memory).__name__ if orchestrator else None,
+            "memory_pool": (getattr(orchestrator.memory, "_pool", "MISSING") is not None)
+                           if orchestrator else None,
+            "seed_improver": seed_improver is not None,
+            "dgm_service": dgm_service is not None,
+            "autoresearch_service": autoresearch_service is not None,
+            "sydney_today": _sydney_today().isoformat(),
+        }
 
     @app.get("/api/status")
     async def api_status():
@@ -2823,8 +2844,7 @@ def _register_routes(app: FastAPI):
     @app.get("/api/daily-profit/today")
     async def get_daily_profit_today():
         """Today's daily profit status — real-time before snapshot."""
-        from datetime import date as _date
-        today = _date.today()
+        today = _sydney_today()
 
         # Check if snapshot already taken
         entry = None
