@@ -799,8 +799,8 @@ async def _create_orchestrator(settings: Settings):
     # =========================================================================
     # Meme Trading Module (behind feature flag)
     # =========================================================================
-    import os
-    # Default to enabled for stage3 (meme trading is a core feature of that stage)
+    # Note: os is imported at module level — do NOT re-import here (causes UnboundLocalError
+    # throughout the function due to Python's scoping rules treating it as a local variable)
     # Note: Stage is already imported at module level — do NOT re-import here (causes UnboundLocalError
     # throughout the function due to Python's scoping rules treating it as a local variable)
     meme_default = "true" if settings.stage == Stage.STAGE_3_FULL else "false"
