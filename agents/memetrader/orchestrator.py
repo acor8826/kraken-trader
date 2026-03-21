@@ -650,6 +650,23 @@ class MemeOrchestrator:
 
         trade = report.successful_trades[0]
 
+        # Persist trade to DB so position reconstruction after deploy is accurate.
+        # Without this, direct-sell trades are invisible to _reconstruct_positions_from_db(),
+        # causing zombie positions that reappear on every restart.
+        try:
+            if self.memory and hasattr(self.memory, 'record_trade'):
+                intel = MarketIntel(
+                    pair=pair,
+                    signals=[],
+                    fused_direction=0,
+                    fused_confidence=signal.confidence,
+                    regime=Regime.VOLATILE,
+                )
+                await self.memory.record_trade(trade, intel)
+                logger.debug("[MEME] Recorded %s trade for %s to DB", signal.action.value, symbol)
+        except Exception as e:
+            logger.warning("[MEME] Failed to record %s trade for %s to DB: %s", signal.action.value, symbol, e)
+
         if signal.action == TradeAction.BUY:
             # Create position tracking
             position = MemePosition(
