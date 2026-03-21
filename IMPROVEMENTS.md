@@ -1,5 +1,50 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-21 19:00 AEST
+
+### Performance Gate
+- **Health:** healthy, scheduler running (cycle #4 since last restart), sentinel not paused
+- **Win rate (7d):** 57.14% ✅ (target >55%)
+- **Profit factor:** 3.88 ✅ (target >1.5)
+- **7d PnL:** +$27.16 ✅
+- **Lifecycle completeness:** 100% (35/35) ✅
+- **Exposure:** 2.26% ✅ (healthy)
+- **Main bot status:** NOT UNDERPERFORMING
+- **Meme bot status:** UNDERPERFORMING — 13 zombie positions (-75% to -99%), daily PnL -$5,182 (phantom), circuit breaker paused
+- **Fear & Greed Index:** 12 (Extreme Fear) — deployment BLOCKED
+- **Anthropic API:** Credits exhausted (400 error), falling back to Codex
+
+### Root Cause: Meme Zombie Positions
+Meme `_execute_signal()` never called `memory.record_trade()`. DB only has BUY records. On each restart, `_reconstruct_positions_from_db()` recreates sold positions as zombies. 13 zombie positions currently accumulating phantom -$5,182 daily loss and tripping circuit breaker.
+
+### Implemented Fixes
+
+- [x] **[2026-03-21]** `[memetrader]` Record ALL meme trades (BUY and SELL) to PostgreSQL via `memory.record_trade()`.
+  Addresses: Zombie meme positions reappearing after every Cloud Run restart because SELL trades were never persisted to DB. 13 zombie positions at -75% to -99.99% loss causing phantom -$5,182 daily PnL and repeated circuit breaker trips.
+  Outcome: Future SELL trades recorded to DB → `_reconstruct_positions_from_db()` will see matching sells and not recreate closed positions. Prerequisite for one-time DB zombie cleanup.
+  **Review due: 2026-03-28** (7 days from commit)
+  **Committed:** 2026-03-21 19:00 AEST — `cb99bf8`
+  **Deploy blocked:** F&G=12 (Extreme Fear), safety rail blocks deploy
+  **Tests:** 151/151 passed (excl. 1 pre-existing Binance test)
+
+### Deferred / Logged for Human Review
+
+| # | Type | Description | Risk | Reason Deferred |
+|---|------|-------------|------|-----------------|
+| 1 | cleanup | Purge 13 zombie meme positions from DB (DELETE orphan BUYs with no SELL) | medium | Needs human review of SQL against prod DB |
+| 2 | ops | Anthropic API credits exhausted — Claude returning 400 | medium | Not code — Alex needs to top up or switch model |
+| 3 | monitor | 11 non-meme positions (IOTX/VET/HOT/ZIL etc.) at 0% PnL on main portfolio | low | Likely sim artifacts |
+| 4 | security | API keys as plaintext env vars (use Secret Manager) | high | Recurring — needs Alex approval |
+
+### Next Cycle Actions
+1. **Deploy `cb99bf8` when F&G ≥ 20** — prevents future zombie accumulation
+2. **Post-deploy:** Run one-time DB cleanup SQL to purge existing 13 zombies
+3. **Restore Anthropic credits** or switch to alternative model for market analysis
+4. **Verify** meme SELL trades appear in `trades` table after deploy
+5. **Review 2026-03-18 fixes** (due 2026-03-25): meme sim seeding, circuit breaker reset, portfolio correction
+
+---
+
 ## Improvement Cycle 2026-03-18 19:00 AEST
 
 ### Performance Gate
@@ -423,4 +468,4 @@ Additionally, the trailing stop had no "ratchet" mechanism — `peak_price` was 
   Outcome: main stop-loss/HWM logic no longer touches meme-managed symbols.
   **Review due: 2026-03-26**
   **Deployed:** pending (time-boxed cycle ended before build/deploy completion)
-  **Verified:** 2026-03-19 19:00 AEST � root cause confirmed in Cloud Run logs; fix committed (`7667946`); tests 50 passed / 1 unrelated pre-existing failure.
+  **Verified:** 2026-03-19 19:00 AEST � root cause confirmed in Cloud Run logs; fix committed (`7667946`); tests 50 passed / 1 unrelated pre-existing failure.
