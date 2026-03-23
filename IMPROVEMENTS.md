@@ -469,3 +469,38 @@ Additionally, the trailing stop had no "ratchet" mechanism â€” `peak_price` was 
   **Review due: 2026-03-26**
   **Deployed:** pending (time-boxed cycle ended before build/deploy completion)
   **Verified:** 2026-03-19 19:00 AEST ï¿½ root cause confirmed in Cloud Run logs; fix committed (`7667946`); tests 50 passed / 1 unrelated pre-existing failure.
+
+---
+
+## Improvement Cycle 2026-03-23 19:00 AEST
+
+### Performance Gate
+- **Health:** healthy (/health), scheduler running (/status), sentinel not paused
+- **Win rate (7d):** 4.65% ? (target >55%, underperforming <35%)
+- **Profit factor (7d):** 0.0255 ? (target >1.5, underperforming <1.0)
+- **7d realized PnL:** -.87 ? (target >0)
+- **Lifecycle completeness:** 95.56% (43/45) ?
+- **Fear & Greed Index:** 8 (Extreme Fear) — deployment **BLOCKED**
+- **Status:** **UNDERPERFORMING**
+
+### Implemented Fixes (reversible, no deploy this cycle)
+
+- [x] **[2026-03-23]** [watchdog] Graceful balance-fetch handling for stop-loss watchdog.
+  Addresses: recurring Binance demo /api/v3/account 400s causing noisy watchdog failures.
+  Outcome: watchdog now skips cycle safely when balance call fails (no traceback flood).
+  **Review due: 2026-03-30**
+  **Committed:** pending (local working tree; deploy blocked by F&G)
+  **Deployed:** blocked — F&G=8 (Extreme Fear)
+  **Verified:** 2026-03-23 19:00 AEST — python -m py_compile api/app.py passed
+
+- [x] **[2026-03-23]** [watchdog] Post-exit balance refresh fallback + warning-level cycle skip log.
+  Addresses: secondary watchdog failure path after exit execution and high-noise error logging.
+  Outcome: reduced false-positive error severity while preserving scheduler cadence.
+  **Review due: 2026-03-30**
+  **Committed:** pending (local working tree; deploy blocked by F&G)
+  **Deployed:** blocked — F&G=8 (Extreme Fear)
+  **Verified:** 2026-03-23 19:00 AEST — pytest tests/unit/test_binance_errors.py -q (16 passed)
+
+### Notes
+- Full cycle report: docs/cycle-reports/2026-03-23-1900.md
+- Historical zombie meme positions still require one-time DB cleanup SQL after next allowed deploy window.

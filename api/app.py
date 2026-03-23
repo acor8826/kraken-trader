@@ -453,6 +453,16 @@ def create_app(stage: Stage = None) -> FastAPI:
             replace_existing=True,
         )
 
+        # Independent stop-loss watchdog — runs every 2 min regardless of main cycle
+        scheduler.add_job(
+            _run_stop_loss_watchdog,
+            'interval',
+            minutes=2,
+            id='stop_loss_watchdog',
+            replace_existing=True,
+        )
+        logger.info("[WATCHDOG] Stop-loss watchdog scheduled: every 2 min")
+
         scheduler.start()
 
         logger.info(f"Scheduler started: every {settings.trading.check_interval_minutes} minutes")
@@ -1004,6 +1014,94 @@ async def _run_meme_cycle():
             await orchestrator._meme_orchestrator.run_cycle()
         except Exception as e:
             logger.error(f"Meme trading cycle error: {e}", exc_info=True)
+
+
+async def _run_stop_loss_watchdog():
+    """Independent stop-loss watchdog — runs every 2 min.
+
+    Checks all open positions for stop-loss / exit triggers independently
+    of the main 10-min trading cycle.  This ensures positions are protected
+    even if the main cycle is slow, errored, or paused.
+    """
+    global orchestrator, settings
+    if not orchestrator:
+        return
+
+    try:
+        logger.debug("[WATCHDOG] Running stop-loss check")
+        qc = settings.trading.quote_currency if settings else "USDT"
+        main_symbols = {p.split("/")[0] for p in settings.trading.pairs} if settings else set()
+
+        # Build lightweight positions dict from exchange balances.
+        # Use get_balance with graceful fallback — demo-API Binance 400s
+        # should not flood logs or crash the watchdog.
+        from core.models import Position
+        try:
+            balance = await orchestrator.exchange.get_balance()
+        except Exception as bal_err:
+            logger.debug("[WATCHDOG] Balance fetch failed (skipping cycle): %s", bal_err)
+            return
+        positions = {}
+
+        for asset, amount in balance.items():
+            if asset in [qc, "total"] or amount <= 0:
+                continue
+            if asset not in main_symbols:
+                continue
+
+            try:
+                ticker = await orchestrator.exchange.get_ticker(f"{asset}/{qc}")
+                current_price = ticker.get("price", 0)
+            except Exception:
+                continue
+
+            entry_price = await orchestrator.memory.get_entry_price(asset)
+            if not entry_price:
+                continue
+
+            pos = Position(
+                symbol=asset,
+                amount=amount,
+                entry_price=entry_price,
+                current_price=current_price,
+            )
+
+            # Restore exit state (trailing stops etc.)
+            if asset in orchestrator._exit_state:
+                es = orchestrator._exit_state[asset]
+                pos.peak_price = es.get("peak_price")
+                pos.trailing_stop_active = es.get("trailing_stop_active", False)
+                pos.trailing_stop_price = es.get("trailing_stop_price")
+
+            positions[asset] = pos
+
+        if not positions:
+            return
+
+        # Run sentinel exit checks
+        exit_trades = await orchestrator.sentinel.check_stop_losses(positions)
+
+        if exit_trades:
+            logger.warning(
+                f"[WATCHDOG] Executing {len(exit_trades)} exit trades")
+            await orchestrator.executor.execute_stop_loss(exit_trades)
+
+            # Clean up exit state for closed positions
+            try:
+                new_balance = await orchestrator.exchange.get_balance()
+            except Exception as bal_err:
+                logger.debug("[WATCHDOG] Post-exit balance refresh failed: %s", bal_err)
+                return
+            active = {a for a, amt in new_balance.items()
+                      if a not in [qc, "total"] and amt > 0 and a in main_symbols}
+            stale = [s for s in orchestrator._exit_state if s not in active]
+            for s in stale:
+                del orchestrator._exit_state[s]
+            await orchestrator._delete_stale_exit_states(stale)
+            await orchestrator._persist_exit_states()
+
+    except Exception as e:
+        logger.warning("[WATCHDOG] Stop-loss watchdog cycle skipped: %s", e)
 
 
 # Profit tracker paths — override with PROFIT_TRACKER_DIR env var at runtime
