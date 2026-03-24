@@ -57,8 +57,8 @@ class TestMapInterval:
         assert binance_prod._map_interval(minutes) == expected
 
     def test_invalid_interval(self, binance_prod):
-        with pytest.raises(ValueError, match="Unsupported interval 3m"):
-            binance_prod._map_interval(3)
+        with pytest.raises(ValueError, match="Unsupported interval 2m"):
+            binance_prod._map_interval(2)
 
     def test_zero_interval(self, binance_prod):
         with pytest.raises(ValueError, match="Unsupported interval 0m"):

@@ -91,7 +91,7 @@ class TestGetOhlcv:
 
     async def test_invalid_interval(self, binance_prod):
         with pytest.raises(ValueError, match="Unsupported interval"):
-            await binance_prod.get_ohlcv("BTC/USDT", interval=3)
+            await binance_prod.get_ohlcv("BTC/USDT", interval=2)
 
 
 # ----------------------------------------------------------------
