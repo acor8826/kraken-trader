@@ -5,7 +5,8 @@ Risk management and safety guardian.
 Validates trading plans, enforces position limits, monitors stop-losses.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Deque
+from collections import deque
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -32,6 +33,23 @@ class BasicSentinel(ISentinel):
 
     # Cooldown period after a stop-loss exit before re-entering the same pair
     STOP_LOSS_COOLDOWN_MINUTES = 180  # 3 hours (3 cycles at 60min)
+
+    def _make_exit_trade(self, symbol: str, position: 'Position',
+                         reason: str, sell_pct: float = 1.0,
+                         order_type: 'OrderType' = None) -> Trade:
+        """Create a stop-loss/take-profit exit trade and clean up TP state."""
+        pair = f"{symbol}/{self.settings.trading.quote_currency}"
+        if order_type is None:
+            order_type = OrderType.STOP_LOSS
+        self._tp_targets_hit.pop(symbol, None)
+        return Trade(
+            pair=pair,
+            action=TradeAction.SELL,
+            order_type=order_type,
+            requested_size_base=position.amount * sell_pct,
+            entry_price=position.entry_price,
+            reasoning=reason,
+        )
 
     def __init__(self, memory: IMemory = None, settings: Settings = None):
         self.memory = memory
@@ -61,6 +79,14 @@ class BasicSentinel(ISentinel):
         self._breakeven_buffer = exit_cfg.breakeven.buffer_pct
         self._take_profit_targets = exit_cfg.take_profit_targets
         self._max_hold_hours = exit_cfg.max_hold_hours
+        self._max_position_loss_pct = exit_cfg.max_position_loss_pct  # Hard ceiling
+
+        # Loss velocity detection
+        lv_cfg = getattr(self.settings, 'loss_velocity', None)
+        self._loss_velocity_threshold = lv_cfg.threshold_pct if lv_cfg else 0.05
+        self._loss_velocity_window = lv_cfg.window_minutes if lv_cfg else 30
+        # In-memory price history: symbol -> deque of (timestamp, price)
+        self._price_history: Dict[str, Deque] = {}
 
         # Track which scaled TP targets have been hit per position (symbol -> set of target indices)
         self._tp_targets_hit: Dict[str, set] = {}
@@ -206,6 +232,35 @@ class BasicSentinel(ISentinel):
             gain_pct = (position.current_price - position.entry_price) / position.entry_price
             loss_pct = (position.entry_price - position.current_price) / position.entry_price
 
+            # --- Record price for velocity detection ---
+            now = datetime.now(timezone.utc)
+            if symbol not in self._price_history:
+                self._price_history[symbol] = deque(maxlen=200)
+            self._price_history[symbol].append((now, position.current_price))
+
+            # --- 0-PRE. MAX POSITION LOSS CEILING (hard exit) ---
+            if self._max_position_loss_pct and loss_pct >= self._max_position_loss_pct:
+                logger.warning(
+                    f"[SENTINEL] MAX LOSS CEILING for {symbol}: "
+                    f"loss={loss_pct:.1%} >= ceiling {self._max_position_loss_pct:.0%}")
+                exit_trades.append(self._make_exit_trade(
+                    symbol, position,
+                    f"Max loss ceiling: {loss_pct:.1%} loss >= "
+                    f"{self._max_position_loss_pct:.0%} ceiling"))
+                continue
+
+            # --- 0-PRE-B. LOSS VELOCITY DETECTION ---
+            if self._check_loss_velocity(symbol):
+                logger.warning(
+                    f"[SENTINEL] LOSS VELOCITY triggered for {symbol}: "
+                    f">={self._loss_velocity_threshold:.0%} drop in "
+                    f"{self._loss_velocity_window}min")
+                exit_trades.append(self._make_exit_trade(
+                    symbol, position,
+                    f"Loss velocity: >={self._loss_velocity_threshold:.0%} "
+                    f"drop in {self._loss_velocity_window}min window"))
+                continue
+
             # --- 0a. SCALED TAKE-PROFIT (partial sells) ---
             if self._take_profit_targets and gain_pct > 0:
                 hit_set = self._tp_targets_hit.get(symbol, set())
@@ -251,27 +306,47 @@ class BasicSentinel(ISentinel):
                     # Don't process other exit checks this cycle for partial sells
                     continue
 
-            # --- 0b. TIME-BASED EXIT ---
-            # Use entry_time if available (MemePosition), otherwise fall back to timestamp (Position)
+            # --- 0b. TIME-AT-LOSS TIERED EXIT ---
+            # Tier 1: 12h at >5% loss → sell 100%
+            # Tier 2: 36h at >2% loss → sell 100%
+            # Tier 3: 24h flat (gain < 0.5%) → sell 50% (original behavior)
             entry_time = getattr(position, 'entry_time', None) or getattr(position, 'timestamp', None)
-            if self._max_hold_hours and entry_time:
-                hold_duration = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
-                if hold_duration > self._max_hold_hours and gain_pct < 0.005:
-                    sell_amount = position.amount * 0.5
-                    if sell_amount > 0:
+            if entry_time:
+                hold_hours = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
+
+                # Tier 1: Deep loss + held 12h → full exit
+                if hold_hours >= 12 and loss_pct >= 0.05:
+                    logger.warning(
+                        f"[SENTINEL] Deep-loss time exit for {symbol}: held {hold_hours:.1f}h "
+                        f"at {loss_pct:.1%} loss, selling 100%")
+                    exit_trades.append(self._make_exit_trade(
+                        symbol, position,
+                        f"Time-at-loss tier 1: held {hold_hours:.0f}h with "
+                        f"{loss_pct:.1%} loss (>5% for >12h)"))
+                    continue
+
+                # Tier 2: Moderate loss + held 36h → full exit
+                if hold_hours >= 36 and loss_pct >= 0.02:
+                    logger.warning(
+                        f"[SENTINEL] Overtime loss exit for {symbol}: held {hold_hours:.1f}h "
+                        f"at {loss_pct:.1%} loss, selling 100%")
+                    exit_trades.append(self._make_exit_trade(
+                        symbol, position,
+                        f"Time-at-loss tier 2: held {hold_hours:.0f}h with "
+                        f"{loss_pct:.1%} loss (>2% for >36h)"))
+                    continue
+
+                # Tier 3: Flat position → sell 50% (original behavior)
+                if self._max_hold_hours and hold_hours > self._max_hold_hours and gain_pct < 0.005:
+                    if position.amount * 0.5 > 0:
                         logger.info(
-                            f"[SENTINEL] Time exit for {symbol}: held {hold_duration:.1f}h "
+                            f"[SENTINEL] Time exit for {symbol}: held {hold_hours:.1f}h "
                             f"(max {self._max_hold_hours}h), gain={gain_pct:.1%}, selling 50%")
-                        trade = Trade(
-                            pair=pair,
-                            action=TradeAction.SELL,
-                            order_type=OrderType.TAKE_PROFIT,
-                            requested_size_base=sell_amount,
-                            entry_price=position.entry_price,
-                            reasoning=f"Time exit: held {hold_duration:.0f}h with only "
-                                      f"{gain_pct:.1%} gain, selling 50%"
-                        )
-                        exit_trades.append(trade)
+                        exit_trades.append(self._make_exit_trade(
+                            symbol, position,
+                            f"Time exit: held {hold_hours:.0f}h with only "
+                            f"{gain_pct:.1%} gain, selling 50%",
+                            sell_pct=0.5, order_type=OrderType.TAKE_PROFIT))
                         continue
 
             # --- 1. TRAILING STOP (if active) ---
@@ -292,18 +367,12 @@ class BasicSentinel(ISentinel):
                         f"TRAILING-STOP triggered for {symbol}: "
                         f"entry=${position.entry_price:,.2f}, peak=${position.peak_price:,.2f}, "
                         f"current=${position.current_price:,.2f}, trail=${position.trailing_stop_price:,.2f}")
-                    trade = Trade(
-                        pair=pair,
-                        action=TradeAction.SELL,
-                        order_type=OrderType.TRAILING_STOP,
-                        requested_size_base=position.amount,
-                        entry_price=position.entry_price,
-                        reasoning=f"Trailing stop triggered: price ${position.current_price:,.2f} "
-                                  f"fell below trail ${position.trailing_stop_price:,.2f} "
-                                  f"(peak: ${position.peak_price:,.2f})"
-                    )
-                    exit_trades.append(trade)
-                    self._tp_targets_hit.pop(symbol, None)
+                    exit_trades.append(self._make_exit_trade(
+                        symbol, position,
+                        f"Trailing stop triggered: price ${position.current_price:,.2f} "
+                        f"fell below trail ${position.trailing_stop_price:,.2f} "
+                        f"(peak: ${position.peak_price:,.2f})",
+                        order_type=OrderType.TRAILING_STOP))
                     continue
 
             # --- 2. TRAILING STOP ACTIVATION ---
@@ -336,19 +405,13 @@ class BasicSentinel(ISentinel):
                             f"peak=${position.peak_price:,.2f} (+{peak_gain:.1%}), "
                             f"floor=${floor_price:,.2f} (+{floor_gain:.1%}), "
                             f"current=${position.current_price:,.2f}")
-                        trade = Trade(
-                            pair=pair,
-                            action=TradeAction.SELL,
-                            order_type=OrderType.BREAKEVEN_STOP,
-                            requested_size_base=position.amount,
-                            entry_price=position.entry_price,
-                            reasoning=f"Progressive breakeven: peaked at "
-                                      f"${position.peak_price:,.2f} (+{peak_gain:.1%}), "
-                                      f"floor at +{floor_gain:.1%}, "
-                                      f"current ${position.current_price:,.2f}"
-                        )
-                        exit_trades.append(trade)
-                        self._tp_targets_hit.pop(symbol, None)
+                        exit_trades.append(self._make_exit_trade(
+                            symbol, position,
+                            f"Progressive breakeven: peaked at "
+                            f"${position.peak_price:,.2f} (+{peak_gain:.1%}), "
+                            f"floor at +{floor_gain:.1%}, "
+                            f"current ${position.current_price:,.2f}",
+                            order_type=OrderType.BREAKEVEN_STOP))
                         continue
 
             # --- 4. TAKE PROFIT ---
@@ -358,16 +421,10 @@ class BasicSentinel(ISentinel):
                             f"entry=${position.entry_price:,.2f}, "
                             f"current=${position.current_price:,.2f}, "
                             f"gain={gain_pct:.1%} (target: {take_profit:.1%})")
-                trade = Trade(
-                    pair=pair,
-                    action=TradeAction.SELL,
-                    order_type=OrderType.TAKE_PROFIT,
-                    requested_size_base=position.amount,
-                    entry_price=position.entry_price,
-                    reasoning=f"Take-profit triggered at {gain_pct:.1%} gain (target: {take_profit:.1%})"
-                )
-                exit_trades.append(trade)
-                self._tp_targets_hit.pop(symbol, None)
+                exit_trades.append(self._make_exit_trade(
+                    symbol, position,
+                    f"Take-profit triggered at {gain_pct:.1%} gain (target: {take_profit:.1%})",
+                    order_type=OrderType.TAKE_PROFIT))
                 continue
 
             # --- 5. FIXED STOP LOSS ---
@@ -376,19 +433,35 @@ class BasicSentinel(ISentinel):
                              f"entry=${position.entry_price:,.2f}, "
                              f"current=${position.current_price:,.2f}, "
                              f"loss={loss_pct:.1%} (threshold: {stop_loss:.1%})")
-                trade = Trade(
-                    pair=pair,
-                    action=TradeAction.SELL,
-                    order_type=OrderType.STOP_LOSS,
-                    requested_size_base=position.amount,
-                    entry_price=position.entry_price,
-                    reasoning=f"Stop-loss triggered at {loss_pct:.1%} loss (threshold: {stop_loss:.1%})"
-                )
-                exit_trades.append(trade)
-                self._tp_targets_hit.pop(symbol, None)
+                exit_trades.append(self._make_exit_trade(
+                    symbol, position,
+                    f"Stop-loss triggered at {loss_pct:.1%} loss (threshold: {stop_loss:.1%})"))
+
                 continue
 
         return exit_trades
+
+    def _check_loss_velocity(self, symbol: str) -> bool:
+        """Check if price dropped by >= threshold within the rolling window."""
+        history = self._price_history.get(symbol)
+        if not history or len(history) < 2:
+            return False
+
+        now = datetime.now(timezone.utc)
+        window_start = now - timedelta(minutes=self._loss_velocity_window)
+        current_price = history[-1][1]
+
+        # Find the highest price within the window
+        max_price = current_price
+        for ts, price in history:
+            if ts >= window_start and price > max_price:
+                max_price = price
+
+        if max_price <= 0:
+            return False
+
+        drop_pct = (max_price - current_price) / max_price
+        return drop_pct >= self._loss_velocity_threshold
 
     def _get_stop_loss_for_pair(self, pair: str) -> float:
         """

@@ -335,6 +335,17 @@ class PostgresStore(IMemory):
             logger.error(f"Failed to set entry price for {symbol}: {e}")
             raise
 
+    async def clear_entry_price(self, symbol: str) -> None:
+        """Clear entry price for a closed/stale position."""
+        try:
+            async with self._connection() as conn:
+                await conn.execute(
+                    "DELETE FROM entry_prices WHERE symbol = $1", symbol
+                )
+            logger.info(f"Cleared entry price for {symbol}")
+        except Exception as e:
+            logger.error(f"Failed to clear entry price for {symbol}: {e}")
+
     # =========================================================================
     # Additional Phase 2 Methods (Not in IMemory interface)
     # =========================================================================

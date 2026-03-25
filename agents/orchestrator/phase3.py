@@ -248,6 +248,20 @@ class Phase3Orchestrator:
                         }
                     self._hwm_tightened = True
 
+            # Execute any pending force-close trades from circuit breaker
+            force_close_trades = self.sentinel.get_pending_force_closes()
+            if force_close_trades:
+                logger.warning(
+                    f"[FORCE-CLOSE] Executing {len(force_close_trades)} "
+                    f"circuit-breaker force-close trades")
+                await self.executor.execute_stop_loss(force_close_trades)
+                portfolio = await self._get_portfolio_state()
+                active_symbols = set(portfolio.positions.keys())
+                stale = [s for s in self._exit_state if s not in active_symbols]
+                for s in stale:
+                    del self._exit_state[s]
+                await self._delete_stale_exit_states(stale)
+
             # 1. Check system health (new trades/analysis gated here, exits are already handled above)
             if not await self.sentinel.system_healthy():
                 logger.warning("System not healthy - skipping new-trade analysis (exits already checked)")
@@ -516,6 +530,22 @@ class Phase3Orchestrator:
                         await self.memory.set_entry_price(
                             base, trade.average_price, trade.filled_size_base
                         )
+                    # Feed SELL outcomes to Bayesian updater
+                    if trade.action == TradeAction.SELL:
+                        try:
+                            strategy_name = validated_plan.strategy_name or "unknown"
+                            pnl = trade.realized_pnl or trade.pnl or 0
+                            success = pnl > 0
+                            if hasattr(self.strategist, 'bayesian'):
+                                self.strategist.bayesian.update(
+                                    strategy_name, trade.pair, success
+                                )
+                                logger.info(
+                                    f"Bayesian update: {strategy_name}/{trade.pair} "
+                                    f"{'win' if success else 'loss'} (pnl={pnl:+.2f})"
+                                )
+                        except Exception as e:
+                            logger.debug(f"Bayesian update failed: {e}")
                 except Exception as e:
                     logger.warning(f"Failed to record trade to memory: {e}")
 
@@ -635,16 +665,29 @@ class Phase3Orchestrator:
         """Fetch and construct current portfolio state.
 
         Only includes positions for symbols in the configured main trading
-        pairs.  Meme-coin positions (managed by the MemeOrchestrator) share
-        the same SimulationExchange instance but must NOT be touched by the
-        Phase3 stop-loss / exit-management logic — otherwise the main bot
-        drains sim balances that the meme bot needs for its own sells.
+        pairs AND that have a recorded entry price in the DB (i.e. we actually
+        opened the position).  This prevents demo-account pre-loaded balances
+        (BTC, ETH, SOL etc.) from being treated as real positions which would
+        cause false "TARGET REACHED" and block all trading.
+
+        Meme-coin positions (managed by the MemeOrchestrator) share the same
+        exchange instance but must NOT be touched by Phase3 stop-loss / exit
+        logic.
         """
         balance = await self.exchange.get_balance()
         qc = self.settings.trading.quote_currency
 
         # Symbols the main orchestrator is responsible for
         main_symbols = {p.split("/")[0] for p in self.settings.trading.pairs}
+
+        # Detect and clear stale DB positions (entry price exists but
+        # exchange balance is 0).  These block new BUY orders.
+        for asset in list(main_symbols):
+            if balance.get(asset, 0) <= 0:
+                entry_price = await self.memory.get_entry_price(asset)
+                if entry_price and entry_price > 0:
+                    logger.info(f"Clearing stale entry price for {asset} (exchange balance=0)")
+                    await self.memory.clear_entry_price(asset)
 
         positions = {}
         for asset, amount in balance.items():
@@ -654,13 +697,18 @@ class Phase3Orchestrator:
             if asset not in main_symbols:
                 continue
 
+            entry_price = await self.memory.get_entry_price(asset)
+
+            # Skip assets with no DB entry price — these are demo/exchange
+            # pre-loaded balances, not positions we opened.
+            if not entry_price or entry_price <= 0:
+                continue
+
             try:
                 ticker = await self.exchange.get_ticker(f"{asset}/{qc}")
                 current_price = ticker.get("price", 0)
             except:
                 current_price = 0
-
-            entry_price = await self.memory.get_entry_price(asset)
 
             pos = Position(
                 symbol=asset,

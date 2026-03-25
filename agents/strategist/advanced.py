@@ -94,6 +94,41 @@ STRATEGY_LIBRARY = {
 }
 
 
+class BayesianConfidence:
+    """Lightweight Bayesian prior/posterior for trade confidence.
+
+    Uses Beta distribution: prior Beta(alpha, beta) per strategy per pair.
+    alpha = successes + 1, beta = failures + 1 (uniform prior).
+    """
+
+    def __init__(self):
+        self._priors: Dict[str, Dict[str, list]] = {}  # {strategy: {pair: [alpha, beta]}}
+
+    def get_posterior(self, strategy: str, pair: str) -> float:
+        """Return posterior mean = alpha / (alpha + beta)."""
+        prior = self._priors.get(strategy, {}).get(pair, [1, 1])
+        return prior[0] / (prior[0] + prior[1])
+
+    def update(self, strategy: str, pair: str, success: bool):
+        """Update Beta distribution with trade outcome."""
+        if strategy not in self._priors:
+            self._priors[strategy] = {}
+        if pair not in self._priors[strategy]:
+            self._priors[strategy][pair] = [1, 1]
+        if success:
+            self._priors[strategy][pair][0] += 1
+        else:
+            self._priors[strategy][pair][1] += 1
+
+    def adjust_confidence(self, base_confidence: float, strategy: str, pair: str) -> float:
+        """Blend heuristic confidence with Bayesian posterior.
+
+        70% heuristic + 30% Bayesian posterior.
+        """
+        posterior = self.get_posterior(strategy, pair)
+        return base_confidence * 0.7 + posterior * 0.3
+
+
 # Advanced system prompt for Claude
 ADVANCED_SYSTEM_PROMPT = """You are a sophisticated cryptocurrency trading strategist managing a multi-strategy portfolio. You select and configure trading strategies based on market conditions.
 
@@ -138,6 +173,7 @@ class AdvancedStrategist(IStrategist):
         self.llm = llm
         self.settings = settings or get_settings()
         self._last_strategy = None
+        self.bayesian = BayesianConfidence()
         logger.info("AdvancedStrategist initialized with strategy library")
 
     async def create_plan(
@@ -506,6 +542,14 @@ Generate your decision as JSON."""
 
         logger.info(f"[{intel.pair}] Decision: {action} (conf={confidence:.2f}, dir={intel.fused_direction:+.2f}, "
                     f"patterns={len(patterns)}, strong={'yes' if has_strong_pattern else 'no'})")
+
+        # Bayesian confidence adjustment
+        adjusted_confidence = self.bayesian.adjust_confidence(
+            confidence, strategy.value, intel.pair
+        )
+        if abs(adjusted_confidence - confidence) > 0.01:
+            logger.info(f"[{intel.pair}] Bayesian adjustment: {confidence:.3f} → {adjusted_confidence:.3f}")
+        confidence = adjusted_confidence
 
         return {
             "action": action,

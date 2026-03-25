@@ -277,6 +277,13 @@ class TakeProfitTarget:
 
 
 @dataclass
+class LossVelocityConfig:
+    """Loss velocity detection settings."""
+    threshold_pct: float = 0.05     # 5% drop in window triggers exit
+    window_minutes: int = 30        # Rolling window
+
+
+@dataclass
 class ExitManagementConfig:
     """Exit management settings for trailing stop, breakeven, etc."""
     enable_trailing_stop: bool = True
@@ -285,6 +292,7 @@ class ExitManagementConfig:
     breakeven: BreakevenConfig = field(default_factory=BreakevenConfig)
     take_profit_targets: List[TakeProfitTarget] = field(default_factory=list)
     max_hold_hours: Optional[float] = None
+    max_position_loss_pct: Optional[float] = None  # Hard ceiling per position (e.g. 0.10 = 10%)
 
 
 @dataclass
@@ -350,6 +358,9 @@ class Settings:
 
     # Portfolio-level profit protection
     portfolio_protection: PortfolioProtectionConfig = field(default_factory=PortfolioProtectionConfig)
+
+    # Loss velocity detection
+    loss_velocity: LossVelocityConfig = field(default_factory=LossVelocityConfig)
 
     # Aggressive risk profile (optional, overrides risk when enabled)
     aggressive_risk: Optional[AggressiveRiskConfig] = None
@@ -493,6 +504,14 @@ class Settings:
             ),
             take_profit_targets=tp_targets,
             max_hold_hours=exit_data.get("max_hold_hours"),
+            max_position_loss_pct=exit_data.get("max_position_loss_pct"),
+        )
+
+        # Parse loss velocity config
+        lv_data = data.get("loss_velocity", {})
+        loss_velocity = LossVelocityConfig(
+            threshold_pct=lv_data.get("threshold_pct", 0.05),
+            window_minutes=lv_data.get("window_minutes", 30),
         )
 
         # Parse portfolio protection config
@@ -528,6 +547,7 @@ class Settings:
             alerts=alerts,
             exit_management=exit_management,
             portfolio_protection=portfolio_protection,
+            loss_velocity=loss_velocity,
             aggressive_risk=aggressive_risk,
             risk_profile=risk_profile,
             enable_adaptive_risk=enable_adaptive,

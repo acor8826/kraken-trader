@@ -337,8 +337,9 @@ class SmartExecutor(IExecutor):
             base = pair.split("/")[0]
             base_amount = balance.get(base, 0)
             sell_amount = base_amount * signal.size_pct
-            if sell_amount <= 0:
-                return {"error": f"No {base} to sell"}
+            if sell_amount <= 0 or round(sell_amount, 8) == 0:
+                logger.warning(f"Skipping SELL {pair}: quantity rounds to 0 (balance={base_amount})")
+                return {"error": f"No {base} to sell (zero quantity)"}
             result = await self.exchange.market_sell(pair, sell_amount)
 
         if result.get("error"):
@@ -373,8 +374,9 @@ class SmartExecutor(IExecutor):
             balance = await self.exchange.get_balance()
             base = pair.split("/")[0]
             sell_amount = balance.get(base, 0) * signal.size_pct
-            if sell_amount <= 0:
-                return {"error": f"No {base} to sell"}
+            if sell_amount <= 0 or round(sell_amount, 8) == 0:
+                logger.warning(f"Skipping SELL {pair}: quantity rounds to 0 (balance={balance.get(base, 0)})")
+                return {"error": f"No {base} to sell (zero quantity)"}
             result = await self.exchange.limit_sell(pair, sell_amount, limit_price)
 
         if result.get("error"):
@@ -463,6 +465,12 @@ class SmartExecutor(IExecutor):
 
         for trade in trades:
             try:
+                if trade.requested_size_base <= 0 or round(trade.requested_size_base, 8) == 0:
+                    logger.warning(f"Skipping stop-loss SELL {trade.pair}: quantity rounds to 0")
+                    trade.status = TradeStatus.FAILED
+                    trade.error_message = "Zero quantity for stop-loss"
+                    report.trades.append(trade)
+                    continue
                 trade.submitted_timestamp = datetime.now(timezone.utc)
                 result = await self.exchange.market_sell(
                     trade.pair,

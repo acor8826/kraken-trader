@@ -30,9 +30,10 @@ class BinanceExchange(IExchange):
 
     BASE_URL = "https://api.binance.com"
     TESTNET_URL = "https://testnet.binance.vision"
+    DEMO_URL = "https://demo-api.binance.com"
 
     INTERVAL_MAP: Dict[int, str] = {
-        1: "1m", 5: "5m", 15: "15m", 30: "30m",
+        1: "1m", 3: "3m", 5: "5m", 15: "15m", 30: "30m",
         60: "1h", 240: "4h", 1440: "1d", 10080: "1w",
     }
 
@@ -55,10 +56,18 @@ class BinanceExchange(IExchange):
         if testnet is None:
             testnet = os.getenv("BINANCE_TESTNET", "").lower() in ("1", "true", "yes")
         self._testnet: bool = testnet
-        self.base_url: str = self.TESTNET_URL if self._testnet else self.BASE_URL
+        self._demo: bool = os.getenv("BINANCE_DEMO", "").lower() in ("1", "true", "yes")
 
-        # Use testnet-specific keys when in testnet mode
-        if self._testnet:
+        # URL selection: demo > testnet > production
+        if self._demo:
+            self.base_url: str = self.DEMO_URL
+        elif self._testnet:
+            self.base_url: str = self.TESTNET_URL
+        else:
+            self.base_url: str = self.BASE_URL
+
+        # Use testnet/demo-specific keys when not in production
+        if self._testnet or self._demo:
             self.api_key: str = api_key or os.getenv("BINANCE_TESTNET_KEY", "") or os.getenv("BINANCE_API_KEY", "")
             self.api_secret: str = api_secret or os.getenv("BINANCE_TESTNET_SECRET", "") or os.getenv("BINANCE_API_SECRET", "")
         else:

@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 from datetime import datetime, timezone
 
 from core.interfaces import ISentinel
-from core.models import TradingPlan, Portfolio, TradeAction
+from core.models import TradingPlan, Portfolio, TradeAction, Trade, OrderType
 from core.config import Settings, get_settings
 from core.ml.anomaly_model import AnomalyDetector, AnomalyResult
 from agents.sentinel.basic import BasicSentinel
@@ -78,6 +78,7 @@ class FullSentinel(ISentinel):
         self._pause_reason = None
         self._pause_until = None
         self._anomaly_history: List[AnomalyResult] = []
+        self._pending_force_closes: List[Trade] = []
 
         logger.info("FullSentinel initialized with anomaly detection and correlation monitoring")
 
@@ -105,13 +106,14 @@ class FullSentinel(ISentinel):
                 logger.warning(f"Trading paused: {self._pause_reason}")
                 return self._block_all_trades(plan)
 
-        # Check circuit breakers
+        # Check circuit breakers — on trip, also force-close 2 worst positions
         can_trade, reason = self.circuit_breakers.check_all(
             portfolio_value=getattr(portfolio, 'total_value', 0)
         )
         if not can_trade:
             logger.warning(f"Circuit breakers tripped: {reason}")
             await self._publish_event("CIRCUIT_BREAKER_TRIPPED", {"reason": reason})
+            self._force_close_worst_positions(portfolio, count=2)
             return self._block_all_trades(plan)
 
         # Check anomaly for each signal (pre-filter before basic validation)
@@ -196,6 +198,44 @@ class FullSentinel(ISentinel):
         self._pause_reason = None
         self._pause_until = None
         logger.info("Trading resumed (manual)")
+
+    def _force_close_worst_positions(self, portfolio: Portfolio, count: int = 2) -> None:
+        """Queue force-close trades for the N worst-performing positions."""
+        if not portfolio.positions:
+            return
+
+        # Rank positions by unrealized PnL (worst first)
+        ranked = []
+        qc = self.settings.trading.quote_currency
+        for sym, pos in portfolio.positions.items():
+            pnl = getattr(pos, 'unrealized_pnl', None)
+            if pnl is None and pos.entry_price and pos.current_price:
+                pnl = (pos.current_price - pos.entry_price) * pos.amount
+            if pnl is not None and pnl < 0:
+                ranked.append((sym, pos, pnl))
+
+        ranked.sort(key=lambda x: x[2])  # Most negative first
+
+        for sym, pos, pnl in ranked[:count]:
+            pair = f"{sym}/{qc}"
+            trade = Trade(
+                pair=pair,
+                action=TradeAction.SELL,
+                order_type=OrderType.STOP_LOSS,
+                requested_size_base=pos.amount,
+                entry_price=pos.entry_price,
+                reasoning=f"Circuit breaker force-close: worst position "
+                          f"(unrealized PnL: ${pnl:.2f})"
+            )
+            self._pending_force_closes.append(trade)
+            logger.warning(
+                f"[SENTINEL] Force-close queued: {sym} (PnL: ${pnl:.2f})")
+
+    def get_pending_force_closes(self) -> List[Trade]:
+        """Pop and return all pending force-close trades."""
+        trades = self._pending_force_closes[:]
+        self._pending_force_closes.clear()
+        return trades
 
     async def _check_anomaly(self, pair: str) -> AnomalyResult:
         """Check for anomalies in current market conditions"""

@@ -122,6 +122,11 @@ class IMemory(ABC):
         """
         pass
 
+    @abstractmethod
+    async def clear_entry_price(self, symbol: str) -> None:
+        """Clear entry price for a closed/stale position."""
+        pass
+
 
 class IExchange(ABC):
     """Interface for exchange integrations"""

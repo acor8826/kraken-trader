@@ -82,6 +82,12 @@ class MemeOrchestrator:
             return
 
         try:
+            # Get actual exchange balances to validate reconstructed positions
+            try:
+                exchange_balance = await self.exchange.get_balance()
+            except Exception:
+                exchange_balance = {}
+
             # Only reconstruct positions matching current quote currency
             # to avoid mixing AUD and USDT positions after exchange switch
             import os
@@ -132,6 +138,17 @@ class MemeOrchestrator:
 
                 net = data["buy_base"] - data["sell_base"]
                 if net <= 1e-9:
+                    continue
+
+                # Validate against exchange balance — skip if the exchange
+                # doesn't actually hold this asset (ghost position from failed
+                # trades or demo pre-loaded balances that can't be sold).
+                exchange_amount = float(exchange_balance.get(symbol, 0))
+                if exchange_amount <= 0:
+                    logger.debug(
+                        "[MEME] Skipping %s reconstruction: DB says %.4f but "
+                        "exchange balance is 0", symbol, net,
+                    )
                     continue
 
                 avg_entry = (
@@ -558,6 +575,15 @@ class MemeOrchestrator:
             },
         }
 
+    def _abandon_ghost_position(self, symbol: str) -> None:
+        """Clean up a position that failed to trade (ghost/demo artifact)."""
+        self._positions.pop(symbol, None)
+        self.strategist.update_position(symbol, None)
+        if hasattr(self.strategist, '_tp_targets_hit'):
+            self.strategist._tp_targets_hit.pop(symbol, None)
+        self._coin_tiers[symbol] = MemeTier.WARM
+        logger.warning("[MEME] Abandoned ghost position %s", symbol)
+
     async def _execute_signal(
         self,
         signal,
@@ -585,6 +611,7 @@ class MemeOrchestrator:
                                 "[MEME] Direct sell rejected for %s: %s",
                                 symbol, result["error"],
                             )
+                            self._abandon_ghost_position(symbol)
                             return None
                         avg_price = (
                             result.get("price")
@@ -614,6 +641,12 @@ class MemeOrchestrator:
                         )
                     except Exception as e:
                         logger.error("[MEME] Direct sell failed for %s: %s", symbol, e)
+                        # Abandon ghost position — if the exchange rejects the
+                        # sell (400), the position is likely invalid (e.g. demo
+                        # account pre-loaded balance or pair not tradeable).
+                        # Remove from tracking so we don't retry every cycle.
+                        if "400" in str(e) or "Bad Request" in str(e):
+                            self._abandon_ghost_position(symbol)
                         return None
                 else:
                     logger.warning("[MEME] Tracked position for %s has zero sell amount, skipping", symbol)

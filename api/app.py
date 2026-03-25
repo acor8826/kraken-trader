@@ -246,31 +246,55 @@ async def _get_exchange_portfolio(quote: str, initial_capital: float) -> dict | 
         balance = await orchestrator.exchange.get_balance()
         available_quote = balance.get(quote, 0)
 
-        # Get DB-reconstructed positions for accurate entry prices
+        # Get DB positions for entry prices only; use exchange balance for amounts
         db_result = await _reconstruct_positions_from_db()
         db_positions = db_result.get("positions", {})
+
+        # Build entry price lookup from DB trade history
+        entry_prices = {}
+        for pair, pdata in db_positions.items():
+            symbol = pair.split("/")[0]
+            entry_prices[symbol] = pdata["avg_entry_price"]
+
+        # Fallback: also check entry_prices table for assets not in trade history
+        if orchestrator and hasattr(orchestrator, 'memory'):
+            for asset in balance:
+                if asset in [quote, "total"] or asset in entry_prices:
+                    continue
+                try:
+                    ep = await orchestrator.memory.get_entry_price(asset)
+                    if ep and ep > 0:
+                        entry_prices[asset] = ep
+                except Exception:
+                    pass
 
         positions_value = 0
         cost_basis = 0
         pos_dict = {}
-        for pair, pdata in db_positions.items():
-            symbol = pair.split("/")[0]
+        for asset, amount in balance.items():
+            if asset in [quote, "total"] or amount <= 0:
+                continue
+            # Only include assets we have an entry price for (our positions)
+            entry_price = entry_prices.get(asset)
+            if not entry_price or entry_price <= 0:
+                continue
+            pair = f"{asset}/{quote}"
             try:
                 ticker = await orchestrator.exchange.get_ticker(pair)
-                current_price = ticker.get("price", pdata["avg_entry_price"])
+                current_price = ticker.get("price", entry_price)
             except Exception:
-                current_price = pdata["avg_entry_price"]
+                current_price = entry_price
             if current_price <= 0:
                 continue
-            value = pdata["amount"] * current_price
-            entry_cost = pdata["amount"] * pdata["avg_entry_price"]
+            value = amount * current_price
+            entry_cost = amount * entry_price
             positions_value += value
             cost_basis += entry_cost
             unrealized_pnl_pos = value - entry_cost
             pnl_pct = (unrealized_pnl_pos / entry_cost * 100) if entry_cost > 0 else 0
-            pos_dict[symbol] = {
-                "amount": pdata["amount"],
-                "entry_price": pdata["avg_entry_price"],
+            pos_dict[asset] = {
+                "amount": amount,
+                "entry_price": entry_price,
                 "current_price": current_price,
                 "unrealized_pnl": round(unrealized_pnl_pos, 2),
                 "unrealized_pnl_pct": round(pnl_pct, 2),

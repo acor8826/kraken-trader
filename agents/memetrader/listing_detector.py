@@ -7,7 +7,12 @@ from agents.memetrader.config import MemeConfig
 
 logger = logging.getLogger(__name__)
 
-BINANCE_EXCHANGE_INFO_URL = "https://api.binance.us/api/v3/exchangeInfo"
+_BINANCE_DEMO = os.getenv("BINANCE_DEMO", "").lower() in ("1", "true", "yes")
+BINANCE_EXCHANGE_INFO_URL = (
+    "https://demo-api.binance.com/api/v3/exchangeInfo"
+    if _BINANCE_DEMO
+    else "https://api.binance.com/api/v3/exchangeInfo"
+)
 KRAKEN_ASSET_PAIRS_URL = "https://api.kraken.com/0/public/AssetPairs"
 
 # Kraken asset name normalization (X/Z prefix convention)

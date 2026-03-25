@@ -40,6 +40,9 @@ class _ConcreteMemory(IMemory):
     async def set_entry_price(self, symbol: str, price: float, size: Optional[float] = None) -> None:
         pass  # accepts optional size
 
+    async def clear_entry_price(self, symbol: str) -> None:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Interface signature tests

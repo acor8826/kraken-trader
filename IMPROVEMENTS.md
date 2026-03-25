@@ -1,5 +1,56 @@
 # Kraken Trader — Improvements Log
 
+## Improvement Cycle 2026-03-24 19:00 AEST
+
+### Performance Gate
+- **Win rate (7d):** 4.65% 🔴 UNDERPERFORMING (target >55%)
+- **Profit factor:** 0.0255 🔴 UNDERPERFORMING (target >1.5)
+- **7d realized PnL:** -$0.87 🔴 (target >0)
+- **Lifecycle completeness:** 95.56% (43/45) ✅
+- **Fear & Greed Index:** 11 (Extreme Fear) — deployment **BLOCKED**
+- **gcloud auth:** expired — live endpoints unreachable; KPIs from prior cycle logs
+- **Status:** UNDERPERFORMING (4th+ consecutive F&G < 20 cycle)
+
+### Implemented Fixes
+
+- [x] **[2026-03-24]** `[tests]` Fix stale `test_invalid_interval` tests broken by 3m interval addition.
+  `INTERVAL_MAP` was extended in working tree to include `3: "3m"` (Binance supports 3-minute candles). Two existing tests asserted `_map_interval(3)` raises `ValueError` — now stale since 3m is valid. Updated both tests to use interval=2 (genuinely unsupported) so they correctly verify the error path.
+  Addresses: 2 failing tests breaking clean CI baseline.
+  Outcome: Test suite 172/172 passing (8 deselected pre-existing Binance integration tests).
+  **Review due: 2026-03-31**
+  **Committed:** 2026-03-24 19:00 AEST — `332cbde`
+  **Deployed:** blocked — F&G=11 (Extreme Fear) + gcloud auth expired
+  **Verified:** 2026-03-24 19:00 AEST — `pytest tests/ -q` → 172 passed, 0 failed
+
+### Deferred / Logged for Human Review
+
+| # | Type | Description | Risk | Reason Deferred |
+|---|------|-------------|------|-----------------|
+| 1 | deploy | Deploy cb99bf8 (zombie meme fix) + a9dcf88 (watchdog) + working-tree batch | medium | F&G=11 + gcloud auth expired |
+| 2 | ops | Refresh gcloud auth | n/a | Manual action required by Alex |
+| 3 | cleanup | One-time SQL: purge 13 zombie meme positions from DB | medium | Alex approval needed |
+| 4 | ops | Anthropic API credits exhausted | medium | Alex needs to top up |
+| 5 | security | API keys as plaintext env vars (Secret Manager) | high | Alex approval needed |
+
+### Working Tree (Uncommitted — Deploy Pending)
+
+Large batch of seed-improver/prior-session changes awaiting deploy when F&G ≥ 20 and gcloud auth refreshed:
+- `agents/analysts/technical/basic.py`: expanded indicator set (+489/-211 lines)
+- `config/stage3.yaml`: wider pair set (AVAX/LINK/ADA/XRP added), 5-min cycles, refined exits
+- `agents/sentinel/basic.py`: loss velocity detection, hard position loss ceiling
+- `agents/orchestrator/phase3.py`: force-close path for circuit breaker, entry-price guard
+- `agents/memetrader/orchestrator.py`: ghost position abandonment, exchange-balance validation
+- `integrations/exchanges/binance.py`: DEMO_URL support, 3m interval added
+
+### Next Cycle Actions
+1. **When F&G ≥ 20:** Alex to refresh gcloud auth, then deploy full committed stack
+2. **Post-deploy:** verify zombie positions cleared, confirm 5m cycle cadence, check win rate trend
+3. **Review 2026-03-18 fixes due 2026-03-25** (meme sim seeding, circuit breaker reset, portfolio correction)
+4. **Review 2026-03-21 fixes due 2026-03-28** (zombie meme DB recording fix)
+5. Full report: `docs/cycle-reports/2026-03-24-1900.md`
+
+---
+
 ## Improvement Cycle 2026-03-21 19:00 AEST
 
 ### Performance Gate
@@ -480,7 +531,7 @@ Additionally, the trailing stop had no "ratchet" mechanism — `peak_price` was 
 - **Profit factor (7d):** 0.0255 ? (target >1.5, underperforming <1.0)
 - **7d realized PnL:** -.87 ? (target >0)
 - **Lifecycle completeness:** 95.56% (43/45) ?
-- **Fear & Greed Index:** 8 (Extreme Fear) � deployment **BLOCKED**
+- **Fear & Greed Index:** 8 (Extreme Fear) � deployment **BLOCKED**
 - **Status:** **UNDERPERFORMING**
 
 ### Implemented Fixes (reversible, no deploy this cycle)
@@ -490,16 +541,16 @@ Additionally, the trailing stop had no "ratchet" mechanism — `peak_price` was 
   Outcome: watchdog now skips cycle safely when balance call fails (no traceback flood).
   **Review due: 2026-03-30**
   **Committed:** pending (local working tree; deploy blocked by F&G)
-  **Deployed:** blocked � F&G=8 (Extreme Fear)
-  **Verified:** 2026-03-23 19:00 AEST � python -m py_compile api/app.py passed
+  **Deployed:** blocked � F&G=8 (Extreme Fear)
+  **Verified:** 2026-03-23 19:00 AEST � python -m py_compile api/app.py passed
 
 - [x] **[2026-03-23]** [watchdog] Post-exit balance refresh fallback + warning-level cycle skip log.
   Addresses: secondary watchdog failure path after exit execution and high-noise error logging.
   Outcome: reduced false-positive error severity while preserving scheduler cadence.
   **Review due: 2026-03-30**
   **Committed:** pending (local working tree; deploy blocked by F&G)
-  **Deployed:** blocked � F&G=8 (Extreme Fear)
-  **Verified:** 2026-03-23 19:00 AEST � pytest tests/unit/test_binance_errors.py -q (16 passed)
+  **Deployed:** blocked � F&G=8 (Extreme Fear)
+  **Verified:** 2026-03-23 19:00 AEST � pytest tests/unit/test_binance_errors.py -q (16 passed)
 
 ### Notes
 - Full cycle report: docs/cycle-reports/2026-03-23-1900.md

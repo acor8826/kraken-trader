@@ -179,6 +179,27 @@ class MemeSentinel(ISentinel):
             pair = getattr(position, 'pair', f"{symbol}/USDT")
             pnl_pct = (current_price - entry_price) / entry_price
 
+            # Max loss ceiling (15% for meme positions)
+            max_meme_loss_pct = 0.15
+            if pnl_pct <= -max_meme_loss_pct:
+                logger.warning(
+                    "[MEME_SENTINEL] MAX LOSS CEILING for %s: %.1f%% loss (ceiling: -%.0f%%)",
+                    symbol, pnl_pct * 100, max_meme_loss_pct * 100,
+                )
+                trade = Trade(
+                    pair=pair,
+                    action=TradeAction.SELL,
+                    order_type=OrderType.STOP_LOSS,
+                    requested_size_base=position.amount,
+                    entry_price=entry_price,
+                    reasoning=(
+                        f"Meme max loss ceiling: {pnl_pct:.1%} loss "
+                        f"(ceiling: -{max_meme_loss_pct:.0%})"
+                    ),
+                )
+                exit_trades.append(trade)
+                continue
+
             # Hard stop loss
             if pnl_pct <= -self.config.hard_stop_loss_pct:
                 logger.warning(
